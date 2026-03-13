@@ -266,14 +266,13 @@ Preview of the included TD test image:
 
 <img src="src/assets/tdTest.png" alt="TD Test Image" width="600" />
 
-## Native Mac App (Tauri)
+## Native Desktop App (Tauri)
 
-Kromacut can be built as a **native macOS application** using [Tauri](https://tauri.app/), offering better performance than the web version:
+Kromacut can be built as a **native desktop application** for macOS, Windows, and Linux using [Tauri](https://tauri.app/), offering better performance than the web version:
 
-- **Better performance:** Uses native macOS WebKit for faster rendering
+- **Better performance:** Native webview for faster rendering
 - **Smaller size:** compact native bundle with low runtime overhead
 - **Lower memory usage:** More efficient resource utilization
-- **Native integration:** Better macOS feel and GPU acceleration for Three.js
 - **Automatic updates:** Built-in update checker notifies you of new versions
 
 The desktop app includes an automatic update checker. See [UPDATE_CHECKER.md](docs/UPDATE_CHECKER.md) for details.
@@ -301,22 +300,21 @@ The production build creates:
 
 ### Releases
 
-Pre-built native Mac apps are automatically released on GitHub:
+Pre-built native apps are automatically released on GitHub:
 
-1. Download the latest release from the [Releases page](https://github.com/zeroCoder1/Kromacut/releases)
-2. Choose the DMG for your Mac:
-   - **Apple Silicon (M1/M2/M3)**: `*_aarch64.dmg`
-   - **Intel**: `*_x86_64.dmg`
-3. Open the DMG and drag Kromacut to Applications
-4. Remove quarantine attribute:
-   ```bash
-   sudo xattr -d com.apple.quarantine /Applications/Kromacut.app
-   ```
-5. Launch the app
+1. Download the latest release from the [Releases page](https://github.com/vycdev/Kromacut/releases)
+2. Choose the right file for your platform:
+   - **macOS Apple Silicon (M1/M2/M3)**: `*_aarch64.dmg`
+   - **macOS Intel**: `*_x86_64.dmg`
+   - **Windows**: `*.msi`
+   - **Linux**: `*.AppImage` or `*.deb`
+3. Install and launch
 
-**"Kromacut is damaged" error?** The app isn't code-signed. Run `sudo xattr -d com.apple.quarantine /Applications/Kromacut.app` in Terminal to fix it.
+**macOS "Kromacut is damaged" error?** The app isn't code-signed. Run `sudo xattr -d com.apple.quarantine /Applications/Kromacut.app` in Terminal to fix it.
 
-> **Note:** To eliminate the quarantine requirement entirely, the app would need to be signed with an Apple Developer ID certificate and notarized through Apple's notarization service. This requires an [Apple Developer Program membership](https://developer.apple.com/programs/) ($99/year). The current ad-hoc signing is suitable for personal use and small-scale distribution. See [TAURI.md](docs/TAURI.md#code-signing--notarization-future-enhancement) for details.
+**Windows SmartScreen warning?** The app isn't signed. Click "More info" → "Run anyway".
+
+> **Note:** To eliminate the macOS quarantine requirement entirely, the app would need to be signed with an Apple Developer ID certificate and notarized through Apple's notarization service. This requires an [Apple Developer Program membership](https://developer.apple.com/programs/) ($99/year). See [TAURI.md](docs/TAURI.md#code-signing--notarization-future-enhancement) for details.
 
 To create a new release, see [TAURI.md](docs/TAURI.md#automated-releases-github).
 
