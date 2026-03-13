@@ -247,7 +247,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, pe
     return (
         <div className="space-y-4">
             {/* Apply button */}
-            <div className="sticky top-0 z-20 -mx-1 px-1 py-1 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 border-b border-border/60 flex justify-end">
+            <div className="sticky -top-4 z-20 -mx-4 -mt-4 px-4 pt-4 pb-2 bg-card border-b border-border flex justify-end">
                 <Button
                     onClick={handleApply}
                     disabled={isAutoPaintComputing}
