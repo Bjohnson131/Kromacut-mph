@@ -276,7 +276,7 @@ Kromacut can be built as a **native macOS application** using [Tauri](https://ta
 - **Native integration:** Better macOS feel and GPU acceleration for Three.js
 - **Automatic updates:** Built-in update checker notifies you of new versions
 
-The desktop app includes an automatic update checker. See [UPDATE_CHECKER.md](UPDATE_CHECKER.md) for details.
+The desktop app includes an automatic update checker. See [UPDATE_CHECKER.md](docs/UPDATE_CHECKER.md) for details.
 
 ### Building
 
@@ -316,11 +316,11 @@ Pre-built native Mac apps are automatically released on GitHub:
 
 **"Kromacut is damaged" error?** The app isn't code-signed. Run `sudo xattr -d com.apple.quarantine /Applications/Kromacut.app` in Terminal to fix it.
 
-> **Note:** To eliminate the quarantine requirement entirely, the app would need to be signed with an Apple Developer ID certificate and notarized through Apple's notarization service. This requires an [Apple Developer Program membership](https://developer.apple.com/programs/) ($99/year). The current ad-hoc signing is suitable for personal use and small-scale distribution. See [TAURI.md](TAURI.md#code-signing--notarization-future-enhancement) for details.
+> **Note:** To eliminate the quarantine requirement entirely, the app would need to be signed with an Apple Developer ID certificate and notarized through Apple's notarization service. This requires an [Apple Developer Program membership](https://developer.apple.com/programs/) ($99/year). The current ad-hoc signing is suitable for personal use and small-scale distribution. See [TAURI.md](docs/TAURI.md#code-signing--notarization-future-enhancement) for details.
 
-To create a new release, see [TAURI.md](TAURI.md#automated-releases-github).
+To create a new release, see [TAURI.md](docs/TAURI.md#automated-releases-github).
 
-See [TAURI.md](TAURI.md) for complete documentation on development, building, and distribution.
+See [TAURI.md](docs/TAURI.md) for complete documentation on development, building, and distribution.
 
 ## Star History
 
