@@ -27,6 +27,7 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
     ({ className, value, onChange, onValueChange, ...props }, ref) => {
         // Suppress unused warning for onValueChange until implemented
         void onValueChange;
+
         return (
             <input
                 type="number"

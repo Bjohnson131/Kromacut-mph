@@ -35,6 +35,10 @@ export function useColorSlicing({
     const prevOrderRef = useRef<number[]>(
         persisted?.colorOrder ? persisted.colorOrder.slice() : []
     );
+    const prevLayerHeightRef = useRef<number | null>(null);
+    const prevSlicerFirstLayerHeightRef = useRef<number | null>(null);
+    const displayOrderRef = useRef<number[]>([]);
+    const layerHeightRef = useRef<number>(layerHeight);
 
     // guard so we only emit immediately after hydration if needed
     const hydratedRef = useRef<boolean>(false);
@@ -43,6 +47,38 @@ export function useColorSlicing({
             hydratedRef.current = true;
         }
     }, [persisted]);
+
+    // When layer height changes, reset color slice heights to the new layer height
+    useEffect(() => {
+        if (prevLayerHeightRef.current !== null && prevLayerHeightRef.current !== layerHeight) {
+            // Layer height changed: reset all color heights to new layer height
+            if (filtered.length > 0) {
+                const resetHeights = filtered.map(() =>
+                    Number(Math.max(layerHeight, Math.min(10, layerHeight)).toFixed(8))
+                );
+                setColorSliceHeights(resetHeights);
+            }
+        }
+        prevLayerHeightRef.current = layerHeight;
+    }, [layerHeight, filtered.length]);
+
+    // When slicerFirstLayerHeight changes, update the first color's slice height to match the new minimum
+    useEffect(() => {
+        if (
+            prevSlicerFirstLayerHeightRef.current !== null &&
+            prevSlicerFirstLayerHeightRef.current !== slicerFirstLayerHeight &&
+            displayOrderRef.current.length > 0
+        ) {
+            const firstIdx = displayOrderRef.current[0];
+            const newMin = Math.max(layerHeightRef.current, slicerFirstLayerHeight);
+            setColorSliceHeights((prev) => {
+                const next = prev.slice();
+                next[firstIdx] = Number(newMin.toFixed(8));
+                return next;
+            });
+        }
+        prevSlicerFirstLayerHeightRef.current = slicerFirstLayerHeight;
+    }, [slicerFirstLayerHeight]);
 
     // Initialize or resize per-color slice heights and preserve ordering when swatches change.
     useEffect(() => {
@@ -100,11 +136,15 @@ export function useColorSlicing({
         prevFilteredRef.current = filtered.slice();
         prevHeightsRef.current = nextHeights.slice();
         prevOrderRef.current = nextOrder.slice();
-    }, [filtered, layerHeight]);
+    }, [filtered]);
 
     const displayOrder = useMemo(() => {
         return colorOrder.length === filtered.length ? colorOrder : filtered.map((_, i) => i);
     }, [colorOrder, filtered]);
+
+    // Keep refs in sync so effects can read latest values without stale closures
+    displayOrderRef.current = displayOrder;
+    layerHeightRef.current = layerHeight;
 
     const onRowChange = useCallback((idx: number, v: number) => {
         setColorSliceHeights((prev) => {
@@ -132,6 +172,28 @@ export function useColorSlicing({
         setColorOrder(indices);
         setColorSliceHeights(nextHeights);
     }, [filtered, colorSliceHeights, layerHeight, slicerFirstLayerHeight]);
+
+    // Synchronously reset colorSliceHeights to given layerHeight/firstLayerHeight
+    // without relying on effects - used when print settings are reset to defaults
+    const resetHeightsToValues = useCallback(
+        (newLayerHeight: number, newFirstLayerHeight: number) => {
+            if (filtered.length === 0) return;
+            const order = displayOrderRef.current;
+            setColorSliceHeights((prev) => {
+                const next = prev.slice();
+                order.forEach((fi, idx) => {
+                    next[fi] = Number(
+                        (idx === 0
+                            ? Math.max(newLayerHeight, newFirstLayerHeight)
+                            : newLayerHeight
+                        ).toFixed(8)
+                    );
+                });
+                return next;
+            });
+        },
+        [filtered]
+    );
 
     const handleColorOrderChange = useCallback((newOrder: string[]) => {
         const newColorOrder = newOrder.map((v) => Number(v));
@@ -201,6 +263,7 @@ export function useColorSlicing({
         displayOrder,
         onRowChange,
         handleResetHeights,
+        resetHeightsToValues,
         handleColorOrderChange,
         isResetState,
     };

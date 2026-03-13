@@ -3,13 +3,9 @@ import { Card } from '@/components/ui/card';
 import ThreeDColorRow from './ThreeDColorRow';
 import { Sortable, SortableContent, SortableOverlay } from '@/components/ui/sortable';
 import { Button } from '@/components/ui/button';
-import { Check, RotateCcw } from 'lucide-react';
+import { Check, RotateCcw, Loader2 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import {
-    generateAutoLayers,
-    autoPaintToSliceHeights,
-    type AutoPaintResult,
-} from '../lib/autoPaint';
+import { autoPaintToSliceHeights } from '../lib/autoPaint';
 import {
     loadPrintSettingsFromStorage,
     savePrintSettingsToStorage,
@@ -19,6 +15,7 @@ import { useFilaments } from '../hooks/useFilaments';
 import { useProfileManager } from '../hooks/useProfileManager';
 import { useColorSlicing } from '../hooks/useColorSlicing';
 import { useSwapPlan } from '../hooks/useSwapPlan';
+import { useAutoPaintWorker } from '../hooks/useAutoPaintWorker';
 import type { Swatch, ThreeDControlsStateShape } from '../types';
 import PrintSettingsCard from './PrintSettingsCard';
 import PrintInstructions from './PrintInstructions';
@@ -29,6 +26,7 @@ export type { Filament, ThreeDControlsStateShape } from '../types';
 
 interface ThreeDControlsProps {
     swatches: Swatch[] | null;
+    imageDimensions: { width: number; height: number } | null;
     onChange?: (state: ThreeDControlsStateShape) => void;
     /**
      * Persisted state from a previous mount used to hydrate this component
@@ -37,7 +35,7 @@ interface ThreeDControlsProps {
     persisted?: ThreeDControlsStateShape | null;
 }
 
-export default function ThreeDControls({ swatches, onChange, persisted }: ThreeDControlsProps) {
+export default function ThreeDControls({ swatches, imageDimensions, onChange, persisted }: ThreeDControlsProps) {
     // --- Filaments ---
     const { filaments, setFilaments, addFilament, removeFilament, updateFilament } = useFilaments({
         initial: persisted?.filaments?.length ? persisted.filaments : undefined,
@@ -80,6 +78,9 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
         initialPrintSettings.slicerFirstLayerHeight
     );
     const [pixelSize, setPixelSize] = useState<number>(initialPrintSettings.pixelSize);
+    const [calibrationLayerHeight, setCalibrationLayerHeight] = useState<number>(
+        persisted?.calibrationLayerHeight ?? initialPrintSettings.layerHeight
+    );
     const [paintMode, setPaintMode] = useState<'manual' | 'autopaint'>(
         persisted?.paintMode ?? 'manual'
     );
@@ -88,6 +89,17 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
     const [allowRepeatedSwaps, setAllowRepeatedSwaps] = useState(false);
     const [heightDithering, setHeightDithering] = useState(false);
     const [ditherLineWidth, setDitherLineWidth] = useState(0.42);
+
+    // --- Optimizer Options ---
+    const [optimizerAlgorithm, setOptimizerAlgorithm] = useState<'exhaustive' | 'simulated-annealing' | 'genetic' | 'auto'>(
+        persisted?.optimizerAlgorithm ?? 'auto'
+    );
+    const [optimizerSeed, setOptimizerSeed] = useState<number | undefined>(
+        persisted?.optimizerSeed
+    );
+    const [regionWeightingMode, setRegionWeightingMode] = useState<'uniform' | 'center' | 'edge'>(
+        persisted?.regionWeightingMode ?? 'uniform'
+    );
 
     const handleEnhancedColorMatchChange = useCallback((v: boolean) => {
         setEnhancedColorMatch(v);
@@ -101,12 +113,6 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
         savePrintSettingsToStorage({ layerHeight, slicerFirstLayerHeight, pixelSize });
     }, [layerHeight, slicerFirstLayerHeight, pixelSize]);
 
-    const handleResetPrintSettings = useCallback(() => {
-        setLayerHeight(DEFAULT_PRINT_SETTINGS.layerHeight);
-        setSlicerFirstLayerHeight(DEFAULT_PRINT_SETTINGS.slicerFirstLayerHeight);
-        setPixelSize(DEFAULT_PRINT_SETTINGS.pixelSize);
-    }, []);
-
     // --- Color Slicing ---
     const {
         filtered,
@@ -115,6 +121,7 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
         displayOrder,
         onRowChange,
         handleResetHeights,
+        resetHeightsToValues,
         handleColorOrderChange,
         isResetState,
     } = useColorSlicing({
@@ -124,24 +131,18 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
         persisted,
     });
 
-    // --- Auto-paint ---
-    const autoPaintResult = useMemo<AutoPaintResult | undefined>(() => {
-        if (paintMode !== 'autopaint' || filaments.length === 0 || filtered.length === 0) {
-            return undefined;
-        }
-        return generateAutoLayers(
-            filaments,
-            filtered.map((s) => ({
-                hex: s.hex,
-                count: (s as Record<string, unknown>).count as number | undefined,
-            })),
-            layerHeight,
-            slicerFirstLayerHeight,
-            autoPaintMaxHeight,
-            enhancedColorMatch,
-            allowRepeatedSwaps
+    const handleResetPrintSettings = useCallback(() => {
+        setLayerHeight(DEFAULT_PRINT_SETTINGS.layerHeight);
+        setSlicerFirstLayerHeight(DEFAULT_PRINT_SETTINGS.slicerFirstLayerHeight);
+        setPixelSize(DEFAULT_PRINT_SETTINGS.pixelSize);
+        resetHeightsToValues(
+            DEFAULT_PRINT_SETTINGS.layerHeight,
+            DEFAULT_PRINT_SETTINGS.slicerFirstLayerHeight
         );
-    }, [
+    }, [resetHeightsToValues]);
+
+    // --- Auto-paint (runs in Web Worker to avoid blocking the UI) ---
+    const { autoPaintResult, isComputing: isAutoPaintComputing } = useAutoPaintWorker({
         paintMode,
         filaments,
         filtered,
@@ -150,12 +151,22 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
         autoPaintMaxHeight,
         enhancedColorMatch,
         allowRepeatedSwaps,
-    ]);
+        optimizerAlgorithm,
+        optimizerSeed,
+        regionWeightingMode,
+        imageDimensions,
+    });
 
     const autoPaintSliceData = useMemo(() => {
         if (!autoPaintResult) return undefined;
         return autoPaintToSliceHeights(autoPaintResult, layerHeight, slicerFirstLayerHeight);
     }, [autoPaintResult, layerHeight, slicerFirstLayerHeight]);
+
+    const instructionColorCount =
+        paintMode === 'autopaint'
+            ? autoPaintResult?.layers.length ?? 0
+            : displayOrder.length;
+    const isInstructionOverLimit = instructionColorCount > 64;
 
     // --- Swap Plan ---
     const { swapPlan, copied, copyToClipboard } = useSwapPlan({
@@ -166,6 +177,7 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
         slicerFirstLayerHeight,
         paintMode,
         autoPaintResult,
+        disabled: isInstructionOverLimit,
     });
 
     // --- Apply handler ---
@@ -186,9 +198,13 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
                 allowRepeatedSwaps,
                 heightDithering,
                 ditherLineWidth,
+                optimizerAlgorithm,
+                optimizerSeed,
+                regionWeightingMode,
                 autoPaintResult,
                 autoPaintSwatches: autoPaintSliceData.virtualSwatches,
                 autoPaintFilamentSwatches: autoPaintSliceData.filamentSwatches,
+                calibrationLayerHeight,
             });
         } else {
             onChange({
@@ -200,6 +216,10 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
                 pixelSize,
                 filaments,
                 paintMode,
+                optimizerAlgorithm,
+                optimizerSeed,
+                regionWeightingMode,
+                calibrationLayerHeight,
             });
         }
     }, [
@@ -216,6 +236,10 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
         allowRepeatedSwaps,
         heightDithering,
         ditherLineWidth,
+        optimizerAlgorithm,
+        optimizerSeed,
+        regionWeightingMode,
+        calibrationLayerHeight,
         autoPaintResult,
         autoPaintSliceData,
     ]);
@@ -223,13 +247,23 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
     return (
         <div className="space-y-4">
             {/* Apply button */}
-            <div className="flex justify-end">
+            <div className="sticky top-0 z-20 -mx-1 px-1 py-1 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 border-b border-border/60 flex justify-end">
                 <Button
                     onClick={handleApply}
-                    className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold transition-all duration-200 shadow-md hover:shadow-lg active:scale-95 gap-1.5"
+                    disabled={isAutoPaintComputing}
+                    className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold transition-all duration-200 shadow-md hover:shadow-lg active:scale-95 gap-1.5 disabled:opacity-60"
                 >
-                    <Check className="w-4 h-4" />
-                    <span>Build 3D Model</span>
+                    {isAutoPaintComputing ? (
+                        <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>Computing...</span>
+                        </>
+                    ) : (
+                        <>
+                            <Check className="w-4 h-4" />
+                            <span>Build 3D Model</span>
+                        </>
+                    )}
                 </Button>
             </div>
 
@@ -288,6 +322,9 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
                     setAutoPaintMaxHeight={setAutoPaintMaxHeight}
                     autoPaintResult={autoPaintResult}
                     autoPaintSliceData={autoPaintSliceData}
+                    isComputing={isAutoPaintComputing}
+                    calibrationLayerHeight={calibrationLayerHeight}
+                    setCalibrationLayerHeight={setCalibrationLayerHeight}
                     filteredCount={filtered.length}
                     enhancedColorMatch={enhancedColorMatch}
                     setEnhancedColorMatch={handleEnhancedColorMatchChange}
@@ -297,6 +334,12 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
                     setHeightDithering={setHeightDithering}
                     ditherLineWidth={ditherLineWidth}
                     setDitherLineWidth={setDitherLineWidth}
+                    optimizerAlgorithm={optimizerAlgorithm}
+                    setOptimizerAlgorithm={setOptimizerAlgorithm}
+                    optimizerSeed={optimizerSeed}
+                    setOptimizerSeed={setOptimizerSeed}
+                    regionWeightingMode={regionWeightingMode}
+                    setRegionWeightingMode={setRegionWeightingMode}
                 />
 
                 {/* Manual Tab */}
@@ -331,29 +374,39 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
                         <Sortable
                             value={displayOrder.map(String)}
                             onValueChange={handleColorOrderChange}
-                            orientation="vertical"
-                        >
+                            orientation="vertical">
                             <SortableContent asChild>
                                 <div className="space-y-2">
-                                    {displayOrder.map((fi, idx) => {
-                                        const s = filtered[fi];
-                                        const val = colorSliceHeights[fi] ?? layerHeight;
-                                        const isFirst = idx === 0;
-                                        const minForRow = isFirst
-                                            ? Math.max(layerHeight, slicerFirstLayerHeight)
-                                            : layerHeight;
-                                        return (
-                                            <ThreeDColorRow
-                                                key={`${s.hex}-${fi}`}
-                                                fi={fi}
-                                                hex={s.hex}
-                                                value={val}
-                                                layerHeight={layerHeight}
-                                                minHeight={minForRow}
-                                                onChange={onRowChange}
-                                            />
-                                        );
-                                    })}
+                                    {displayOrder.length > 64 ? (
+                                        <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-md text-sm text-destructive-foreground">
+                                            <p className="font-semibold mb-2">Too many colors ({displayOrder.length})</p>
+                                            <p>
+                                                The image has more than 64 unique colors. Please reduce
+                                                the image to fewer colors in 2D mode using the quantization
+                                                tools before switching to 3D mode.
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        displayOrder.map((fi, idx) => {
+                                            const s = filtered[fi];
+                                            const val = colorSliceHeights[fi] ?? layerHeight;
+                                            const isFirst = idx === 0;
+                                            const minForRow = isFirst
+                                                ? Math.max(layerHeight, slicerFirstLayerHeight)
+                                                : layerHeight;
+                                            return (
+                                                <ThreeDColorRow
+                                                    key={`${s.hex}-${fi}`}
+                                                    fi={fi}
+                                                    hex={s.hex}
+                                                    value={val}
+                                                    layerHeight={layerHeight}
+                                                    minHeight={minForRow}
+                                                    onChange={onRowChange}
+                                                />
+                                            );
+                                        })
+                                    )}
                                 </div>
                             </SortableContent>
                             <SortableOverlay>
@@ -371,6 +424,8 @@ export default function ThreeDControls({ swatches, onChange, persisted }: ThreeD
                 slicerFirstLayerHeight={slicerFirstLayerHeight}
                 copied={copied}
                 onCopy={copyToClipboard}
+                tooManyColors={isInstructionOverLimit}
+                colorCount={instructionColorCount}
             />
         </div>
     );

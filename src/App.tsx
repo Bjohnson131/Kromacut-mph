@@ -27,6 +27,7 @@ import { useBuildWarning } from './hooks/useBuildWarning';
 import ResizableSplitter from './components/ResizableSplitter';
 import { ControlsPanel } from './components/ControlsPanel';
 import { usePaletteManager } from './hooks/usePaletteManager';
+import { UpdateChecker } from './components/UpdateChecker';
 import {
     AlertDialog,
     AlertDialogContent,
@@ -41,7 +42,10 @@ import {
 
 const AUTOPAINT_STORAGE_KEY = 'kromacut.autopaint.v1';
 
-type AutoPaintPersisted = Pick<ThreeDControlsStateShape, 'filaments' | 'paintMode'>;
+type AutoPaintPersisted = Pick<
+    ThreeDControlsStateShape,
+    'filaments' | 'paintMode' | 'optimizerAlgorithm' | 'optimizerSeed' | 'regionWeightingMode'
+>;
 
 const loadAutoPaintPersisted = (): AutoPaintPersisted | null => {
     try {
@@ -60,6 +64,9 @@ const loadAutoPaintPersisted = (): AutoPaintPersisted | null => {
         return {
             filaments: parsed.filaments,
             paintMode,
+            optimizerAlgorithm: parsed.optimizerAlgorithm,
+            optimizerSeed: parsed.optimizerSeed,
+            regionWeightingMode: parsed.regionWeightingMode,
         };
     } catch {
         return null;
@@ -99,7 +106,7 @@ function App(): React.ReactElement | null {
         logo,
         undefined
     );
-    const { swatches, swatchesLoading, invalidate, immediateOverride } = useSwatches(imageSrc);
+    const { swatches, swatchesLoading, imageDimensions, invalidate, immediateOverride } = useSwatches(imageSrc);
     // adjustments managed locally inside AdjustmentsPanel now
     // initial selectedPalette derived from initial weight above
     const inputRef = useRef<HTMLInputElement | null>(null);
@@ -171,6 +178,9 @@ function App(): React.ReactElement | null {
                 ...prev,
                 filaments: autopaintHydrated.filaments ?? prev.filaments,
                 paintMode: autopaintHydrated.paintMode ?? prev.paintMode,
+                optimizerAlgorithm: autopaintHydrated.optimizerAlgorithm ?? prev.optimizerAlgorithm,
+                optimizerSeed: autopaintHydrated.optimizerSeed ?? prev.optimizerSeed,
+                regionWeightingMode: autopaintHydrated.regionWeightingMode ?? prev.regionWeightingMode,
             }));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -182,8 +192,17 @@ function App(): React.ReactElement | null {
         saveAutoPaintPersisted({
             filaments: threeDState.filaments,
             paintMode: threeDState.paintMode ?? 'manual',
+            optimizerAlgorithm: threeDState.optimizerAlgorithm,
+            optimizerSeed: threeDState.optimizerSeed,
+            regionWeightingMode: threeDState.regionWeightingMode,
         });
-    }, [threeDState.filaments, threeDState.paintMode]);
+    }, [
+        threeDState.filaments,
+        threeDState.paintMode,
+        threeDState.optimizerAlgorithm,
+        threeDState.optimizerSeed,
+        threeDState.regionWeightingMode,
+    ]);
 
     // No auto-build on tab switch — the user must click "Build 3D Model" / "Apply Changes".
     useEffect(() => {
@@ -391,6 +410,7 @@ function App(): React.ReactElement | null {
                             ) : (
                                 <ThreeDControls
                                     swatches={swatches}
+                                    imageDimensions={imageDimensions}
                                     onChange={handleThreeDStateChange}
                                     persisted={threeDState}
                                 />
@@ -467,6 +487,9 @@ function App(): React.ReactElement | null {
                                         autoPaintEnabled={threeDState.paintMode === 'autopaint'}
                                         autoPaintTotalHeight={
                                             threeDState.autoPaintResult?.totalHeight
+                                        }
+                                        autoPaintFilamentOrder={
+                                            threeDState.autoPaintResult?.filamentOrder
                                         }
                                         enhancedColorMatch={threeDState.enhancedColorMatch}
                                         heightDithering={threeDState.heightDithering}
@@ -565,6 +588,9 @@ function App(): React.ReactElement | null {
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
+
+            {/* Update checker for Tauri desktop app */}
+            <UpdateChecker />
         </div>
     );
 }

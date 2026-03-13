@@ -3,6 +3,11 @@ export interface MeshData {
     indices: number[];
 }
 
+interface MeshYieldOptions {
+    yieldIntervalMs?: number;
+    onYield?: () => Promise<void>;
+}
+
 /**
  * Generates an optimized 3D mesh for a layer of voxel-like pixels using Maximal Rectangle Greedy Meshing.
  * This approach minimizes the triangle count by merging active regions into large rectangles.
@@ -21,18 +26,35 @@ export interface MeshData {
  * @param pixelSize XY scaling factor (usually mm per pixel)
  * @param heightScale Z scaling factor
  */
-export function generateGreedyMesh(
+export async function generateGreedyMesh(
     activePixels: Uint8Array | Uint8ClampedArray | boolean[],
     width: number,
     height: number,
     thickness: number,
     zOffset: number,
     pixelSize: number,
-    heightScale: number
-): MeshData {
+    heightScale: number,
+    options?: MeshYieldOptions
+): Promise<MeshData> {
     const positions: number[] = [];
     const indices: number[] = [];
     let vertCount = 0;
+
+    const yieldIntervalMs = options?.yieldIntervalMs ?? 8;
+    const yieldControl =
+        options?.onYield ??
+        (() =>
+            new Promise<void>((resolve) => {
+                requestAnimationFrame(() => resolve());
+            }));
+    let lastYield = performance.now();
+    const maybeYield = async () => {
+        const now = performance.now();
+        if (now - lastYield >= yieldIntervalMs) {
+            await yieldControl();
+            lastYield = performance.now();
+        }
+    };
 
     // Vertex welding maps: key = y * (width + 1) + x
     const topMap = new Map<number, number>();
@@ -113,6 +135,7 @@ export function generateGreedyMesh(
                 rectangles.push({ x, y, w, h });
             }
         }
+        await maybeYield();
     }
 
     // --- Build global vertex requirement sets for walls ---
@@ -142,6 +165,8 @@ export function generateGreedyMesh(
             verticesAtX.get(xCoord)!.add(y);
             verticesAtX.get(xCoord)!.add(y + h);
         }
+
+        await maybeYield();
     }
 
     // --- Generate Top and Bottom Faces for each rectangle ---
@@ -150,53 +175,81 @@ export function generateGreedyMesh(
     const sortedVerticesAtY = new Map<number, number[]>();
     for (const [y, set] of verticesAtY) {
         sortedVerticesAtY.set(y, Array.from(set).sort((a, b) => a - b));
+        await maybeYield();
     }
     const sortedVerticesAtX = new Map<number, number[]>();
     for (const [x, set] of verticesAtX) {
         sortedVerticesAtX.set(x, Array.from(set).sort((a, b) => a - b));
+        await maybeYield();
     }
+
+    const lowerBound = (arr: number[], target: number) => {
+        let lo = 0;
+        let hi = arr.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (arr[mid] < target) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    };
+
+    const upperBound = (arr: number[], target: number) => {
+        let lo = 0;
+        let hi = arr.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (arr[mid] <= target) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    };
 
     for (const rect of rectangles) {
         const { x, y, w, h } = rect;
 
-        // Collect all boundary vertices in CCW order
-        // We filter the global vertex lines to find points lying on our edges
-        
-        // Top edge: y, x -> x+w
-        const topX = sortedVerticesAtY.get(y)!.filter(v => v >= x && v <= x + w);
-        // Right edge: x+w, y -> y+h
-        const rightY = sortedVerticesAtX.get(x + w)!.filter(v => v >= y && v <= y + h);
-        // Bottom edge: y+h, x+w -> x (Reverse for CCW)
-        const bottomX = sortedVerticesAtY.get(y + h)!.filter(v => v >= x && v <= x + w).reverse();
-        // Left edge: x, y+h -> y (Reverse for CCW)
-        const leftY = sortedVerticesAtX.get(x)!.filter(v => v >= y && v <= y + h).reverse();
+        const topLine = sortedVerticesAtY.get(y)!;
+        const rightLine = sortedVerticesAtX.get(x + w)!;
+        const bottomLine = sortedVerticesAtY.get(y + h)!;
+        const leftLine = sortedVerticesAtX.get(x)!;
 
-        // Build the loop indices
-        // We exclude the last point of each segment as it's the start of the next
-        const buildLoop = (isTop: boolean) => {
-            const loop: number[] = [];
-            
-            // Top Edge (x to x+w)
-            for (let i = 0; i < topX.length - 1; i++) {
-                loop.push(getOrAddVertex(topX[i], y, isTop));
-            }
-            // Right Edge (y to y+h)
-            for (let i = 0; i < rightY.length - 1; i++) {
-                loop.push(getOrAddVertex(x + w, rightY[i], isTop));
-            }
-            // Bottom Edge (x+w to x)
-            for (let i = 0; i < bottomX.length - 1; i++) {
-                loop.push(getOrAddVertex(bottomX[i], y + h, isTop));
-            }
-            // Left Edge (y+h to y)
-            for (let i = 0; i < leftY.length - 1; i++) {
-                loop.push(getOrAddVertex(x, leftY[i], isTop));
-            }
-            return loop;
-        };
+        const topLo = lowerBound(topLine, x);
+        const topHi = upperBound(topLine, x + w);
+        const rightLo = lowerBound(rightLine, y);
+        const rightHi = upperBound(rightLine, y + h);
+        const bottomLo = lowerBound(bottomLine, x);
+        const bottomHi = upperBound(bottomLine, x + w);
+        const leftLo = lowerBound(leftLine, y);
+        const leftHi = upperBound(leftLine, y + h);
 
-        const topLoop = buildLoop(true);
-        const bottomLoop = buildLoop(false);
+        const boundary: Array<[number, number]> = [];
+
+        // Top edge: x -> x+w (exclude last point)
+        for (let i = topLo; i < topHi - 1; i++) {
+            boundary.push([topLine[i], y]);
+        }
+        // Right edge: y -> y+h (exclude last point)
+        for (let i = rightLo; i < rightHi - 1; i++) {
+            boundary.push([x + w, rightLine[i]]);
+        }
+        // Bottom edge: x+w -> x (exclude last point)
+        for (let i = bottomHi - 1; i > bottomLo; i--) {
+            boundary.push([bottomLine[i], y + h]);
+        }
+        // Left edge: y+h -> y (exclude last point)
+        for (let i = leftHi - 1; i > leftLo; i--) {
+            boundary.push([x, leftLine[i]]);
+        }
+
+        if (boundary.length < 3) continue;
+
+        const topLoop: number[] = new Array(boundary.length);
+        const bottomLoop: number[] = new Array(boundary.length);
+        for (let i = 0; i < boundary.length; i++) {
+            const [vx, vy] = boundary[i];
+            topLoop[i] = getOrAddVertex(vx, vy, true);
+            bottomLoop[i] = getOrAddVertex(vx, vy, false);
+        }
 
         // Triangulate (Fan from first vertex) - Shape is convex
         // Top Face (Normal +Z, CCW)
@@ -211,6 +264,8 @@ export function generateGreedyMesh(
         for (let i = 1; i < bottomLoop.length - 1; i++) {
             indices.push(b0, bottomLoop[i + 1], bottomLoop[i]);
         }
+
+        await maybeYield();
     }
 
     // --- Global Wall Generation ---
@@ -257,6 +312,8 @@ export function generateGreedyMesh(
                 eastWalls.get(wallX)!.push(y);
             }
         }
+
+        await maybeYield();
     }
 
     // Helper: merge wall segments respecting vertex positions
@@ -369,15 +426,19 @@ export function generateGreedyMesh(
     // Emit all walls
     for (const [y] of northWalls) {
         mergeAndEmitHorizontalWalls(northWalls, y, false);
+        await maybeYield();
     }
     for (const [y] of southWalls) {
         mergeAndEmitHorizontalWalls(southWalls, y, true);
+        await maybeYield();
     }
     for (const [x] of westWalls) {
         mergeAndEmitVerticalWalls(westWalls, x, false);
+        await maybeYield();
     }
     for (const [x] of eastWalls) {
         mergeAndEmitVerticalWalls(eastWalls, x, true);
+        await maybeYield();
     }
 
     return {
