@@ -1,0 +1,27 @@
+[package]
+name = "app"
+version = "2.3.2"
+description = "Kromacut - Multi-color lithophane 3D print generator"
+authors = ["vycdev"]
+license = "MIT"
+repository = "https://github.com/vycdev/Kromacut"
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.4", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.10.0", features = [] }
+tauri-plugin-log = "2"
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["full"] }

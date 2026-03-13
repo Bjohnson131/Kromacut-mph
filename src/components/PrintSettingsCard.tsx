@@ -23,6 +23,22 @@ export default function PrintSettingsCard({
     onReset,
     allDefault = false,
 }: PrintSettingsCardProps) {
+    // Validation helpers
+    const pixelSizeError =
+        pixelSize < 0.01 ? 'Minimum value is 0.01' : pixelSize > 10 ? 'Maximum value is 10' : '';
+    const layerHeightError =
+        layerHeight < 0.01
+            ? 'Minimum value is 0.01'
+            : layerHeight > 10
+              ? 'Maximum value is 10'
+              : '';
+    const firstLayerHeightError =
+        slicerFirstLayerHeight < 0
+            ? 'Minimum value is 0'
+            : slicerFirstLayerHeight > 10
+              ? 'Maximum value is 10'
+              : '';
+
     return (
         <Card className="p-4 border border-border/50">
             <div className="flex items-start justify-between gap-2">
@@ -58,16 +74,19 @@ export default function PrintSettingsCard({
                             min={0.01}
                             max={10}
                             step={0.01}
-                            value={pixelSize}
+                            value={Number.isNaN(pixelSize) || pixelSize === 0 ? '' : pixelSize}
+                            className={pixelSizeError ? 'border-red-500 focus-visible:ring-red-500' : ''}
                             onChange={(e) => {
-                                const v = Number(e.target.value);
-                                if (Number.isNaN(v)) return;
-                                onPixelSizeChange(Math.min(10, v));
+                                const v = e.target.valueAsNumber;
+                                onPixelSizeChange(Number.isNaN(v) ? 0 : v);
                             }}
                             onBlur={() => {
-                                onPixelSizeChange(Math.max(0.01, pixelSize));
+                                onPixelSizeChange(Math.max(0.01, Math.min(10, pixelSize || 0.01)));
                             }}
                         />
+                        {pixelSizeError && (
+                            <span className="text-xs text-red-500">{pixelSizeError}</span>
+                        )}
                     </label>
                 </div>
 
@@ -84,17 +103,19 @@ export default function PrintSettingsCard({
                             min={0.01}
                             max={10}
                             step={0.01}
-                            value={layerHeight}
+                            value={Number.isNaN(layerHeight) || layerHeight === 0 ? '' : layerHeight}
+                            className={layerHeightError ? 'border-red-500 focus-visible:ring-red-500' : ''}
                             onChange={(e) => {
-                                const v = Number(e.target.value);
-                                if (!Number.isNaN(v) && v >= 0 && v <= 10 && isFinite(v)) {
-                                    onLayerHeightChange(v);
-                                }
+                                const v = e.target.valueAsNumber;
+                                onLayerHeightChange(Number.isNaN(v) ? 0 : v);
                             }}
                             onBlur={() => {
-                                onLayerHeightChange(Math.max(0.01, layerHeight));
+                                onLayerHeightChange(Math.max(0.01, Math.min(10, layerHeight || 0.01)));
                             }}
                         />
+                        {layerHeightError && (
+                            <span className="text-xs text-red-500">{layerHeightError}</span>
+                        )}
                     </label>
                 </div>
 
@@ -113,13 +134,19 @@ export default function PrintSettingsCard({
                             min={0}
                             max={10}
                             step={0.01}
-                            value={slicerFirstLayerHeight}
+                            value={Number.isNaN(slicerFirstLayerHeight) ? '' : slicerFirstLayerHeight}
+                            className={firstLayerHeightError ? 'border-red-500 focus-visible:ring-red-500' : ''}
                             onChange={(e) => {
-                                const v = Number(e.target.value);
-                                if (Number.isNaN(v)) return;
-                                onSlicerFirstLayerHeightChange(Math.max(0, Math.min(10, v)));
+                                const v = e.target.valueAsNumber;
+                                onSlicerFirstLayerHeightChange(Number.isNaN(v) ? 0 : v);
+                            }}
+                            onBlur={() => {
+                                onSlicerFirstLayerHeightChange(Math.max(0, Math.min(10, slicerFirstLayerHeight || 0)));
                             }}
                         />
+                        {firstLayerHeightError && (
+                            <span className="text-xs text-red-500">{firstLayerHeightError}</span>
+                        )}
                     </label>
                 </div>
             </div>

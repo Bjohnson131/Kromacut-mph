@@ -7,6 +7,8 @@ interface PrintInstructionsProps {
     slicerFirstLayerHeight: number;
     copied: boolean;
     onCopy: () => void;
+    tooManyColors?: boolean;
+    colorCount?: number;
 }
 
 export default function PrintInstructions({
@@ -15,6 +17,8 @@ export default function PrintInstructions({
     slicerFirstLayerHeight,
     copied,
     onCopy,
+    tooManyColors = false,
+    colorCount = 0,
 }: PrintInstructionsProps) {
     return (
         <Card className="p-4 border border-border/50 mt-6">
@@ -30,10 +34,11 @@ export default function PrintInstructions({
                     onClick={onCopy}
                     title="Copy print instructions to clipboard"
                     aria-pressed={copied}
+                    disabled={tooManyColors}
                     className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 ${
                         copied
                             ? 'bg-green-600 text-white'
-                            : 'bg-primary text-primary-foreground hover:bg-primary/90'
+                            : 'bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed'
                     }`}
                 >
                     {copied ? '✓ Copied!' : 'Copy'}
@@ -71,7 +76,11 @@ export default function PrintInstructions({
                 {/* Start Color */}
                 <div>
                     <div className="font-semibold text-foreground mb-3">Start with Color</div>
-                    {swapPlan.length && swapPlan[0].type === 'start' ? (
+                    {tooManyColors ? (
+                        <div className="text-muted-foreground text-sm p-3 rounded-lg bg-muted/30">
+                            —
+                        </div>
+                    ) : swapPlan.length && swapPlan[0].type === 'start' ? (
                         (() => {
                             const sw = swapPlan[0].swatch;
                             return (
@@ -97,7 +106,12 @@ export default function PrintInstructions({
                 {/* Color Swap Plan */}
                 <div>
                     <div className="font-semibold text-foreground mb-2">Color Swap Plan</div>
-                    {swapPlan.length <= 1 ? (
+                    {tooManyColors ? (
+                        <div className="text-amber-600 text-sm p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                            Swap instructions are disabled for very large palettes ({colorCount}{' '}
+                            colors). Reduce the image to 64 colors or fewer in 2D mode first.
+                        </div>
+                    ) : swapPlan.length <= 1 ? (
                         <div className="text-muted-foreground text-sm p-3 rounded-lg bg-accent/5 border border-border/50">
                             Only one color configured — no swaps needed.
                         </div>

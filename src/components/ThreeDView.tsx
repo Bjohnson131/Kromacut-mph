@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import useThreeScene from '../hooks/useThreeScene';
 import { generateGreedyMesh } from '../lib/meshing';
+import { Slider } from '@/components/ui/slider';
+import { Layers } from 'lucide-react';
 
 interface ThreeDViewProps {
     imageSrc?: string | null;
@@ -19,6 +21,7 @@ interface ThreeDViewProps {
     // Auto-paint mode props
     autoPaintEnabled?: boolean;
     autoPaintTotalHeight?: number; // Total model height when auto-paint is enabled
+    autoPaintFilamentOrder?: string[]; // Filament IDs in order (for cache invalidation)
     enhancedColorMatch?: boolean; // Use color-distance mapping instead of luminance
     heightDithering?: boolean; // Floyd-Steinberg error diffusion on height map
     ditherLineWidth?: number; // Minimum dot size in mm for dithering
@@ -80,6 +83,7 @@ export default function ThreeDView({
     rebuildSignal = 0,
     autoPaintEnabled = false,
     autoPaintTotalHeight,
+    autoPaintFilamentOrder,
     enhancedColorMatch = false,
     heightDithering = false,
     ditherLineWidth = 0.42,
@@ -92,6 +96,8 @@ export default function ThreeDView({
         height: number;
         depth: number;
     } | null>(null);
+    const [previewHeight, setPreviewHeight] = useState<number | null>(null);
+    const [maxModelHeight, setMaxModelHeight] = useState(0);
     const { cameraRef, controlsRef, modelGroupRef, materialRef, requestRender } = useThreeScene(
         mountRef,
         setIsBuilding
@@ -114,6 +120,39 @@ export default function ThreeDView({
         }
     }, [controlsRef, isBuilding]);
 
+    // Update mesh visibility based on preview height slider
+    useEffect(() => {
+        const modelGroup = modelGroupRef.current;
+        if (!modelGroup || previewHeight === null) return;
+
+        modelGroup.traverse((child) => {
+            if (child instanceof THREE.Mesh && child.userData.baseZ !== undefined) {
+                const baseZ = child.userData.baseZ as number;
+                // Show mesh if any part of it is below or at the preview height
+                child.visible = baseZ < previewHeight;
+            }
+        });
+
+        requestRender();
+    }, [previewHeight, modelGroupRef, requestRender]);
+
+    const snapPreviewHeight = (value: number): number => {
+        const bounded = Math.max(0, Math.min(maxModelHeight, value));
+        if (layerHeight <= 0) return bounded;
+
+        const first = Math.max(0, slicerFirstLayerHeight || 0);
+        if (first <= 0) {
+            return Math.max(0, Math.min(maxModelHeight, Math.round(bounded / layerHeight) * layerHeight));
+        }
+
+        if (bounded <= first / 2) return 0;
+        if (bounded <= first + layerHeight / 2) return first;
+
+        const delta = Math.max(0, bounded - first);
+        const snapped = first + Math.round(delta / layerHeight) * layerHeight;
+        return Math.max(0, Math.min(maxModelHeight, snapped));
+    };
+
     // 2. Rebuild mesh geometry whenever inputs change (debounced, progressive, adaptive resolution)
     const buildTokenRef = useRef(0);
     const debounceTimerRef = useRef<number | null>(null);
@@ -131,6 +170,13 @@ export default function ThreeDView({
             lastRebuildRef.current = rebuildSignal;
         }
 
+        // Don't build if there are no layers configured
+        if (!colorOrder || colorOrder.length === 0 || !swatches || swatches.length === 0) {
+            modelGroup.clear();
+            setIsBuilding(false);
+            return;
+        }
+
         // Stable key of inputs to avoid duplicate builds when references unchanged
         const paramsKey = JSON.stringify({
             imageSrc,
@@ -143,6 +189,7 @@ export default function ThreeDView({
             heightScale,
             stepped,
             pixelColumns,
+            autoPaintFilamentOrder, // Include filament order to detect optimizer changes
         });
         if (paramsKey === lastParamsKeyRef.current) return; // nothing changed logically
         lastParamsKeyRef.current = paramsKey;
@@ -186,9 +233,7 @@ export default function ThreeDView({
                 const fullH = img.naturalHeight;
                 const { minX, minY, boxW, boxH } = bbox;
                 const totalUnitsBase = Math.max(1, colorOrder.length * boxH);
-                const totalUnits = autoPaintEnabled
-                    ? Math.max(1, totalUnitsBase + boxH)
-                    : totalUnitsBase;
+                const totalUnits = Math.max(1, totalUnitsBase + boxH);
 
                 const canvas = document.createElement('canvas');
                 canvas.width = fullW;
@@ -713,7 +758,7 @@ export default function ThreeDView({
                                 : colorSliceHeights[swatchIdx] || 0;
                         if (thickness <= 0.0001) continue;
 
-                        const topZ = cumulativeHeights[i];
+                        const topZ = i === 0 ? cumulativeHeights[0] : cumulativeHeights[i];
                         const baseZ = i === 0 ? 0 : cumulativeHeights[i - 1];
 
                         // Identify active pixels for this layer using precomputed height map
@@ -743,14 +788,15 @@ export default function ThreeDView({
                         if (activeCount === 0) continue;
 
                         // Generate mesh for this layer
-                        const { positions, indices } = generateGreedyMesh(
+                        const { positions, indices } = await generateGreedyMesh(
                             activePixels,
                             boxW,
                             boxH,
                             thickness,
                             baseZ,
                             pixelSize,
-                            heightScale
+                            heightScale,
+                            { yieldIntervalMs: 8 }
                         );
 
                         const geom = new THREE.BufferGeometry();
@@ -766,6 +812,9 @@ export default function ThreeDView({
                         });
 
                         const mesh = new THREE.Mesh(geom, mat);
+                        // Store layer Z range for preview slider
+                        mesh.userData.baseZ = baseZ;
+                        mesh.userData.topZ = topZ;
                         modelGroup.add(mesh);
 
                         if (performance.now() - lastYield > YIELD_MS) {
@@ -794,6 +843,37 @@ export default function ThreeDView({
                         }
                     });
 
+                    // Precompute each pixel's swatch layer position once.
+                    // This avoids re-running nearest-color matching for every layer.
+                    const pixelLayerPos = new Int16Array(boxW * boxH);
+                    pixelLayerPos.fill(-1);
+
+                    for (let y = 0; y < boxH; y++) {
+                        const py = minY + y;
+                        const rowOffset = py * fullW;
+                        const flippedRowOffset = (boxH - 1 - y) * boxW;
+
+                        for (let x = 0; x < boxW; x++) {
+                            const px = minX + x;
+                            const idx = (rowOffset + px) * 4;
+                            const a = data[idx + 3];
+                            if (a === 0) continue;
+
+                            const sIdx = nearestSwatchIndex(data[idx], data[idx + 1], data[idx + 2]);
+                            if (sIdx === -1) continue;
+
+                            const layerPos = layerIndexBySwatch[sIdx];
+                            pixelLayerPos[flippedRowOffset + x] = layerPos;
+                        }
+
+                        pushProgress((y + 1) / totalUnits);
+                        if (performance.now() - lastYield > YIELD_MS) {
+                            await new Promise((r) => requestAnimationFrame(r));
+                            if (token !== buildTokenRef.current) return;
+                            lastYield = performance.now();
+                        }
+                    }
+
                     // Iterate each color layer and build a mesh
                     for (let i = 0; i < colorOrder.length; i++) {
                         if (token !== buildTokenRef.current) return;
@@ -811,6 +891,7 @@ export default function ThreeDView({
                         if (thickness <= 0.0001) continue; // Skip empty layers
 
                         const baseZ = i === 0 ? 0 : cumulativeHeights[i - 1];
+                        const topZ = baseZ + thickness * heightScale;
 
                         // Identify active pixels for this layer
                         // Pixel is active if its color index maps to a layer >= i
@@ -818,35 +899,15 @@ export default function ThreeDView({
                         let activeCount = 0;
 
                         for (let y = 0; y < boxH; y++) {
+                            const rowOffset = y * boxW;
                             for (let x = 0; x < boxW; x++) {
-                                const px = minX + x;
-                                const py = minY + y;
-                                const idx = (py * fullW + px) * 4;
-                                const r = data[idx];
-                                const g = data[idx + 1];
-                                const b = data[idx + 2];
-                                const a = data[idx + 3];
-
-                                if (a > 0) {
-                                    const sIdx = nearestSwatchIndex(r, g, b);
-                                    if (sIdx !== -1) {
-                                        // Find which layer this swatch belongs to
-                                        // We need to know if the swatch's layer position >= i
-                                        // swatches are mapped to order by colorOrder array
-                                        // colorOrder[pos] = sIdx
-                                        // so we find pos where colorOrder[pos] == sIdx
-                                        const layerPos = layerIndexBySwatch[sIdx];
-                                        if (layerPos >= i) {
-                                            // Flip Y axis: Image Y (0=top) -> Grid Y (0=bottom)
-                                            // We want Image Top (0) to be at Grid High Y (boxH-1) => 3D High Y
-                                            // So map y -> boxH - 1 - y
-                                            activePixels[(boxH - 1 - y) * boxW + x] = 1;
-                                            activeCount++;
-                                        }
-                                    }
+                                const mapIdx = rowOffset + x;
+                                if (pixelLayerPos[mapIdx] >= i) {
+                                    activePixels[mapIdx] = 1;
+                                    activeCount++;
                                 }
                             }
-                            pushProgress((i * boxH + (y + 1)) / totalUnits);
+                            pushProgress((boxH + i * boxH + (y + 1)) / totalUnits);
                             if (performance.now() - lastYield > YIELD_MS) {
                                 await new Promise((r) => requestAnimationFrame(r));
                                 if (token !== buildTokenRef.current) return;
@@ -857,14 +918,15 @@ export default function ThreeDView({
                         if (activeCount === 0) continue;
 
                         // Generate Optimized Greedy Mesh
-                        const { positions, indices } = generateGreedyMesh(
+                        const { positions, indices } = await generateGreedyMesh(
                             activePixels,
                             boxW,
                             boxH,
                             thickness,
                             baseZ,
                             pixelSize,
-                            heightScale
+                            heightScale,
+                            { yieldIntervalMs: 8 }
                         );
 
                         const geom = new THREE.BufferGeometry();
@@ -882,7 +944,9 @@ export default function ThreeDView({
                         // Note: generateGreedyMesh returns world-space coordinates (scaled by pixelSize/heightScale)
                         // so we do not need to apply scale/position to the mesh itself.
                         const mesh = new THREE.Mesh(geom, mat);
-
+                        // Store layer Z range for preview slider
+                        mesh.userData.baseZ = baseZ;
+                        mesh.userData.topZ = topZ;
                         modelGroup.add(mesh);
 
                         if (performance.now() - lastYield > YIELD_MS) {
@@ -913,6 +977,9 @@ export default function ThreeDView({
                     height: finalH * pixelSize,
                     depth: maxDepth,
                 });
+                // Set max height for layer preview slider
+                setMaxModelHeight(box.max.z);
+                setPreviewHeight(box.max.z); // Start at full height
 
                 // Auto-frame
                 try {
@@ -1022,6 +1089,7 @@ export default function ThreeDView({
         rebuildSignal,
         autoPaintEnabled,
         autoPaintTotalHeight,
+        autoPaintFilamentOrder,
         enhancedColorMatch,
         heightDithering,
         ditherLineWidth,
@@ -1059,6 +1127,36 @@ export default function ThreeDView({
                 >
                     Model: {modelDimensions.width.toFixed(1)}×{modelDimensions.height.toFixed(1)}×
                     {modelDimensions.depth.toFixed(1)} mm
+                </div>
+            )}
+            {/* Layer Preview Slider */}
+            {!isBuilding && maxModelHeight > 0 && previewHeight !== null && (
+                <div className="absolute bottom-4 left-4 right-4 bg-background/90 backdrop-blur-sm border border-border/50 rounded-lg p-3 shadow-lg z-10">
+                    <div className="flex items-center gap-3">
+                        <Layers className="w-4 h-4 text-primary flex-shrink-0" />
+                        <div className="flex-1 space-y-1.5">
+                            <div className="flex items-center justify-between text-xs">
+                                <span className="text-muted-foreground font-medium">
+                                    Layer Preview
+                                </span>
+                                <span className="text-foreground font-mono font-semibold">
+                                    {previewHeight.toFixed(2)} mm
+                                </span>
+                            </div>
+                            <Slider
+                                value={[previewHeight]}
+                                onValueChange={(v) => setPreviewHeight(snapPreviewHeight(v[0]))}
+                                min={0}
+                                max={maxModelHeight}
+                                step={0.01}
+                                className="w-full"
+                            />
+                            <div className="flex justify-between text-[10px] text-muted-foreground">
+                                <span>Base (0)</span>
+                                <span>Top ({maxModelHeight.toFixed(2)})</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

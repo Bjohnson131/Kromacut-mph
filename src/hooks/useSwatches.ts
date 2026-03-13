@@ -11,6 +11,7 @@ export interface SwatchEntry {
 export function useSwatches(imageSrc: string | null) {
     const [swatches, setSwatches] = useState<SwatchEntry[]>([]);
     const [loading, setLoading] = useState(false);
+    const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null);
     const runRef = useRef(0);
     const SWATCH_CAP = 2 ** 14; // matches previous constant
 
@@ -31,6 +32,7 @@ export function useSwatches(imageSrc: string | null) {
             if (!imageSrc) {
                 runRef.current++;
                 setSwatches([]);
+                setImageDimensions(null);
                 setLoading(false);
                 return;
             }
@@ -47,6 +49,7 @@ export function useSwatches(imageSrc: string | null) {
                 if (runId !== runRef.current || cancelled) return;
                 const w = img.naturalWidth;
                 const h = img.naturalHeight;
+                setImageDimensions({ width: w, height: h });
                 const TILE = 1024;
                 const map = new Map<number, number>();
                 const tile = document.createElement('canvas');
@@ -147,6 +150,7 @@ export function useSwatches(imageSrc: string | null) {
     return {
         swatches,
         swatchesLoading: loading,
+        imageDimensions,
         invalidate,
         immediateOverride,
     };

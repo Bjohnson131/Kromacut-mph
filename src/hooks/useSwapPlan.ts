@@ -14,6 +14,7 @@ export interface UseSwapPlanOptions {
     slicerFirstLayerHeight: number;
     paintMode: 'manual' | 'autopaint';
     autoPaintResult?: AutoPaintResult;
+    disabled?: boolean;
 }
 
 export function useSwapPlan({
@@ -24,8 +25,13 @@ export function useSwapPlan({
     slicerFirstLayerHeight,
     paintMode,
     autoPaintResult,
+    disabled = false,
 }: UseSwapPlanOptions) {
     const swapPlan = useMemo(() => {
+        if (disabled) {
+            return [] as SwapEntry[];
+        }
+
         // When auto-paint is active and we have computed layers, use those
         if (paintMode === 'autopaint' && autoPaintResult && autoPaintResult.layers.length > 0) {
             const plan: SwapEntry[] = [];
@@ -103,6 +109,7 @@ export function useSwapPlan({
         slicerFirstLayerHeight,
         paintMode,
         autoPaintResult,
+        disabled,
     ]);
 
     // Build a plain-text representation of the instructions for copying
