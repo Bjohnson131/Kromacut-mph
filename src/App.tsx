@@ -521,6 +521,7 @@ function App(): React.ReactElement | null {
                                         enhancedColorMatch={threeDState.enhancedColorMatch}
                                         heightDithering={threeDState.heightDithering}
                                         ditherLineWidth={threeDState.ditherLineWidth}
+                                        smoothMeshing={threeDState.smoothMeshing}
                                     />
                                     {exportingSTL &&
                                         (() => {

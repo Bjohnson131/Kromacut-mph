@@ -1,6 +1,424 @@
+import { ShapeUtils, Vector2 } from 'three';
+
 export interface MeshData {
     positions: Float32Array;
     indices: number[];
+}
+
+// ============================================================================
+// Smooth Contour Meshing
+// ============================================================================
+
+const SMOOTH_SIMPLIFY_EPSILON = 0.75;
+const SMOOTH_CHAIKIN_ITERATIONS = 2;
+const SMOOTH_CHAIKIN_WEIGHT = 0.2;
+const LOOP_EPSILON = 1e-6;
+
+const pointDistanceSq = (a: Vector2, b: Vector2) => {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return dx * dx + dy * dy;
+};
+
+function simplifyLoop(loop: Vector2[]): Vector2[] {
+    let points = loop.filter(
+        (point, index) =>
+            index === 0 || pointDistanceSq(point, loop[index - 1]) > LOOP_EPSILON * LOOP_EPSILON
+    );
+
+    if (
+        points.length > 1 &&
+        pointDistanceSq(points[0], points[points.length - 1]) <= LOOP_EPSILON * LOOP_EPSILON
+    ) {
+        points = points.slice(0, -1);
+    }
+
+    let changed = true;
+    while (changed && points.length >= 3) {
+        changed = false;
+        const nextPoints: Vector2[] = [];
+
+        for (let i = 0; i < points.length; i++) {
+            const prev = points[(i - 1 + points.length) % points.length];
+            const curr = points[i];
+            const next = points[(i + 1) % points.length];
+
+            const ax = curr.x - prev.x;
+            const ay = curr.y - prev.y;
+            const bx = next.x - curr.x;
+            const by = next.y - curr.y;
+            const cross = ax * by - ay * bx;
+            const dot = ax * bx + ay * by;
+
+            if (Math.abs(cross) <= LOOP_EPSILON && dot >= 0) {
+                changed = true;
+                continue;
+            }
+
+            nextPoints.push(curr);
+        }
+
+        if (nextPoints.length >= 3) {
+            points = nextPoints;
+        } else {
+            break;
+        }
+    }
+
+    return points;
+}
+
+const perpendicularDistanceToLine = (point: Vector2, start: Vector2, end: Vector2) => {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const lenSq = dx * dx + dy * dy;
+
+    if (lenSq <= LOOP_EPSILON * LOOP_EPSILON) {
+        return Math.sqrt(pointDistanceSq(point, start));
+    }
+
+    return Math.abs(dy * point.x - dx * point.y + end.x * start.y - end.y * start.x) / Math.sqrt(lenSq);
+};
+
+function ramerDouglasPeucker(points: Vector2[], epsilon: number): Vector2[] {
+    if (points.length <= 2) return points.map((point) => point.clone());
+
+    let maxDistance = -1;
+    let splitIndex = -1;
+
+    for (let i = 1; i < points.length - 1; i++) {
+        const distance = perpendicularDistanceToLine(points[i], points[0], points[points.length - 1]);
+        if (distance > maxDistance) {
+            maxDistance = distance;
+            splitIndex = i;
+        }
+    }
+
+    if (maxDistance <= epsilon || splitIndex === -1) {
+        return [points[0].clone(), points[points.length - 1].clone()];
+    }
+
+    const left = ramerDouglasPeucker(points.slice(0, splitIndex + 1), epsilon);
+    const right = ramerDouglasPeucker(points.slice(splitIndex), epsilon);
+    return [...left.slice(0, -1), ...right];
+}
+
+function selectLoopAnchor(loop: Vector2[]): number {
+    let bestIndex = 0;
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < loop.length; i++) {
+        const prev = loop[(i - 1 + loop.length) % loop.length];
+        const curr = loop[i];
+        const next = loop[(i + 1) % loop.length];
+
+        const ax = curr.x - prev.x;
+        const ay = curr.y - prev.y;
+        const bx = next.x - curr.x;
+        const by = next.y - curr.y;
+        const turn = Math.abs(ax * by - ay * bx);
+        const span = Math.hypot(ax, ay) + Math.hypot(bx, by);
+        const score = turn * 10 + span;
+
+        if (
+            score > bestScore ||
+            (Math.abs(score - bestScore) <= LOOP_EPSILON &&
+                (curr.y < loop[bestIndex].y ||
+                    (curr.y === loop[bestIndex].y && curr.x < loop[bestIndex].x)))
+        ) {
+            bestScore = score;
+            bestIndex = i;
+        }
+    }
+
+    return bestIndex;
+}
+
+function simplifyAliasedLoop(loop: Vector2[]): Vector2[] {
+    if (loop.length < 5) return loop.map((point) => point.clone());
+
+    const anchor = selectLoopAnchor(loop);
+    const rotated = [...loop.slice(anchor), ...loop.slice(0, anchor)];
+    const simplified = ramerDouglasPeucker([...rotated, rotated[0]], SMOOTH_SIMPLIFY_EPSILON)
+        .slice(0, -1);
+
+    return simplified.length >= 3 ? simplifyLoop(simplified) : loop.map((point) => point.clone());
+}
+
+function chaikinSmoothLoop(loop: Vector2[]): Vector2[] {
+    let points = loop.map((point) => point.clone());
+
+    for (let iteration = 0; iteration < SMOOTH_CHAIKIN_ITERATIONS; iteration++) {
+        if (points.length < 3) break;
+
+        const next: Vector2[] = [];
+        for (let i = 0; i < points.length; i++) {
+            const current = points[i];
+            const following = points[(i + 1) % points.length];
+            const q = current.clone().lerp(following, SMOOTH_CHAIKIN_WEIGHT);
+            const r = current.clone().lerp(following, 1 - SMOOTH_CHAIKIN_WEIGHT);
+
+            if (
+                next.length === 0 ||
+                pointDistanceSq(q, next[next.length - 1]) > LOOP_EPSILON * LOOP_EPSILON
+            ) {
+                next.push(q);
+            }
+            if (
+                next.length === 0 ||
+                pointDistanceSq(r, next[next.length - 1]) > LOOP_EPSILON * LOOP_EPSILON
+            ) {
+                next.push(r);
+            }
+        }
+
+        points = simplifyLoop(next);
+    }
+
+    return points.length >= 3 ? points : loop.map((point) => point.clone());
+}
+
+function smoothLoop(loop: Vector2[]): Vector2[] {
+    const simplified = simplifyAliasedLoop(loop);
+    return chaikinSmoothLoop(simplified);
+}
+
+function traceComponentLoops(
+    componentCells: number[],
+    activePixels: Uint8Array | Uint8ClampedArray | boolean[],
+    width: number,
+    height: number
+): Vector2[][] {
+    const stride = width + 1;
+    const nextByStart = new Map<number, number>();
+    const addEdge = (sx: number, sy: number, ex: number, ey: number) => {
+        nextByStart.set(sy * stride + sx, ey * stride + ex);
+    };
+
+    for (const cell of componentCells) {
+        const x = cell % width;
+        const y = Math.floor(cell / width);
+
+        if (y === 0 || !activePixels[(y - 1) * width + x]) {
+            addEdge(x, y, x + 1, y);
+        }
+        if (x === width - 1 || !activePixels[y * width + (x + 1)]) {
+            addEdge(x + 1, y, x + 1, y + 1);
+        }
+        if (y === height - 1 || !activePixels[(y + 1) * width + x]) {
+            addEdge(x + 1, y + 1, x, y + 1);
+        }
+        if (x === 0 || !activePixels[y * width + (x - 1)]) {
+            addEdge(x, y + 1, x, y);
+        }
+    }
+
+    const visitedStarts = new Set<number>();
+    const loops: Vector2[][] = [];
+
+    for (const [start] of nextByStart) {
+        if (visitedStarts.has(start)) continue;
+
+        const loop: Vector2[] = [];
+        let current = start;
+        let guard = 0;
+
+        while (!visitedStarts.has(current) && guard <= nextByStart.size) {
+            visitedStarts.add(current);
+            loop.push(new Vector2(current % stride, Math.floor(current / stride)));
+            const next = nextByStart.get(current);
+            if (next === undefined) break;
+            current = next;
+            guard++;
+        }
+
+        if (current === start && loop.length >= 3) {
+            loops.push(simplifyLoop(loop));
+        }
+    }
+
+    return loops;
+}
+
+function addExtrudedLoopWalls(
+    indices: number[],
+    baseVert: number,
+    topVertexCount: number,
+    loopOffset: number,
+    loop: Vector2[]
+) {
+    const isClockwise = ShapeUtils.isClockWise(loop);
+
+    for (let i = 0; i < loop.length; i++) {
+        const topA = baseVert + loopOffset + i;
+        const topB = baseVert + loopOffset + ((i + 1) % loop.length);
+        const bottomA = baseVert + topVertexCount + loopOffset + i;
+        const bottomB = baseVert + topVertexCount + loopOffset + ((i + 1) % loop.length);
+
+        if (isClockwise) {
+            indices.push(topA, topB, bottomB);
+            indices.push(topA, bottomB, bottomA);
+        } else {
+            indices.push(topA, bottomB, topB);
+            indices.push(topA, bottomA, bottomB);
+        }
+    }
+}
+
+/**
+ * Generates a smooth mesh by extracting exact voxel boundaries and rounding convex corners.
+ * This preserves topology while producing cleaner diagonal edges than raw voxel extrusions.
+ */
+export async function generateSmoothMesh(
+    activePixels: Uint8Array | Uint8ClampedArray | boolean[],
+    width: number,
+    height: number,
+    thickness: number,
+    zOffset: number,
+    pixelSize: number,
+    heightScale: number,
+    options?: MeshYieldOptions
+): Promise<MeshData> {
+    const positions: number[] = [];
+    const indices: number[] = [];
+
+    const yieldControl =
+        options?.onYield ??
+        (() => new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); }));
+    const yieldIntervalMs = options?.yieldIntervalMs ?? 8;
+    let lastYield = performance.now();
+    const maybeYield = async () => {
+        if (performance.now() - lastYield >= yieldIntervalMs) {
+            await yieldControl();
+            lastYield = performance.now();
+        }
+    };
+
+    const scaledThickness = thickness * heightScale;
+    const scaledZOffset = zOffset * heightScale;
+    const zBottom = scaledZOffset;
+    const zTop = scaledZOffset + scaledThickness;
+
+    const visited = new Uint8Array(width * height);
+    const queue: number[] = [];
+
+    for (let start = 0; start < activePixels.length; start++) {
+        if (!activePixels[start] || visited[start]) continue;
+
+        const componentCells: number[] = [];
+        queue.length = 0;
+        queue.push(start);
+        visited[start] = 1;
+
+        for (let head = 0; head < queue.length; head++) {
+            const cell = queue[head];
+            componentCells.push(cell);
+
+            const x = cell % width;
+            const y = Math.floor(cell / width);
+            const north = cell - width;
+            const south = cell + width;
+            const west = cell - 1;
+            const east = cell + 1;
+
+            if (y > 0 && activePixels[north] && !visited[north]) {
+                visited[north] = 1;
+                queue.push(north);
+            }
+            if (y + 1 < height && activePixels[south] && !visited[south]) {
+                visited[south] = 1;
+                queue.push(south);
+            }
+            if (x > 0 && activePixels[west] && !visited[west]) {
+                visited[west] = 1;
+                queue.push(west);
+            }
+            if (x + 1 < width && activePixels[east] && !visited[east]) {
+                visited[east] = 1;
+                queue.push(east);
+            }
+
+            if ((head & 255) === 0) {
+                await maybeYield();
+            }
+        }
+
+        const loops = traceComponentLoops(componentCells, activePixels, width, height)
+            .filter((loop) => loop.length >= 3)
+            .sort((a, b) => Math.abs(ShapeUtils.area(b)) - Math.abs(ShapeUtils.area(a)));
+
+        if (loops.length === 0) {
+            await maybeYield();
+            continue;
+        }
+
+        let outer = loops[0].map((point) => point.clone());
+        if (!ShapeUtils.isClockWise(outer)) {
+            outer.reverse();
+        }
+
+        const holes = loops.slice(1).map((loop) => {
+            const normalized = loop.map((point) => point.clone());
+            if (ShapeUtils.isClockWise(normalized)) {
+                normalized.reverse();
+            }
+            return normalized;
+        });
+
+        outer = smoothLoop(outer);
+        const roundedHoles = holes.map(smoothLoop);
+
+        if (!ShapeUtils.isClockWise(outer)) {
+            outer.reverse();
+        }
+        for (const hole of roundedHoles) {
+            if (ShapeUtils.isClockWise(hole)) {
+                hole.reverse();
+            }
+        }
+
+        const topLoops = [outer, ...roundedHoles].filter((loop) => loop.length >= 3);
+        if (topLoops.length === 0) {
+            await maybeYield();
+            continue;
+        }
+
+        const contour = topLoops[0];
+        const holeLoops = topLoops.slice(1);
+        const faces = ShapeUtils.triangulateShape(contour, holeLoops);
+        const topVertices = [contour, ...holeLoops].flat();
+        const topVertexCount = topVertices.length;
+        const baseVert = positions.length / 3;
+
+        for (const point of topVertices) {
+            positions.push(point.x * pixelSize, point.y * pixelSize, zTop);
+        }
+        for (const point of topVertices) {
+            positions.push(point.x * pixelSize, point.y * pixelSize, zBottom);
+        }
+
+        for (const [a, b, c] of faces) {
+            indices.push(baseVert + a, baseVert + b, baseVert + c);
+            indices.push(
+                baseVert + topVertexCount + a,
+                baseVert + topVertexCount + c,
+                baseVert + topVertexCount + b
+            );
+        }
+
+        let loopOffset = 0;
+        for (const loop of topLoops) {
+            addExtrudedLoopWalls(indices, baseVert, topVertexCount, loopOffset, loop);
+            loopOffset += loop.length;
+        }
+
+        await maybeYield();
+    }
+
+    return {
+        positions: new Float32Array(positions),
+        indices,
+    };
 }
 
 interface MeshYieldOptions {

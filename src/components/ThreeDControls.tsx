@@ -267,6 +267,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         optimizerSeed,
         regionWeightingMode,
         calibrationLayerHeight,
+        smoothMeshing,
         autoPaintResult,
         autoPaintSliceData,
     ]);
