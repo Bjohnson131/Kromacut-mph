@@ -18,10 +18,12 @@
 /**
  * Single measurement point: layer count and measured transmission
  */
+export type CalibrationRgb = [number, number, number];
+
 export interface CalibrationMeasurement {
     layers: number; // Number of layers printed
-    rgb: [number, number, number]; // Measured RGB value (0-255)
-    transmission: [number, number, number]; // Normalized transmission (0-1)
+    rgb: CalibrationRgb; // Measured RGB value (0-255)
+    transmission: CalibrationRgb; // Normalized transmission (0-1)
 }
 
 /**
@@ -30,7 +32,8 @@ export interface CalibrationMeasurement {
 export interface CalibrationResult {
     color: string; // Hex color
     measurements: CalibrationMeasurement[];
-    td: [number, number, number]; // Fitted TD for R, G, B channels (mm)
+    whiteReference?: CalibrationRgb; // Measured backlight RGB used to normalize transmission
+    td: CalibrationRgb; // Fitted TD for R, G, B channels (mm)
     tdSingleValue: number; // Weighted average TD (mm)
     confidence: number; // 0-1 score based on fit quality
     calibrationDate: string; // ISO timestamp
@@ -43,6 +46,7 @@ export interface CalibrationResult {
 export interface CalibrationState {
     filamentColor: string;
     measurements: CalibrationMeasurement[];
+    whiteReference: CalibrationRgb;
     currentStep: 'intro' | 'print' | 'measure' | 'results';
     layerHeight: number; // mm per layer
 }
@@ -52,9 +56,49 @@ export interface CalibrationState {
 // ============================================================================
 
 export const RECOMMENDED_LAYER_COUNTS = [2, 4, 6, 8, 10];
+export const DEFAULT_WHITE_REFERENCE: CalibrationRgb = [255, 255, 255];
 const MIN_MEASUREMENTS = 3;
 const CONFIDENCE_THRESHOLD_EXCELLENT = 0.9;
 const CONFIDENCE_THRESHOLD_GOOD = 0.7;
+
+const clampRgbChannel = (value: number, min: number) => {
+    if (!Number.isFinite(value)) return min;
+    return Math.min(255, Math.max(min, Math.round(value)));
+};
+
+function sanitizeWhiteReference(
+    whiteReference: CalibrationRgb = DEFAULT_WHITE_REFERENCE
+): CalibrationRgb {
+    return [
+        clampRgbChannel(whiteReference[0], 1),
+        clampRgbChannel(whiteReference[1], 1),
+        clampRgbChannel(whiteReference[2], 1),
+    ];
+}
+
+export function validateWhiteReference(whiteReference: CalibrationRgb): {
+    valid: boolean;
+    error?: string;
+} {
+    const [r, g, b] = whiteReference;
+    if (r < 1 || r > 255 || g < 1 || g > 255 || b < 1 || b > 255) {
+        return {
+            valid: false,
+            error: 'White reference RGB values must be between 1 and 255',
+        };
+    }
+    return { valid: true };
+}
+
+export function normalizeCalibrationMeasurements(
+    measurements: CalibrationMeasurement[],
+    whiteReference: CalibrationRgb = DEFAULT_WHITE_REFERENCE
+): CalibrationMeasurement[] {
+    return measurements.map((measurement) => ({
+        ...measurement,
+        transmission: rgbToTransmission(measurement.rgb, whiteReference),
+    }));
+}
 
 // ============================================================================
 // Core Calibration Algorithm
@@ -73,7 +117,8 @@ const CONFIDENCE_THRESHOLD_GOOD = 0.7;
  */
 export function calculateTDFromMeasurements(
     measurements: CalibrationMeasurement[],
-    layerHeight: number
+    layerHeight: number,
+    whiteReference: CalibrationRgb = DEFAULT_WHITE_REFERENCE
 ): { td: [number, number, number]; tdSingleValue: number; confidence: number } {
     if (measurements.length < MIN_MEASUREMENTS) {
         throw new Error(
@@ -82,7 +127,8 @@ export function calculateTDFromMeasurements(
     }
 
     // Sort measurements by layer count
-    const sorted = [...measurements].sort((a, b) => a.layers - b.layers);
+    const normalizedMeasurements = normalizeCalibrationMeasurements(measurements, whiteReference);
+    const sorted = normalizedMeasurements.sort((a, b) => a.layers - b.layers);
 
     // Compute TD for each channel independently
     const tdChannels: [number, number, number] = [0, 0, 0];
@@ -163,10 +209,18 @@ function fitTDForChannel(
 
 /**
  * Convert measured RGB values to normalized transmission values.
- * Assumes white backlight (255, 255, 255) as reference.
+ * Uses a measured white reference so camera and backlight tint are normalized out.
  */
-export function rgbToTransmission(rgb: [number, number, number]): [number, number, number] {
-    return [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
+export function rgbToTransmission(
+    rgb: CalibrationRgb,
+    whiteReference: CalibrationRgb = DEFAULT_WHITE_REFERENCE
+): CalibrationRgb {
+    const reference = sanitizeWhiteReference(whiteReference);
+    return [
+        Math.max(0, Math.min(1, rgb[0] / reference[0])),
+        Math.max(0, Math.min(1, rgb[1] / reference[1])),
+        Math.max(0, Math.min(1, rgb[2] / reference[2])),
+    ];
 }
 
 /**
@@ -177,8 +231,9 @@ export function predictTransmission(
     filamentColor: string,
     layers: number,
     layerHeight: number,
-    td: [number, number, number]
-): [number, number, number] {
+    td: [number, number, number],
+    whiteReference: CalibrationRgb = DEFAULT_WHITE_REFERENCE
+): CalibrationRgb {
     const thickness = layers * layerHeight;
 
     // Parse filament color
@@ -192,11 +247,13 @@ export function predictTransmission(
         Math.pow(10, -thickness / td[2]),
     ];
 
-    // Tint white backlight by filament color
+    const reference = sanitizeWhiteReference(whiteReference);
+
+    // Tint the measured white-reference backlight by filament color
     return [
-        Math.round(transmission[0] * (rgb[0] / 255) * 255),
-        Math.round(transmission[1] * (rgb[1] / 255) * 255),
-        Math.round(transmission[2] * (rgb[2] / 255) * 255),
+        Math.round(transmission[0] * (rgb[0] / 255) * reference[0]),
+        Math.round(transmission[1] * (rgb[1] / 255) * reference[1]),
+        Math.round(transmission[2] * (rgb[2] / 255) * reference[2]),
     ];
 }
 
@@ -270,7 +327,8 @@ export function getConfidenceColor(confidence: number): string {
  * Validate a calibration measurement
  */
 export function validateMeasurement(
-    measurement: CalibrationMeasurement
+    measurement: CalibrationMeasurement,
+    whiteReference: CalibrationRgb = DEFAULT_WHITE_REFERENCE
 ): { valid: boolean; error?: string } {
     if (measurement.layers < 1 || measurement.layers > 50) {
         return { valid: false, error: 'Layer count must be between 1 and 50' };
@@ -281,7 +339,7 @@ export function validateMeasurement(
         return { valid: false, error: 'RGB values must be between 0 and 255' };
     }
 
-    const [tR, tG, tB] = measurement.transmission;
+    const [tR, tG, tB] = rgbToTransmission(measurement.rgb, whiteReference);
     if (tR < 0 || tR > 1 || tG < 0 || tG > 1 || tB < 0 || tB > 1) {
         return { valid: false, error: 'Transmission values must be between 0 and 1' };
     }
@@ -292,10 +350,18 @@ export function validateMeasurement(
 /**
  * Check if measurements are ready for TD calculation
  */
-export function canCalculateTD(measurements: CalibrationMeasurement[]): {
+export function canCalculateTD(
+    measurements: CalibrationMeasurement[],
+    whiteReference: CalibrationRgb = DEFAULT_WHITE_REFERENCE
+): {
     ready: boolean;
     reason?: string;
 } {
+    const whiteReferenceValidation = validateWhiteReference(whiteReference);
+    if (!whiteReferenceValidation.valid) {
+        return { ready: false, reason: whiteReferenceValidation.error };
+    }
+
     if (measurements.length < MIN_MEASUREMENTS) {
         return {
             ready: false,
@@ -311,7 +377,7 @@ export function canCalculateTD(measurements: CalibrationMeasurement[]): {
 
     // Validate each measurement
     for (const measurement of measurements) {
-        const validation = validateMeasurement(measurement);
+        const validation = validateMeasurement(measurement, whiteReference);
         if (!validation.valid) {
             return { ready: false, reason: validation.error };
         }
@@ -354,6 +420,7 @@ export function getCalibrationInstructions(layerHeight: number): string[] {
         `Use your filament color with 100% infill.`,
         `Layer height: ${layerHeight.toFixed(2)}mm.`,
         `Place patches on a backlit white surface (e.g., phone screen at max brightness).`,
+        `Measure the bare backlight first and enter that RGB as the white reference.`,
         `Photograph patches under consistent lighting.`,
         `Use color picker tool to sample RGB values from center of each patch.`,
         `Enter measurements in the calibration wizard.`,
@@ -375,14 +442,33 @@ export function importCalibration(json: string): CalibrationResult {
 
     // Validation
     if (
-        !parsed.color ||
-        !parsed.measurements ||
-        !parsed.td ||
-        !parsed.tdSingleValue ||
-        !parsed.confidence
+        typeof parsed.color !== 'string' ||
+        !Array.isArray(parsed.measurements) ||
+        !Array.isArray(parsed.td) ||
+        typeof parsed.tdSingleValue !== 'number' ||
+        typeof parsed.confidence !== 'number'
     ) {
         throw new Error('Invalid calibration data format');
     }
 
-    return parsed as CalibrationResult;
+    if (parsed.whiteReference !== undefined) {
+        if (
+            !Array.isArray(parsed.whiteReference) ||
+            parsed.whiteReference.length !== 3 ||
+            !validateWhiteReference(parsed.whiteReference as CalibrationRgb).valid
+        ) {
+            throw new Error('Invalid calibration white reference');
+        }
+    }
+
+    const whiteReference = (parsed.whiteReference as CalibrationRgb | undefined) ?? undefined;
+
+    return {
+        ...(parsed as CalibrationResult),
+        whiteReference,
+        measurements: normalizeCalibrationMeasurements(
+            parsed.measurements as CalibrationMeasurement[],
+            whiteReference ?? DEFAULT_WHITE_REFERENCE
+        ),
+    };
 }

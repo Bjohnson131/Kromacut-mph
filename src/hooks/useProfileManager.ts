@@ -44,6 +44,10 @@ export function useProfileManager({ filaments, setFilaments }: UseProfileManager
     const [saveProfileName, setSaveProfileName] = useState('');
     const [importFeedback, setImportFeedback] = useState<string | null>(null);
     const importInputRef = useRef<HTMLInputElement>(null);
+    const filamentCalibrationSignature = useCallback(
+        (filament: Filament) => JSON.stringify(filament.calibration ?? null),
+        []
+    );
 
     // Dirty state: detect if current filaments differ from the active profile's
     const isDirty = useMemo(() => {
@@ -55,9 +59,10 @@ export function useProfileManager({ filaments, setFilaments }: UseProfileManager
             (af, i) =>
                 af.color !== filaments[i].color ||
                 af.td !== filaments[i].td ||
-                (af.name ?? '') !== (filaments[i].name ?? '')
+                (af.name ?? '') !== (filaments[i].name ?? '') ||
+                filamentCalibrationSignature(af) !== filamentCalibrationSignature(filaments[i])
         );
-    }, [activeProfileId, profiles, filaments]);
+    }, [activeProfileId, profiles, filaments, filamentCalibrationSignature]);
 
     // Save New: always creates a new profile
     const handleSaveNewProfile = useCallback(
