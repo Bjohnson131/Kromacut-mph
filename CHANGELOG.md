@@ -10,6 +10,7 @@ All notable changes to Kromacut are documented in this file.
 
 ### Added
 - **DevTools in release builds** — Right-click → Inspect is now available in packaged Tauri builds via the `devtools` feature flag
+- **Filament names** — Each filament in the auto-paint list now has an optional name field; defaults to `Filament #<hex>` and updates live with color changes until a custom name is set; names are saved in filament profiles and backward-compatible with old profiles ([#21](https://github.com/vycdev/Kromacut/issues/21))
 
 ### Changed
 - `.claude/` directory removed from git tracking

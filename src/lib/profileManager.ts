@@ -92,7 +92,7 @@ export function deleteProfile(profiles: AutoPaintProfile[], id: string): AutoPai
 /** Check if two filament arrays are identical by color+td (order-sensitive). */
 function filamentsEqual(a: Filament[], b: Filament[]): boolean {
     if (a.length !== b.length) return false;
-    return a.every((af, i) => af.color === b[i].color && af.td === b[i].td);
+    return a.every((af, i) => af.color === b[i].color && af.td === b[i].td && (af.name ?? '') === (b[i].name ?? ''));
 }
 
 /** Derive a unique name by appending a numeric suffix if the name already exists. */
