@@ -8,12 +8,14 @@ export const DEFAULT_PRINT_SETTINGS = {
     layerHeight: 0.12,
     slicerFirstLayerHeight: 0.2,
     pixelSize: 0.1,
+    smoothMeshing: false,
 } as const;
 
 export type PrintSettings = {
     layerHeight: number;
     slicerFirstLayerHeight: number;
     pixelSize: number;
+    smoothMeshing: boolean;
 };
 
 export const clampNumber = (value: number, min: number, max: number) =>
@@ -38,7 +40,8 @@ export const loadPrintSettingsFromStorage = (): PrintSettings | null => {
             typeof parsed.pixelSize === 'number' && isFinite(parsed.pixelSize)
                 ? clampNumber(parsed.pixelSize, 0.01, 10)
                 : DEFAULT_PRINT_SETTINGS.pixelSize;
-        return { layerHeight, slicerFirstLayerHeight, pixelSize };
+        const smoothMeshing = typeof parsed.smoothMeshing === 'boolean' ? parsed.smoothMeshing : DEFAULT_PRINT_SETTINGS.smoothMeshing;
+        return { layerHeight, slicerFirstLayerHeight, pixelSize, smoothMeshing };
     } catch {
         return null;
     }

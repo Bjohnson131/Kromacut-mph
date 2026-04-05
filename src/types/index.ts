@@ -29,6 +29,7 @@ export interface ThreeDControlsStateShape {
     colorOrder: number[];
     filteredSwatches: Swatch[];
     pixelSize: number; // mm per pixel (XY)
+    smoothMeshing?: boolean; // marching squares contour meshing
     filaments: Filament[];
     paintMode: 'manual' | 'autopaint';
     // Enhanced color matching options

@@ -1,14 +1,17 @@
 import { Card } from '@/components/ui/card';
 import { NumberInput } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { RotateCcw } from 'lucide-react';
 
 interface PrintSettingsCardProps {
     layerHeight: number;
     slicerFirstLayerHeight: number;
     pixelSize: number;
+    smoothMeshing: boolean;
     onLayerHeightChange: (v: number) => void;
     onSlicerFirstLayerHeightChange: (v: number) => void;
     onPixelSizeChange: (v: number) => void;
+    onSmoothMeshingChange: (v: boolean) => void;
     onReset: () => void;
     allDefault?: boolean;
 }
@@ -17,9 +20,11 @@ export default function PrintSettingsCard({
     layerHeight,
     slicerFirstLayerHeight,
     pixelSize,
+    smoothMeshing,
     onLayerHeightChange,
     onSlicerFirstLayerHeightChange,
     onPixelSizeChange,
+    onSmoothMeshingChange,
     onReset,
     allDefault = false,
 }: PrintSettingsCardProps) {
@@ -148,6 +153,20 @@ export default function PrintSettingsCard({
                             <span className="text-xs text-red-500">{firstLayerHeightError}</span>
                         )}
                     </label>
+                </div>
+
+                {/* Smooth Meshing */}
+                <div className="flex items-center justify-between gap-2">
+                    <div>
+                        <span className="font-semibold text-foreground">Smooth Meshing</span>
+                        <p className="text-xs text-muted-foreground">
+                            Use marching squares for smoother color boundary edges
+                        </p>
+                    </div>
+                    <Switch
+                        checked={smoothMeshing}
+                        onCheckedChange={onSmoothMeshingChange}
+                    />
                 </div>
             </div>
         </Card>
