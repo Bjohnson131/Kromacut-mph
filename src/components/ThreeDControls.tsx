@@ -29,13 +29,18 @@ interface ThreeDControlsProps {
     imageDimensions: { width: number; height: number } | null;
     onChange?: (state: ThreeDControlsStateShape) => void;
     /**
+     * Called whenever non-build settings change so the parent can keep
+     * its snapshot current without triggering a 3D rebuild.
+     */
+    onSettingsChange?: (partial: Partial<ThreeDControlsStateShape>) => void;
+    /**
      * Persisted state from a previous mount used to hydrate this component
      * when the user switches away from 3D mode and comes back later.
      */
     persisted?: ThreeDControlsStateShape | null;
 }
 
-export default function ThreeDControls({ swatches, imageDimensions, onChange, persisted }: ThreeDControlsProps) {
+export default function ThreeDControls({ swatches, imageDimensions, onChange, onSettingsChange, persisted }: ThreeDControlsProps) {
     // --- Filaments ---
     const { filaments, setFilaments, addFilament, removeFilament, updateFilament } = useFilaments({
         initial: persisted?.filaments?.length ? persisted.filaments : undefined,
@@ -85,10 +90,10 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, pe
         persisted?.paintMode ?? 'manual'
     );
     const [autoPaintMaxHeight, setAutoPaintMaxHeight] = useState<number | undefined>(undefined);
-    const [enhancedColorMatch, setEnhancedColorMatch] = useState(false);
-    const [allowRepeatedSwaps, setAllowRepeatedSwaps] = useState(false);
-    const [heightDithering, setHeightDithering] = useState(false);
-    const [ditherLineWidth, setDitherLineWidth] = useState(0.42);
+    const [enhancedColorMatch, setEnhancedColorMatch] = useState(persisted?.enhancedColorMatch ?? false);
+    const [allowRepeatedSwaps, setAllowRepeatedSwaps] = useState(persisted?.allowRepeatedSwaps ?? false);
+    const [heightDithering, setHeightDithering] = useState(persisted?.heightDithering ?? false);
+    const [ditherLineWidth, setDitherLineWidth] = useState(persisted?.ditherLineWidth ?? 0.42);
 
     // --- Optimizer Options ---
     const [optimizerAlgorithm, setOptimizerAlgorithm] = useState<'exhaustive' | 'simulated-annealing' | 'genetic' | 'auto'>(
@@ -108,6 +113,22 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, pe
             setHeightDithering(false);
         }
     }, []);
+
+    // Sync non-build settings to parent so persisted stays current across mode switches
+    useEffect(() => {
+        onSettingsChange?.({
+            paintMode,
+            filaments,
+            enhancedColorMatch,
+            allowRepeatedSwaps,
+            heightDithering,
+            ditherLineWidth,
+            optimizerAlgorithm,
+            optimizerSeed,
+            regionWeightingMode,
+        });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [paintMode, filaments, enhancedColorMatch, allowRepeatedSwaps, heightDithering, ditherLineWidth, optimizerAlgorithm, optimizerSeed, regionWeightingMode]);
 
     useEffect(() => {
         savePrintSettingsToStorage({ layerHeight, slicerFirstLayerHeight, pixelSize });
