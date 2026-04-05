@@ -44,7 +44,15 @@ const AUTOPAINT_STORAGE_KEY = 'kromacut.autopaint.v1';
 
 type AutoPaintPersisted = Pick<
     ThreeDControlsStateShape,
-    'filaments' | 'paintMode' | 'optimizerAlgorithm' | 'optimizerSeed' | 'regionWeightingMode'
+    | 'filaments'
+    | 'paintMode'
+    | 'optimizerAlgorithm'
+    | 'optimizerSeed'
+    | 'regionWeightingMode'
+    | 'enhancedColorMatch'
+    | 'allowRepeatedSwaps'
+    | 'heightDithering'
+    | 'ditherLineWidth'
 >;
 
 const loadAutoPaintPersisted = (): AutoPaintPersisted | null => {
@@ -67,6 +75,10 @@ const loadAutoPaintPersisted = (): AutoPaintPersisted | null => {
             optimizerAlgorithm: parsed.optimizerAlgorithm,
             optimizerSeed: parsed.optimizerSeed,
             regionWeightingMode: parsed.regionWeightingMode,
+            enhancedColorMatch: parsed.enhancedColorMatch ?? false,
+            allowRepeatedSwaps: parsed.allowRepeatedSwaps ?? false,
+            heightDithering: parsed.heightDithering ?? false,
+            ditherLineWidth: parsed.ditherLineWidth,
         };
     } catch {
         return null;
@@ -181,6 +193,10 @@ function App(): React.ReactElement | null {
                 optimizerAlgorithm: autopaintHydrated.optimizerAlgorithm ?? prev.optimizerAlgorithm,
                 optimizerSeed: autopaintHydrated.optimizerSeed ?? prev.optimizerSeed,
                 regionWeightingMode: autopaintHydrated.regionWeightingMode ?? prev.regionWeightingMode,
+                enhancedColorMatch: autopaintHydrated.enhancedColorMatch ?? prev.enhancedColorMatch,
+                allowRepeatedSwaps: autopaintHydrated.allowRepeatedSwaps ?? prev.allowRepeatedSwaps,
+                heightDithering: autopaintHydrated.heightDithering ?? prev.heightDithering,
+                ditherLineWidth: autopaintHydrated.ditherLineWidth ?? prev.ditherLineWidth,
             }));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -195,6 +211,10 @@ function App(): React.ReactElement | null {
             optimizerAlgorithm: threeDState.optimizerAlgorithm,
             optimizerSeed: threeDState.optimizerSeed,
             regionWeightingMode: threeDState.regionWeightingMode,
+            enhancedColorMatch: threeDState.enhancedColorMatch,
+            allowRepeatedSwaps: threeDState.allowRepeatedSwaps,
+            heightDithering: threeDState.heightDithering,
+            ditherLineWidth: threeDState.ditherLineWidth,
         });
     }, [
         threeDState.filaments,
@@ -202,6 +222,10 @@ function App(): React.ReactElement | null {
         threeDState.optimizerAlgorithm,
         threeDState.optimizerSeed,
         threeDState.regionWeightingMode,
+        threeDState.enhancedColorMatch,
+        threeDState.allowRepeatedSwaps,
+        threeDState.heightDithering,
+        threeDState.ditherLineWidth,
     ]);
 
     // No auto-build on tab switch — the user must click "Build 3D Model" / "Apply Changes".
@@ -412,6 +436,9 @@ function App(): React.ReactElement | null {
                                     swatches={swatches}
                                     imageDimensions={imageDimensions}
                                     onChange={handleThreeDStateChange}
+                                    onSettingsChange={(partial) =>
+                                        setThreeDState((prev) => ({ ...prev, ...partial }))
+                                    }
                                     persisted={threeDState}
                                 />
                             )}

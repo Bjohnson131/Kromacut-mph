@@ -52,7 +52,10 @@ export function useProfileManager({ filaments, setFilaments }: UseProfileManager
         if (!active) return false;
         if (active.filaments.length !== filaments.length) return true;
         return active.filaments.some(
-            (af, i) => af.color !== filaments[i].color || af.td !== filaments[i].td
+            (af, i) =>
+                af.color !== filaments[i].color ||
+                af.td !== filaments[i].td ||
+                (af.name ?? '') !== (filaments[i].name ?? '')
         );
     }, [activeProfileId, profiles, filaments]);
 
