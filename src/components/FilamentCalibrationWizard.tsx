@@ -261,7 +261,8 @@ export function FilamentCalibrationWizard({
             const { td, tdSingleValue, confidence } = calculateTDFromMeasurements(
                 measurements,
                 calibrationLayerHeight,
-                whiteReference
+                whiteReference,
+                filamentColor
             );
 
             const calibrationResult: CalibrationResult = {
@@ -936,7 +937,7 @@ export function FilamentCalibrationWizard({
                                 <p className="text-2xl font-bold">
                                     {result.tdSingleValue.toFixed(2)}mm
                                 </p>
-                                <p className="text-xs text-muted-foreground">Transmission Distance</p>
+                                <p className="text-xs text-muted-foreground">Auto-paint working TD</p>
                             </div>
                         </div>
 
@@ -968,6 +969,11 @@ export function FilamentCalibrationWizard({
                                 {confidenceLabel} ({(result.confidence * 100).toFixed(0)}%)
                             </span>
                         </div>
+
+                        <p className="text-xs text-muted-foreground">
+                            This value blends the measured patch fit with the filament color
+                            heuristic when the photo data is noisy or weakly informative.
+                        </p>
                     </Card>
 
                     <p className="text-xs text-muted-foreground">

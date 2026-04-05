@@ -1,3 +1,5 @@
+import { estimateTDFromColor } from './colorUtils';
+
 /**
  * Filament Calibration System
  *
@@ -34,7 +36,7 @@ export interface CalibrationResult {
     measurements: CalibrationMeasurement[];
     whiteReference?: CalibrationRgb; // Measured backlight RGB used to normalize transmission
     td: CalibrationRgb; // Fitted TD for R, G, B channels (mm)
-    tdSingleValue: number; // Weighted average TD (mm)
+    tdSingleValue: number; // Auto-paint working TD derived from the measured samples (mm)
     confidence: number; // 0-1 score based on fit quality
     calibrationDate: string; // ISO timestamp
     notes?: string; // Optional user notes
@@ -60,6 +62,10 @@ export const DEFAULT_WHITE_REFERENCE: CalibrationRgb = [255, 255, 255];
 const MIN_MEASUREMENTS = 3;
 const CONFIDENCE_THRESHOLD_EXCELLENT = 0.9;
 const CONFIDENCE_THRESHOLD_GOOD = 0.7;
+const WORKING_TD_MIN = 0.4;
+const WORKING_TD_MAX = 12.0;
+const WORKING_TD_GRID_STEPS = 240;
+const MIN_CHANNEL_CONTRAST = 12;
 
 const clampRgbChannel = (value: number, min: number) => {
     if (!Number.isFinite(value)) return min;
@@ -100,6 +106,165 @@ export function normalizeCalibrationMeasurements(
     }));
 }
 
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+function getBlendChannelWeights(
+    filamentRgb: CalibrationRgb,
+    whiteReference: CalibrationRgb
+): CalibrationRgb {
+    const rawWeights: CalibrationRgb = [0, 1, 2].map((channel) => {
+        const contrast = Math.abs(whiteReference[channel] - filamentRgb[channel]);
+        return contrast >= MIN_CHANNEL_CONTRAST ? contrast : contrast * 0.25;
+    }) as CalibrationRgb;
+    const total = rawWeights.reduce((sum, weight) => sum + weight, 0);
+
+    if (total <= 1e-6) {
+        return [1 / 3, 1 / 3, 1 / 3];
+    }
+
+    return rawWeights.map((weight) => weight / total) as CalibrationRgb;
+}
+
+function predictWorkingBlendRgb(
+    filamentRgb: CalibrationRgb,
+    whiteReference: CalibrationRgb,
+    td: number,
+    thickness: number
+): CalibrationRgb {
+    const transmission = Math.pow(10, -thickness / td);
+    return [
+        Math.round(filamentRgb[0] + (whiteReference[0] - filamentRgb[0]) * transmission),
+        Math.round(filamentRgb[1] + (whiteReference[1] - filamentRgb[1]) * transmission),
+        Math.round(filamentRgb[2] + (whiteReference[2] - filamentRgb[2]) * transmission),
+    ];
+}
+
+function evaluateWorkingTdFit(
+    measurements: CalibrationMeasurement[],
+    layerHeight: number,
+    filamentRgb: CalibrationRgb,
+    whiteReference: CalibrationRgb,
+    channelWeights: CalibrationRgb,
+    td: number
+): number {
+    let weightedSquaredError = 0;
+
+    for (const measurement of measurements) {
+        const thickness = measurement.layers * layerHeight;
+        const predicted = predictWorkingBlendRgb(filamentRgb, whiteReference, td, thickness);
+
+        weightedSquaredError +=
+            channelWeights[0] * Math.pow(predicted[0] - measurement.rgb[0], 2) +
+            channelWeights[1] * Math.pow(predicted[1] - measurement.rgb[1], 2) +
+            channelWeights[2] * Math.pow(predicted[2] - measurement.rgb[2], 2);
+    }
+
+    return weightedSquaredError / measurements.length;
+}
+
+function fitWorkingTdFromMeasurements(
+    measurements: CalibrationMeasurement[],
+    layerHeight: number,
+    filamentColor: string,
+    whiteReference: CalibrationRgb = DEFAULT_WHITE_REFERENCE
+): { td: number; confidence: number } {
+    const filamentRgb = hexToRgb(filamentColor);
+    if (!filamentRgb) {
+        return { td: estimateTDFromColor(filamentColor), confidence: 0.1 };
+    }
+
+    const reference = sanitizeWhiteReference(whiteReference);
+    const channelWeights = getBlendChannelWeights(filamentRgb, reference);
+    const heuristicTd = estimateTDFromColor(filamentColor);
+    const logMin = Math.log(WORKING_TD_MIN);
+    const logMax = Math.log(WORKING_TD_MAX);
+
+    let bestTd = heuristicTd;
+    let bestError = Number.POSITIVE_INFINITY;
+
+    for (let i = 0; i < WORKING_TD_GRID_STEPS; i++) {
+        const t = i / (WORKING_TD_GRID_STEPS - 1);
+        const candidateTd = Math.exp(logMin + (logMax - logMin) * t);
+        const error = evaluateWorkingTdFit(
+            measurements,
+            layerHeight,
+            filamentRgb,
+            reference,
+            channelWeights,
+            candidateTd
+        );
+
+        if (error < bestError) {
+            bestError = error;
+            bestTd = candidateTd;
+        }
+    }
+
+    let refineMin = Math.max(WORKING_TD_MIN, bestTd / 1.8);
+    let refineMax = Math.min(WORKING_TD_MAX, bestTd * 1.8);
+
+    for (let pass = 0; pass < 2; pass++) {
+        let passBestTd = bestTd;
+        let passBestError = bestError;
+
+        for (let i = 0; i < WORKING_TD_GRID_STEPS; i++) {
+            const t = i / (WORKING_TD_GRID_STEPS - 1);
+            const candidateTd = refineMin + (refineMax - refineMin) * t;
+            const error = evaluateWorkingTdFit(
+                measurements,
+                layerHeight,
+                filamentRgb,
+                reference,
+                channelWeights,
+                candidateTd
+            );
+
+            if (error < passBestError) {
+                passBestError = error;
+                passBestTd = candidateTd;
+            }
+        }
+
+        bestTd = passBestTd;
+        bestError = passBestError;
+        refineMin = Math.max(WORKING_TD_MIN, bestTd / 1.35);
+        refineMax = Math.min(WORKING_TD_MAX, bestTd * 1.35);
+    }
+
+    const weightedRmse = Math.sqrt(bestError);
+    const averageContrast =
+        (Math.abs(reference[0] - filamentRgb[0]) +
+            Math.abs(reference[1] - filamentRgb[1]) +
+            Math.abs(reference[2] - filamentRgb[2])) /
+        3;
+    const contrastStrength = clamp(averageContrast / 255, 0, 1);
+    const measurementCoverage = clamp(
+        (measurements.length - MIN_MEASUREMENTS) / (RECOMMENDED_LAYER_COUNTS.length - MIN_MEASUREMENTS),
+        0,
+        1
+    );
+    const fitConfidence = clamp(1 - weightedRmse / 28, 0, 1);
+    const agreement =
+        Math.min(bestTd, heuristicTd) / Math.max(bestTd, heuristicTd, WORKING_TD_MIN);
+    const measurementInfluence = clamp(
+        fitConfidence *
+            (0.3 + 0.7 * contrastStrength) *
+            (0.6 + 0.4 * measurementCoverage) *
+            (0.35 + 0.65 * Math.sqrt(agreement)),
+        0,
+        0.9
+    );
+
+    const blendedTd = clamp(
+        heuristicTd + (bestTd - heuristicTd) * measurementInfluence,
+        WORKING_TD_MIN,
+        WORKING_TD_MAX
+    );
+    const confidence = clamp(0.25 + 0.75 * Math.max(fitConfidence, measurementInfluence), 0.1, 1);
+
+    return { td: blendedTd, confidence };
+}
+
 // ============================================================================
 // Core Calibration Algorithm
 // ============================================================================
@@ -118,7 +283,8 @@ export function normalizeCalibrationMeasurements(
 export function calculateTDFromMeasurements(
     measurements: CalibrationMeasurement[],
     layerHeight: number,
-    whiteReference: CalibrationRgb = DEFAULT_WHITE_REFERENCE
+    whiteReference: CalibrationRgb = DEFAULT_WHITE_REFERENCE,
+    filamentColor: string = '#808080'
 ): { td: [number, number, number]; tdSingleValue: number; confidence: number } {
     if (measurements.length < MIN_MEASUREMENTS) {
         throw new Error(
@@ -140,14 +306,17 @@ export function calculateTDFromMeasurements(
         confidences[channel] = confidence;
     }
 
-    // Compute weighted average TD (prefer channels with less transmission for lithophanes)
-    const weights = tdChannels.map((td) => 1 / td); // Lower TD = higher weight
-    const weightSum = weights.reduce((sum, w) => sum + w, 0);
-    const tdSingleValue =
-        tdChannels.reduce((sum, td, i) => sum + td * weights[i], 0) / weightSum;
+    const workingFit = fitWorkingTdFromMeasurements(
+        sorted,
+        layerHeight,
+        filamentColor,
+        whiteReference
+    );
+    const tdSingleValue = workingFit.td;
 
-    // Overall confidence is the minimum of channel confidences
-    const confidence = Math.min(...confidences);
+    // Overall confidence combines the per-channel fit stability with the
+    // working-TD fit quality used by auto-paint.
+    const confidence = (Math.min(...confidences) + workingFit.confidence) / 2;
 
     return { td: tdChannels, tdSingleValue, confidence };
 }
