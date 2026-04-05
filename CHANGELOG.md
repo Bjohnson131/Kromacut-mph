@@ -8,6 +8,9 @@ All notable changes to Kromacut are documented in this file.
 - **Linux binary name** — Tauri Cargo package renamed from `app` to `kromacut`, fixing the installed binary being `/usr/bin/app` on Debian instead of `/usr/bin/kromacut`
 - **3D settings lost on mode switch** — Enhanced color matching, repeated swaps, height dithering, and dither line width are now preserved when switching between 2D and 3D modes; settings are also restored across page reloads via localStorage
 
+### Added
+- **DevTools in release builds** — Right-click → Inspect is now available in packaged Tauri builds via the `devtools` feature flag
+
 ### Changed
 - `.claude/` directory removed from git tracking
 - Removed deprecated `baseUrl` from `tsconfig.app.json` (redundant with `paths` in bundler mode)
