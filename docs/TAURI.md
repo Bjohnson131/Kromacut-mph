@@ -52,7 +52,7 @@ git push origin vX.Y.Z
 
 The GitHub Actions workflow will automatically build native applications for:
 - **macOS**: Apple Silicon (M1/M2/M3) and Intel
-- **Windows**: x64 installer
+- **Windows**: x64 NSIS setup installer, plus an offline NSIS setup installer with the WebView2 offline installer embedded
 - **Linux**: AppImage and .deb package
 
 All artifacts are attached to the GitHub release.
@@ -67,6 +67,8 @@ sudo xattr -d com.apple.quarantine /Applications/Kromacut.app
 
 For notarized distribution, configure a Developer ID signing identity in `tauri.conf.json`.
 
-**Windows:** The `.msi` installer may trigger Windows SmartScreen for unsigned builds. Users can click "More info" → "Run anyway".
+**Windows:** The setup installer may trigger Windows SmartScreen for unsigned builds. Users can click "More info" → "Run anyway".
+
+The standard Windows installers embed the small WebView2 bootstrapper. The NSIS setup installer also checks for WebView2 `114.0.1823.67` or newer and can update the runtime when internet access is available. The release workflow also publishes a larger `*_offline-setup.exe` for Windows machines that need to install without internet access.
 
 **Linux:** AppImage bundles are portable and require no installation. `.deb` packages integrate with the system package manager.

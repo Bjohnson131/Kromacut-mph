@@ -14,16 +14,34 @@ jobs:
         strategy:
             matrix:
                 include:
-                    - platform: 'macos-latest'
+                    - name: 'macOS Apple Silicon'
+                      platform: 'macos-latest'
                       args: '--target aarch64-apple-darwin'
-                    - platform: 'macos-latest'
+                      assetNamePattern: ''
+                      includeUpdaterJson: 'true'
+                    - name: 'macOS Intel'
+                      platform: 'macos-latest'
                       args: '--target x86_64-apple-darwin'
-                    - platform: 'ubuntu-22.04'
+                      assetNamePattern: ''
+                      includeUpdaterJson: 'true'
+                    - name: 'Linux'
+                      platform: 'ubuntu-22.04'
                       args: ''
-                    - platform: 'windows-latest'
-                      args: ''
+                      assetNamePattern: ''
+                      includeUpdaterJson: 'true'
+                    - name: 'Windows online installer'
+                      platform: 'windows-latest'
+                      args: '--bundles nsis'
+                      assetNamePattern: ''
+                      includeUpdaterJson: 'true'
+                    - name: 'Windows offline installer'
+                      platform: 'windows-latest'
+                      args: '--bundles nsis --config src-tauri/tauri.offline.conf.json'
+                      assetNamePattern: '[name]_[version]_[platform]_[arch]_offline[setup][ext]'
+                      includeUpdaterJson: 'false'
 
         runs-on: ${{ matrix.platform }}
+        name: Build ${{ matrix.name }}
         steps:
             - name: Checkout
               uses: actions/checkout@v4
@@ -59,6 +77,8 @@ jobs:
                   releaseDraft: true
                   prerelease: false
                   args: ${{ matrix.args }}
+                  assetNamePattern: ${{ matrix.assetNamePattern }}
+                  includeUpdaterJson: ${{ matrix.includeUpdaterJson }}
 
     release:
         needs: build
@@ -85,9 +105,10 @@ jobs:
                       4. Launch from Applications
 
                       **Windows:**
-                      1. Download the .msi installer
-                      2. Run the installer and follow the prompts
-                      3. Launch Kromacut from the Start menu
+                      1. Download the -setup.exe installer.
+                      2. Run the installer and follow the prompts. The standard Windows installer includes the Microsoft Edge WebView2 bootstrapper, but requires internet access if WebView2 needs to be installed or updated.
+                      3. For offline Windows machines, download the *_offline-setup.exe installer instead.
+                      4. Launch Kromacut from the Start menu
 
                       **Linux:**
                       1. Download the .AppImage or .deb file
