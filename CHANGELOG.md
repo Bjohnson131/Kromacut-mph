@@ -2,7 +2,25 @@
 
 All notable changes to Kromacut are documented in this file.
 
-## [2.4.0] - 2026-04-05
+## v2.5.0 - 2026-05-03
+
+### Added
+- **Calibration test patches STL** — Download button in the TD calibration wizard's print step generates a ready-to-print STL of all test patches (2, 4, 6, 8, 10 layers) as a single connected model, sized to the current layer height setting
+- **White-reference TD calibration** - The calibration wizard can now capture a measured backlight white reference so TD fitting normalizes against the real light source instead of assuming pure `255,255,255`
+- **Calibration image sampler** - Upload a photo or screenshot and click directly on it to sample RGB values into either the white reference or the current measurement fields
+- **3D smooth meshing** - Optional smooth meshing mode that softens voxel stair-steps into smoother edge contours for cleaner 3D print geometry
+- **Desktop Save As exports** - Tauri builds now use native Save As dialogs for PNG, STL, and 3MF exports, then confirm the saved path after writing the file
+
+### Changed
+- **Calibration wizard Step 2 UI** - The measurement popup is now wider and less cramped, with clearer sampler targeting, live RGB previews, cleaner measurement cards, and improved status callouts
+- **Windows installer packaging** - Windows releases now ship NSIS setup installers only, with a normal online installer and a larger offline WebView2 installer variant
+- **Release notes automation** - The native app release pipeline now reads the matching version entry from `CHANGELOG.md` and publishes it in the GitHub release body
+
+### Fixed
+- **Calibration persistence and refresh** - White reference data is preserved with filament calibrations and profile/worker refresh logic now picks up calibration metadata changes even when the final TD value stays the same
+- **Smooth meshing with height dithering** - Height-dithered layers now keep their top and bottom caps when smooth meshing is enabled, preventing walls-only/non-manifold-looking layer artifacts
+
+## v2.4.0 - 2026-04-05
 
 ### Fixed
 - **Linux binary name** — Tauri Cargo package renamed from `app` to `kromacut`, fixing the installed binary being `/usr/bin/app` on Debian instead of `/usr/bin/kromacut`
@@ -16,7 +34,7 @@ All notable changes to Kromacut are documented in this file.
 - `.claude/` directory removed from git tracking
 - Removed deprecated `baseUrl` from `tsconfig.app.json` (redundant with `paths` in bundler mode)
 
-## [2.3.2] - 2026-03-13
+## v2.3.2 - 2026-03-13
 
 ### Added
 - **Native desktop app** — Tauri-based builds for macOS (Apple Silicon + Intel), Windows, and Linux
@@ -45,7 +63,7 @@ All notable changes to Kromacut are documented in this file.
 - `useAutoPaintWorker` firing excessively due to unstable object references
 - Build 3D Model button had transparent gap at top of scroll container
 
-## [2.2.0] - 2026-02-15
+## v2.2.0 - 2026-02-15
 
 ### Added
 - **Auto-paint mode** — Define filaments with color and Transmission Distance, automatic Beer-Lambert optical blending computes optimal layer stacks
@@ -65,7 +83,7 @@ All notable changes to Kromacut are documented in this file.
 - Greedy meshing algorithm made async with periodic yielding for UI responsiveness
 - 3MF export enriched with layer height, first layer height, and filament colors
 
-## [2.0.0] - 2025-12-01
+## v2.0.0 - 2025-12-01
 
 ### Added
 - **3MF export** — Multi-material export with per-color objects and slicer metadata
@@ -84,7 +102,7 @@ All notable changes to Kromacut are documented in this file.
 - Color swap instruction accuracy
 - Inverted normals in mesh generation
 
-## [1.0.0] - 2025-10-01
+## v1.0.0 - 2025-10-01
 
 ### Added
 - Image upload with drag-and-drop support

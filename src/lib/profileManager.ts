@@ -90,9 +90,18 @@ export function deleteProfile(profiles: AutoPaintProfile[], id: string): AutoPai
 }
 
 /** Check if two filament arrays are identical by color+td (order-sensitive). */
+const filamentCalibrationSignature = (filament: Filament) =>
+    JSON.stringify(filament.calibration ?? null);
+
 function filamentsEqual(a: Filament[], b: Filament[]): boolean {
     if (a.length !== b.length) return false;
-    return a.every((af, i) => af.color === b[i].color && af.td === b[i].td && (af.name ?? '') === (b[i].name ?? ''));
+    return a.every(
+        (af, i) =>
+            af.color === b[i].color &&
+            af.td === b[i].td &&
+            (af.name ?? '') === (b[i].name ?? '') &&
+            filamentCalibrationSignature(af) === filamentCalibrationSignature(b[i])
+    );
 }
 
 /** Derive a unique name by appending a numeric suffix if the name already exists. */

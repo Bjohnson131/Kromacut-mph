@@ -822,6 +822,7 @@ export default function AutoPaintTab({
                     filamentName={calibratingFilament.name || calibratingFilament.brand || 'Filament'}
                     layerHeight={calibrationLayerHeight}
                     existingMeasurements={calibratingFilament.calibration?.measurements}
+                    existingWhiteReference={calibratingFilament.calibration?.whiteReference}
                 />
             )}
         </TabsContent>

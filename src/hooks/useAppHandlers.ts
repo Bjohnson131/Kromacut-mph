@@ -1,5 +1,8 @@
 import { useCallback } from 'react';
 import type { RefObject } from 'react';
+import { isTauri } from '@tauri-apps/api/core';
+import { message, save } from '@tauri-apps/plugin-dialog';
+import { writeFile } from '@tauri-apps/plugin-fs';
 import type { CanvasPreviewHandle } from '../components/CanvasPreview';
 import type { SwatchEntry } from './useSwatches';
 import type * as THREE from 'three';
@@ -27,6 +30,53 @@ export interface UseAppHandlersParams {
     swatches: SwatchEntry[];
 }
 
+interface SaveBlobOptions {
+    defaultFileName: string;
+    extension: string;
+    filterName: string;
+}
+
+async function saveBlob(blob: Blob, options: SaveBlobOptions): Promise<string | null> {
+    if (isTauri()) {
+        const filePath = await save({
+            title: `Save ${options.filterName}`,
+            defaultPath: options.defaultFileName,
+            filters: [
+                {
+                    name: options.filterName,
+                    extensions: [options.extension],
+                },
+            ],
+        });
+
+        if (!filePath) {
+            return null;
+        }
+
+        await writeFile(filePath, new Uint8Array(await blob.arrayBuffer()));
+        await message(`Saved to:\n${filePath}`, {
+            title: 'Kromacut',
+            kind: 'info',
+        });
+        return filePath;
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = options.defaultFileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    return options.defaultFileName;
+}
+
+function exportFileName(extension: string) {
+    const timestamp = new Date().toISOString().slice(0, 10);
+    return `kromacut-${timestamp}.${extension}`;
+}
+
 export function useAppHandlers(params: UseAppHandlersParams) {
     const {
         canvasPreviewRef,
@@ -44,20 +94,21 @@ export function useAppHandlers(params: UseAppHandlersParams) {
 
     const onExportImage = useCallback(async () => {
         if (!canvasPreviewRef.current) return;
-        const blob = await canvasPreviewRef.current.exportImageBlob();
-        if (!blob) {
-            alert('No image available to download');
-            return;
+        try {
+            const blob = await canvasPreviewRef.current.exportImageBlob();
+            if (!blob) {
+                alert('No image available to download');
+                return;
+            }
+            await saveBlob(blob, {
+                defaultFileName: exportFileName('png'),
+                extension: 'png',
+                filterName: 'PNG image',
+            });
+        } catch (err) {
+            console.warn('Image export failed', err);
+            alert('Image export failed. See console for details.');
         }
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        const timestamp = new Date().toISOString().slice(0, 10);
-        a.download = `kromacut-${timestamp}.png`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
     }, [canvasPreviewRef]);
 
     const onExportStl = useCallback(async () => {
@@ -74,15 +125,11 @@ export function useAppHandlers(params: UseAppHandlersParams) {
         setExportProgress(0);
         try {
             const blob = await exportObjectToStlBlob(threeObject, (p) => setExportProgress(p));
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            const timestamp = new Date().toISOString().slice(0, 10);
-            a.download = `kromacut-${timestamp}.stl`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
+            await saveBlob(blob, {
+                defaultFileName: exportFileName('stl'),
+                extension: 'stl',
+                filterName: 'STL model',
+            });
         } catch (err) {
             console.warn('STL export failed', err);
             alert('STL export failed. See console for details.');
@@ -106,20 +153,17 @@ export function useAppHandlers(params: UseAppHandlersParams) {
         setExportProgress(0);
         try {
             const blob = await exportObjectTo3MFBlob(threeObject, (p) => setExportProgress(p));
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            const timestamp = new Date().toISOString().slice(0, 10);
-            a.download = `kromacut-${timestamp}.3mf`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
+            await saveBlob(blob, {
+                defaultFileName: exportFileName('3mf'),
+                extension: '3mf',
+                filterName: '3MF model',
+            });
         } catch (err) {
             console.warn('3MF export failed', err);
             alert('3MF export failed. See console for details.');
         } finally {
             setExportingSTL(false);
+            setTimeout(() => setExportProgress(0), 300);
         }
     }, [exportingSTL, exportObjectTo3MFBlob, setExportingSTL, setExportProgress]);
 

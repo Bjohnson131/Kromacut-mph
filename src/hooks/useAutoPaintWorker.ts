@@ -67,7 +67,12 @@ export function useAutoPaintWorker(
 
     // Stabilize filaments and filtered with content-based keys
     const filamentsKey = useMemo(() => {
-        return filaments.map((f) => `${f.id}:${f.color}:${f.td}:${f.calibration?.tdSingleValue ?? 'n'}`).join(';');
+        return filaments
+            .map(
+                (f) =>
+                    `${f.id}:${f.color}:${f.td}:${JSON.stringify(f.calibration ?? null)}`
+            )
+            .join(';');
     }, [filaments]);
 
     const filteredKey = useMemo(() => {

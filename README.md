@@ -306,13 +306,16 @@ Pre-built native apps are automatically released on GitHub:
 2. Choose the right file for your platform:
    - **macOS Apple Silicon (M1/M2/M3)**: `*_aarch64.dmg`
    - **macOS Intel**: `*_x86_64.dmg`
-   - **Windows**: `*.msi`
+   - **Windows**: `*-setup.exe`
+   - **Windows offline**: `*_offline-setup.exe`
    - **Linux**: `*.AppImage` or `*.deb`
 3. Install and launch
 
 **macOS "Kromacut is damaged" error?** The app isn't code-signed. Run `sudo xattr -d com.apple.quarantine /Applications/Kromacut.app` in Terminal to fix it.
 
 **Windows SmartScreen warning?** The app isn't signed. Click "More info" → "Run anyway".
+
+**Windows WebView2 requirement?** Kromacut uses Tauri, which runs on Microsoft Edge WebView2 on Windows. The standard Windows installers include the small WebView2 bootstrapper, and the setup installer checks for a recent enough WebView2 runtime. Use the offline setup installer on machines without internet access.
 
 > **Note:** To eliminate the macOS quarantine requirement entirely, the app would need to be signed with an Apple Developer ID certificate and notarized through Apple's notarization service. This requires an [Apple Developer Program membership](https://developer.apple.com/programs/) ($99/year). See [TAURI.md](docs/TAURI.md#code-signing--notarization-future-enhancement) for details.
 

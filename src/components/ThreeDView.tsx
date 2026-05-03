@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import useThreeScene from '../hooks/useThreeScene';
-import { generateGreedyMesh } from '../lib/meshing';
+import { generateGreedyMesh, generateSmoothMesh } from '../lib/meshing';
 import { Slider } from '@/components/ui/slider';
 import { Layers } from 'lucide-react';
 
@@ -25,6 +25,7 @@ interface ThreeDViewProps {
     enhancedColorMatch?: boolean; // Use color-distance mapping instead of luminance
     heightDithering?: boolean; // Floyd-Steinberg error diffusion on height map
     ditherLineWidth?: number; // Minimum dot size in mm for dithering
+    smoothMeshing?: boolean; // Use marching squares for smooth edges
 }
 
 // Convert hex color to RGB tuple
@@ -87,6 +88,7 @@ export default function ThreeDView({
     enhancedColorMatch = false,
     heightDithering = false,
     ditherLineWidth = 0.42,
+    smoothMeshing = false,
 }: ThreeDViewProps) {
     const mountRef = useRef<HTMLDivElement | null>(null);
     const [isBuilding, setIsBuilding] = useState(false);
@@ -182,6 +184,7 @@ export default function ThreeDView({
             imageSrc,
             baseSliceHeight,
             layerHeight,
+            slicerFirstLayerHeight,
             colorSliceHeights,
             colorOrder,
             swatches: swatches.map((s) => s.hex),
@@ -189,7 +192,13 @@ export default function ThreeDView({
             heightScale,
             stepped,
             pixelColumns,
+            autoPaintEnabled,
+            autoPaintTotalHeight,
             autoPaintFilamentOrder, // Include filament order to detect optimizer changes
+            enhancedColorMatch,
+            heightDithering,
+            ditherLineWidth,
+            smoothMeshing,
         });
         if (paramsKey === lastParamsKeyRef.current) return; // nothing changed logically
         lastParamsKeyRef.current = paramsKey;
@@ -788,7 +797,8 @@ export default function ThreeDView({
                         if (activeCount === 0) continue;
 
                         // Generate mesh for this layer
-                        const { positions, indices } = await generateGreedyMesh(
+                        const meshFn = smoothMeshing ? generateSmoothMesh : generateGreedyMesh;
+                        const { positions, indices } = await meshFn(
                             activePixels,
                             boxW,
                             boxH,
@@ -918,7 +928,8 @@ export default function ThreeDView({
                         if (activeCount === 0) continue;
 
                         // Generate Optimized Greedy Mesh
-                        const { positions, indices } = await generateGreedyMesh(
+                        const meshFn = smoothMeshing ? generateSmoothMesh : generateGreedyMesh;
+                        const { positions, indices } = await meshFn(
                             activePixels,
                             boxW,
                             boxH,
@@ -1093,6 +1104,7 @@ export default function ThreeDView({
         enhancedColorMatch,
         heightDithering,
         ditherLineWidth,
+        smoothMeshing,
         cameraRef,
         controlsRef,
         materialRef,

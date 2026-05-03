@@ -75,6 +75,8 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 DEFAULT_PRINT_SETTINGS.slicerFirstLayerHeight,
             pixelSize:
                 stored?.pixelSize ?? persisted?.pixelSize ?? DEFAULT_PRINT_SETTINGS.pixelSize,
+            smoothMeshing:
+                stored?.smoothMeshing ?? persisted?.smoothMeshing ?? DEFAULT_PRINT_SETTINGS.smoothMeshing,
         };
     });
 
@@ -83,6 +85,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         initialPrintSettings.slicerFirstLayerHeight
     );
     const [pixelSize, setPixelSize] = useState<number>(initialPrintSettings.pixelSize);
+    const [smoothMeshing, setSmoothMeshing] = useState<boolean>(initialPrintSettings.smoothMeshing);
     const [calibrationLayerHeight, setCalibrationLayerHeight] = useState<number>(
         persisted?.calibrationLayerHeight ?? initialPrintSettings.layerHeight
     );
@@ -126,13 +129,14 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
             optimizerAlgorithm,
             optimizerSeed,
             regionWeightingMode,
+            smoothMeshing,
         });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [paintMode, filaments, enhancedColorMatch, allowRepeatedSwaps, heightDithering, ditherLineWidth, optimizerAlgorithm, optimizerSeed, regionWeightingMode]);
+    }, [paintMode, filaments, enhancedColorMatch, allowRepeatedSwaps, heightDithering, ditherLineWidth, optimizerAlgorithm, optimizerSeed, regionWeightingMode, smoothMeshing]);
 
     useEffect(() => {
-        savePrintSettingsToStorage({ layerHeight, slicerFirstLayerHeight, pixelSize });
-    }, [layerHeight, slicerFirstLayerHeight, pixelSize]);
+        savePrintSettingsToStorage({ layerHeight, slicerFirstLayerHeight, pixelSize, smoothMeshing });
+    }, [layerHeight, slicerFirstLayerHeight, pixelSize, smoothMeshing]);
 
     // --- Color Slicing ---
     const {
@@ -226,6 +230,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 autoPaintSwatches: autoPaintSliceData.virtualSwatches,
                 autoPaintFilamentSwatches: autoPaintSliceData.filamentSwatches,
                 calibrationLayerHeight,
+                smoothMeshing,
             });
         } else {
             onChange({
@@ -241,6 +246,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 optimizerSeed,
                 regionWeightingMode,
                 calibrationLayerHeight,
+                smoothMeshing,
             });
         }
     }, [
@@ -261,6 +267,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         optimizerSeed,
         regionWeightingMode,
         calibrationLayerHeight,
+        smoothMeshing,
         autoPaintResult,
         autoPaintSliceData,
     ]);
@@ -293,9 +300,11 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 layerHeight={layerHeight}
                 slicerFirstLayerHeight={slicerFirstLayerHeight}
                 pixelSize={pixelSize}
+                smoothMeshing={smoothMeshing}
                 onLayerHeightChange={setLayerHeight}
                 onSlicerFirstLayerHeightChange={setSlicerFirstLayerHeight}
                 onPixelSizeChange={setPixelSize}
+                onSmoothMeshingChange={setSmoothMeshing}
                 onReset={handleResetPrintSettings}
                 allDefault={
                     layerHeight === DEFAULT_PRINT_SETTINGS.layerHeight &&
