@@ -64,22 +64,79 @@ jobs:
         needs: build
         runs-on: ubuntu-latest
         steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
             - name: Publish release
               uses: actions/github-script@v7
               with:
                   script: |
-                      const releases = await github.rest.repos.listReleases({
+                      const fs = require('node:fs');
+
+                      const installationNotes = `## Installation
+
+                      **macOS:**
+                      1. Download the .dmg file for your Mac:
+                         - Apple Silicon (M1/M2/M3): *_aarch64.dmg
+                         - Intel: *_x86_64.dmg
+                      2. Open the DMG and drag Kromacut to Applications
+                      3. Remove quarantine (required for unsigned apps):
+                         sudo xattr -d com.apple.quarantine /Applications/Kromacut.app
+                      4. Launch from Applications
+
+                      **Windows:**
+                      1. Download the .msi installer
+                      2. Run the installer and follow the prompts
+                      3. Launch Kromacut from the Start menu
+
+                      **Linux:**
+                      1. Download the .AppImage or .deb file
+                      2. For AppImage: chmod +x Kromacut*.AppImage && ./Kromacut*.AppImage
+                      3. For Debian/Ubuntu: sudo dpkg -i kromacut*.deb`;
+
+                      function getChangelogEntry(changelog, tagName) {
+                          const heading = /^##\s+(.+?)\s*$/gm;
+                          let match;
+
+                          while ((match = heading.exec(changelog)) !== null) {
+                              const version = match[1].split(' - ')[0].trim();
+
+                              if (version !== tagName) {
+                                  continue;
+                              }
+
+                              const start = heading.lastIndex;
+                              const next = heading.exec(changelog);
+                              const end = next ? next.index : changelog.length;
+
+                              return changelog.slice(start, end).trim();
+                          }
+
+                          return '';
+                      }
+
+                      const tagName = process.env.GITHUB_REF_NAME || context.ref.replace('refs/tags/', '');
+                      const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+                      const changelogEntry = getChangelogEntry(changelog, tagName);
+                      const changelogNotes = changelogEntry
+                          ? `## What's Changed\n\n${changelogEntry}`
+                          : `## What's Changed\n\nNo matching changelog entry was found for \`${tagName}\`.`;
+                      const releaseBody = `${installationNotes}\n\n${changelogNotes}`;
+
+                      const releases = await github.paginate(github.rest.repos.listReleases, {
                           owner: context.repo.owner,
-                          repo: context.repo.repo
+                          repo: context.repo.repo,
+                          per_page: 100
                       });
-                      const tagName = context.ref.replace('refs/tags/', '');
-                      const draftRelease = releases.data.find(r => r.draft && r.tag_name === tagName);
+                      const draftRelease = releases.find(r => r.draft && r.tag_name === tagName);
                       if (draftRelease) {
                           await github.rest.repos.updateRelease({
                               owner: context.repo.owner,
                               repo: context.repo.repo,
                               release_id: draftRelease.id,
                               draft: false,
-                              body: '## Installation\n\n**macOS:**\n1. Download the .dmg file for your Mac:\n   - Apple Silicon (M1/M2/M3): *_aarch64.dmg\n   - Intel: *_x86_64.dmg\n2. Open the DMG and drag Kromacut to Applications\n3. Remove quarantine (required for unsigned apps):\n   sudo xattr -d com.apple.quarantine /Applications/Kromacut.app\n4. Launch from Applications\n\n**Windows:**\n1. Download the .msi installer\n2. Run the installer and follow the prompts\n3. Launch Kromacut from the Start menu\n\n**Linux:**\n1. Download the .AppImage or .deb file\n2. For AppImage: chmod +x Kromacut*.AppImage && ./Kromacut*.AppImage\n3. For Debian/Ubuntu: sudo dpkg -i kromacut*.deb\n\n## Features\n- Native performance with better GPU acceleration\n- Lower memory usage than web version\n- Faster image processing\n- Offline usage'
+                              body: releaseBody
                           });
+                      } else {
+                          core.warning(`No draft release found for ${tagName}.`);
                       }
