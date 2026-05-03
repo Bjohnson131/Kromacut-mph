@@ -23,7 +23,7 @@ export function useThreeScene(
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         renderer.setSize(el.clientWidth, el.clientHeight);
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        renderer.toneMappingExposure = 2;
+        renderer.toneMappingExposure = 1.35;
         renderer.outputColorSpace = THREE.SRGBColorSpace;
         el.appendChild(renderer.domElement);
         rendererRef.current = renderer;
@@ -43,12 +43,12 @@ export function useThreeScene(
         controls.dampingFactor = 0.08;
         controlsRef.current = controls;
 
-        // Lights - optimized for MeshStandardMaterial
-        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x888888, 1.5);
+        // Balanced preview lights. Materials use flat shading so flat surfaces stay flat,
+        // while side faces still get enough light direction to show model depth.
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x7d8490, 0.9);
         scene.add(hemiLight);
 
-        // Strong directional light for definition
-        const key = new THREE.DirectionalLight(0xffffff, 1.5);
+        const key = new THREE.DirectionalLight(0xffffff, 1.8);
         key.position.set(2, 3, 1);
         scene.add(key);
 
@@ -57,15 +57,13 @@ export function useThreeScene(
         scene.add(modelGroup);
         modelGroupRef.current = modelGroup;
 
-        // Shared material (can be cloned per part if needed, but useful base)
         const material = new THREE.MeshStandardMaterial({
             color: 0xffffff,
-            side: THREE.DoubleSide,
-            transparent: false,
-            metalness: 0.1,
-            roughness: 0.9,
+            side: THREE.FrontSide,
+            metalness: 0,
+            roughness: 0.7,
+            flatShading: true,
         });
-        material.vertexColors = false;
         materialRef.current = material;
 
         // (Optional) Add a placeholder if needed, or just leave empty group until build.

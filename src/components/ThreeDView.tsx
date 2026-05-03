@@ -69,6 +69,17 @@ function buildNearestSwatchFinder(swatches: { hex: string; a: number }[]) {
     };
 }
 
+function createFlatShadedGeometry(positions: Float32Array, indices: number[]) {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setIndex(indices);
+
+    const flatGeom = geom.toNonIndexed();
+    flatGeom.computeVertexNormals();
+    geom.dispose();
+    return flatGeom;
+}
+
 export default function ThreeDView({
     imageSrc,
     baseSliceHeight,
@@ -809,16 +820,13 @@ export default function ThreeDView({
                             { yieldIntervalMs: 8 }
                         );
 
-                        const geom = new THREE.BufferGeometry();
-                        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                        geom.setIndex(indices);
-                        geom.computeVertexNormals();
-
+                        const geom = createFlatShadedGeometry(positions, indices);
                         const mat = new THREE.MeshStandardMaterial({
                             color: colorHex,
-                            roughness: 0.5,
-                            metalness: 0.1,
-                            side: THREE.DoubleSide,
+                            side: THREE.FrontSide,
+                            metalness: 0,
+                            roughness: 0.7,
+                            flatShading: true,
                         });
 
                         const mesh = new THREE.Mesh(geom, mat);
@@ -940,16 +948,13 @@ export default function ThreeDView({
                             { yieldIntervalMs: 8 }
                         );
 
-                        const geom = new THREE.BufferGeometry();
-                        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                        geom.setIndex(indices);
-                        geom.computeVertexNormals();
-
+                        const geom = createFlatShadedGeometry(positions, indices);
                         const mat = new THREE.MeshStandardMaterial({
                             color: colorHex,
-                            roughness: 0.5,
-                            metalness: 0.1,
-                            side: THREE.DoubleSide,
+                            side: THREE.FrontSide,
+                            metalness: 0,
+                            roughness: 0.7,
+                            flatShading: true,
                         });
 
                         // Note: generateGreedyMesh returns world-space coordinates (scaled by pixelSize/heightScale)

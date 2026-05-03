@@ -7,6 +7,7 @@ All notable changes to Kromacut are documented in this file.
 ### Added
 
 ### Changed
+- **3D preview lighting** - Reworked the 3D view shading to use flat face normals with balanced directional lighting, reducing fake shadow bands on flat meshed surfaces while keeping more model depth than the unlit preview
 
 ### Fixed
 
