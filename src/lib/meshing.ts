@@ -190,9 +190,40 @@ function traceComponentLoops(
     height: number
 ): Vector2[][] {
     const stride = width + 1;
-    const nextByStart = new Map<number, number>();
+
+    interface BoundaryEdge {
+        id: number;
+        start: number;
+        end: number;
+        startX: number;
+        startY: number;
+        endX: number;
+        endY: number;
+        direction: number;
+    }
+
+    const edges: BoundaryEdge[] = [];
+    const edgesByStart = new Map<number, BoundaryEdge[]>();
     const addEdge = (sx: number, sy: number, ex: number, ey: number) => {
-        nextByStart.set(sy * stride + sx, ey * stride + ex);
+        const id = edges.length;
+        const edge = {
+            id,
+            start: sy * stride + sx,
+            end: ey * stride + ex,
+            startX: sx,
+            startY: sy,
+            endX: ex,
+            endY: ey,
+            direction: ex > sx ? 0 : ey > sy ? 1 : ex < sx ? 2 : 3,
+        };
+
+        edges.push(edge);
+        const outgoing = edgesByStart.get(edge.start);
+        if (outgoing) {
+            outgoing.push(edge);
+        } else {
+            edgesByStart.set(edge.start, [edge]);
+        }
     };
 
     for (const cell of componentCells) {
@@ -213,26 +244,50 @@ function traceComponentLoops(
         }
     }
 
-    const visitedStarts = new Set<number>();
+    const visitedEdges = new Uint8Array(edges.length);
     const loops: Vector2[][] = [];
+    const turnPriority = [3, 0, 1, 2]; // left, straight, right, then back
 
-    for (const [start] of nextByStart) {
-        if (visitedStarts.has(start)) continue;
+    const selectNextEdge = (edge: BoundaryEdge): BoundaryEdge | undefined => {
+        const outgoing = edgesByStart.get(edge.end);
+        if (!outgoing) return undefined;
+
+        for (const turn of turnPriority) {
+            const wantedDirection = (edge.direction + turn) & 3;
+            const next = outgoing.find(
+                (candidate) =>
+                    !visitedEdges[candidate.id] && candidate.direction === wantedDirection
+            );
+            if (next) return next;
+        }
+
+        return undefined;
+    };
+
+    for (const startEdge of edges) {
+        if (visitedEdges[startEdge.id]) continue;
 
         const loop: Vector2[] = [];
-        let current = start;
+        let current = startEdge;
+        let closed = false;
         let guard = 0;
 
-        while (!visitedStarts.has(current) && guard <= nextByStart.size) {
-            visitedStarts.add(current);
-            loop.push(new Vector2(current % stride, Math.floor(current / stride)));
-            const next = nextByStart.get(current);
-            if (next === undefined) break;
+        while (!visitedEdges[current.id] && guard <= edges.length) {
+            visitedEdges[current.id] = 1;
+            loop.push(new Vector2(current.startX, current.startY));
+
+            if (current.end === startEdge.start) {
+                closed = true;
+                break;
+            }
+
+            const next = selectNextEdge(current);
+            if (!next) break;
             current = next;
             guard++;
         }
 
-        if (current === start && loop.length >= 3) {
+        if (closed && loop.length >= 3) {
             loops.push(simplifyLoop(loop));
         }
     }
@@ -352,12 +407,12 @@ export async function generateSmoothMesh(
             continue;
         }
 
-        let outer = loops[0].map((point) => point.clone());
-        if (!ShapeUtils.isClockWise(outer)) {
-            outer.reverse();
+        const exactOuter = loops[0].map((point) => point.clone());
+        if (!ShapeUtils.isClockWise(exactOuter)) {
+            exactOuter.reverse();
         }
 
-        const holes = loops.slice(1).map((loop) => {
+        const exactHoles = loops.slice(1).map((loop) => {
             const normalized = loop.map((point) => point.clone());
             if (ShapeUtils.isClockWise(normalized)) {
                 normalized.reverse();
@@ -365,27 +420,48 @@ export async function generateSmoothMesh(
             return normalized;
         });
 
-        outer = smoothLoop(outer);
-        const roundedHoles = holes.map(smoothLoop);
+        const smoothOuter = smoothLoop(exactOuter);
+        const smoothHoles = exactHoles.map(smoothLoop);
 
-        if (!ShapeUtils.isClockWise(outer)) {
-            outer.reverse();
+        if (!ShapeUtils.isClockWise(smoothOuter)) {
+            smoothOuter.reverse();
         }
-        for (const hole of roundedHoles) {
+        for (const hole of smoothHoles) {
             if (ShapeUtils.isClockWise(hole)) {
                 hole.reverse();
             }
         }
 
-        const topLoops = [outer, ...roundedHoles].filter((loop) => loop.length >= 3);
+        let topLoops = [smoothOuter, ...smoothHoles].filter((loop) => loop.length >= 3);
         if (topLoops.length === 0) {
             await maybeYield();
             continue;
         }
 
-        const contour = topLoops[0];
-        const holeLoops = topLoops.slice(1);
-        const faces = ShapeUtils.triangulateShape(contour, holeLoops);
+        let contour = topLoops[0];
+        let holeLoops = topLoops.slice(1);
+        let faces = ShapeUtils.triangulateShape(contour, holeLoops);
+
+        if (faces.length === 0) {
+            topLoops = [exactOuter, ...exactHoles].filter((loop) => loop.length >= 3);
+            contour = topLoops[0];
+            holeLoops = topLoops.slice(1);
+            faces = contour ? ShapeUtils.triangulateShape(contour, holeLoops) : [];
+        }
+
+        if (faces.length === 0) {
+            return generateGreedyMesh(
+                activePixels,
+                width,
+                height,
+                thickness,
+                zOffset,
+                pixelSize,
+                heightScale,
+                options
+            );
+        }
+
         const topVertices = [contour, ...holeLoops].flat();
         const topVertexCount = topVertices.length;
         const baseVert = positions.length / 3;
