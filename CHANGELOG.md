@@ -5,6 +5,7 @@ All notable changes to Kromacut are documented in this file.
 ## v2.6.0 - unreleased
 
 ### Added
+- **Meshing integrity tests** - Added unit coverage for greedy and smooth mesh generation, including the default logo image, manifold edge checks, winding/orientation checks, degenerate triangle checks, and multiple layer settings
 
 ### Changed
 - **3D preview lighting** - Reworked the 3D view shading to use flat face normals with balanced directional lighting, reducing fake shadow bands on flat meshed surfaces while keeping more model depth than the unlit preview
