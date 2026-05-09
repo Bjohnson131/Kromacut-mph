@@ -13,6 +13,7 @@ const SMOOTH_SIMPLIFY_EPSILON = 0.75;
 const SMOOTH_CHAIKIN_ITERATIONS = 2;
 const SMOOTH_CHAIKIN_WEIGHT = 0.2;
 const LOOP_EPSILON = 1e-6;
+const LOOP_COLLINEAR_EPSILON = 1e-5;
 
 const pointDistanceSq = (a: Vector2, b: Vector2) => {
     const dx = a.x - b.x;
@@ -50,7 +51,9 @@ function simplifyLoop(loop: Vector2[]): Vector2[] {
             const cross = ax * by - ay * bx;
             const dot = ax * bx + ay * by;
 
-            if (Math.abs(cross) <= LOOP_EPSILON && dot >= 0) {
+            const segmentScale = Math.max(1, Math.hypot(ax, ay), Math.hypot(bx, by));
+
+            if (Math.abs(cross) <= LOOP_COLLINEAR_EPSILON * segmentScale && dot >= 0) {
                 changed = true;
                 continue;
             }
@@ -77,7 +80,9 @@ const perpendicularDistanceToLine = (point: Vector2, start: Vector2, end: Vector
         return Math.sqrt(pointDistanceSq(point, start));
     }
 
-    return Math.abs(dy * point.x - dx * point.y + end.x * start.y - end.y * start.x) / Math.sqrt(lenSq);
+    return (
+        Math.abs(dy * point.x - dx * point.y + end.x * start.y - end.y * start.x) / Math.sqrt(lenSq)
+    );
 };
 
 function ramerDouglasPeucker(points: Vector2[], epsilon: number): Vector2[] {
@@ -87,7 +92,11 @@ function ramerDouglasPeucker(points: Vector2[], epsilon: number): Vector2[] {
     let splitIndex = -1;
 
     for (let i = 1; i < points.length - 1; i++) {
-        const distance = perpendicularDistanceToLine(points[i], points[0], points[points.length - 1]);
+        const distance = perpendicularDistanceToLine(
+            points[i],
+            points[0],
+            points[points.length - 1]
+        );
         if (distance > maxDistance) {
             maxDistance = distance;
             splitIndex = i;
@@ -139,8 +148,10 @@ function simplifyAliasedLoop(loop: Vector2[]): Vector2[] {
 
     const anchor = selectLoopAnchor(loop);
     const rotated = [...loop.slice(anchor), ...loop.slice(0, anchor)];
-    const simplified = ramerDouglasPeucker([...rotated, rotated[0]], SMOOTH_SIMPLIFY_EPSILON)
-        .slice(0, -1);
+    const simplified = ramerDouglasPeucker([...rotated, rotated[0]], SMOOTH_SIMPLIFY_EPSILON).slice(
+        0,
+        -1
+    );
 
     return simplified.length >= 3 ? simplifyLoop(simplified) : loop.map((point) => point.clone());
 }
@@ -300,9 +311,12 @@ function addExtrudedLoopWalls(
     baseVert: number,
     topVertexCount: number,
     loopOffset: number,
-    loop: Vector2[]
+    loop: Vector2[],
+    isHole = false
 ) {
-    const isClockwise = ShapeUtils.isClockWise(loop);
+    const useClockwiseWinding = isHole
+        ? !ShapeUtils.isClockWise(loop)
+        : ShapeUtils.isClockWise(loop);
 
     for (let i = 0; i < loop.length; i++) {
         const topA = baseVert + loopOffset + i;
@@ -310,7 +324,7 @@ function addExtrudedLoopWalls(
         const bottomA = baseVert + topVertexCount + loopOffset + i;
         const bottomB = baseVert + topVertexCount + loopOffset + ((i + 1) % loop.length);
 
-        if (isClockwise) {
+        if (useClockwiseWinding) {
             indices.push(topA, topB, bottomB);
             indices.push(topA, bottomB, bottomA);
         } else {
@@ -318,6 +332,37 @@ function addExtrudedLoopWalls(
             indices.push(topA, bottomA, bottomB);
         }
     }
+}
+
+function triangulateLoops(loops: Vector2[][]) {
+    const contour = loops[0];
+    const holeLoops = loops.slice(1);
+    const faces = contour ? ShapeUtils.triangulateShape(contour, holeLoops) : [];
+
+    return { faces, loops };
+}
+
+function hasDegenerateCapFaces(loops: Vector2[][], faces: number[][], pixelSize: number) {
+    const vertices = loops.flat();
+
+    for (const [a, b, c] of faces) {
+        const pointA = vertices[a];
+        const pointB = vertices[b];
+        const pointC = vertices[c];
+        const ax = Math.fround(pointA.x * pixelSize);
+        const ay = Math.fround(pointA.y * pixelSize);
+        const bx = Math.fround(pointB.x * pixelSize);
+        const by = Math.fround(pointB.y * pixelSize);
+        const cx = Math.fround(pointC.x * pixelSize);
+        const cy = Math.fround(pointC.y * pixelSize);
+        const area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+
+        if (Math.abs(area2) <= 1e-12) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -339,7 +384,10 @@ export async function generateSmoothMesh(
 
     const yieldControl =
         options?.onYield ??
-        (() => new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); }));
+        (() =>
+            new Promise<void>((resolve) => {
+                requestAnimationFrame(() => resolve());
+            }));
     const yieldIntervalMs = options?.yieldIntervalMs ?? 8;
     let lastYield = performance.now();
     const maybeYield = async () => {
@@ -432,24 +480,22 @@ export async function generateSmoothMesh(
             }
         }
 
-        let topLoops = [smoothOuter, ...smoothHoles].filter((loop) => loop.length >= 3);
+        const smoothLoops = [smoothOuter, ...smoothHoles].filter((loop) => loop.length >= 3);
+        const exactLoops = [exactOuter, ...exactHoles].filter((loop) => loop.length >= 3);
+        let topLoops = smoothLoops;
         if (topLoops.length === 0) {
             await maybeYield();
             continue;
         }
 
-        let contour = topLoops[0];
-        let holeLoops = topLoops.slice(1);
-        let faces = ShapeUtils.triangulateShape(contour, holeLoops);
+        let { faces } = triangulateLoops(topLoops);
 
-        if (faces.length === 0) {
-            topLoops = [exactOuter, ...exactHoles].filter((loop) => loop.length >= 3);
-            contour = topLoops[0];
-            holeLoops = topLoops.slice(1);
-            faces = contour ? ShapeUtils.triangulateShape(contour, holeLoops) : [];
+        if (faces.length === 0 || hasDegenerateCapFaces(topLoops, faces, pixelSize)) {
+            topLoops = exactLoops;
+            faces = triangulateLoops(topLoops).faces;
         }
 
-        if (faces.length === 0) {
+        if (faces.length === 0 || hasDegenerateCapFaces(topLoops, faces, pixelSize)) {
             return generateGreedyMesh(
                 activePixels,
                 width,
@@ -462,7 +508,7 @@ export async function generateSmoothMesh(
             );
         }
 
-        const topVertices = [contour, ...holeLoops].flat();
+        const topVertices = topLoops.flat();
         const topVertexCount = topVertices.length;
         const baseVert = positions.length / 3;
 
@@ -483,8 +529,16 @@ export async function generateSmoothMesh(
         }
 
         let loopOffset = 0;
-        for (const loop of topLoops) {
-            addExtrudedLoopWalls(indices, baseVert, topVertexCount, loopOffset, loop);
+        for (let loopIndex = 0; loopIndex < topLoops.length; loopIndex++) {
+            const loop = topLoops[loopIndex];
+            addExtrudedLoopWalls(
+                indices,
+                baseVert,
+                topVertexCount,
+                loopOffset,
+                loop,
+                loopIndex > 0
+            );
             loopOffset += loop.length;
         }
 
@@ -664,16 +718,22 @@ export async function generateGreedyMesh(
     }
 
     // --- Generate Top and Bottom Faces for each rectangle ---
-    
+
     // Pre-sort vertices for fast range queries
     const sortedVerticesAtY = new Map<number, number[]>();
     for (const [y, set] of verticesAtY) {
-        sortedVerticesAtY.set(y, Array.from(set).sort((a, b) => a - b));
+        sortedVerticesAtY.set(
+            y,
+            Array.from(set).sort((a, b) => a - b)
+        );
         await maybeYield();
     }
     const sortedVerticesAtX = new Map<number, number[]>();
     for (const [x, set] of verticesAtX) {
-        sortedVerticesAtX.set(x, Array.from(set).sort((a, b) => a - b));
+        sortedVerticesAtX.set(
+            x,
+            Array.from(set).sort((a, b) => a - b)
+        );
         await maybeYield();
     }
 
@@ -745,18 +805,12 @@ export async function generateGreedyMesh(
             bottomLoop[i] = getOrAddVertex(vx, vy, false);
         }
 
-        // Triangulate (Fan from first vertex) - Shape is convex
-        // Top Face (Normal +Z, CCW)
-        const t0 = topLoop[0];
-        for (let i = 1; i < topLoop.length - 1; i++) {
-            indices.push(t0, topLoop[i], topLoop[i + 1]);
-        }
+        const facePoints = boundary.map(([vx, vy]) => new Vector2(vx, vy));
+        const faces = ShapeUtils.triangulateShape(facePoints, []);
 
-        // Bottom Face (Normal -Z, need CW winding viewed from outside)
-        // We use the same CCW loop but push indices as (v0, v2, v1)
-        const b0 = bottomLoop[0];
-        for (let i = 1; i < bottomLoop.length - 1; i++) {
-            indices.push(b0, bottomLoop[i + 1], bottomLoop[i]);
+        for (const [a, b, c] of faces) {
+            indices.push(topLoop[a], topLoop[b], topLoop[c]);
+            indices.push(bottomLoop[a], bottomLoop[c], bottomLoop[b]);
         }
 
         await maybeYield();
