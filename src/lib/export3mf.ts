@@ -82,9 +82,14 @@ export async function exportObjectTo3MFBlob(
         return colorMap.get(hex)!;
     };
 
+    const getMeshOverrideHex = (mesh: THREE.Mesh, meshIndex: number): string | undefined => {
+        const userHex = mesh.userData.exportColorHex;
+        return typeof userHex === 'string' ? userHex : options?.layerFilamentColors?.[meshIndex];
+    };
+
     // Pre-calculate all materials so we can write the header correctly
     for (let i = 0; i < meshes.length; i++) {
-        const overrideHex = options?.layerFilamentColors?.[i];
+        const overrideHex = getMeshOverrideHex(meshes[i], i);
         getMaterialIndex(meshes[i].material, overrideHex);
     }
 
@@ -205,7 +210,7 @@ export async function exportObjectTo3MFBlob(
 
     for (let i = 0; i < meshes.length; i++) {
         const mesh = meshes[i];
-        const overrideHex = options?.layerFilamentColors?.[i];
+        const overrideHex = getMeshOverrideHex(mesh, i);
         const matIdx = getMaterialIndex(mesh.material, overrideHex);
         const objectId = nextId++;
         componentIds.push(objectId);

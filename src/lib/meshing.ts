@@ -5,6 +5,8 @@ export interface MeshData {
     indices: number[];
 }
 
+export type FootprintTriangle = [[number, number], [number, number], [number, number]];
+
 // ============================================================================
 // Smooth Contour Meshing
 // ============================================================================
@@ -12,14 +14,362 @@ export interface MeshData {
 const SMOOTH_SIMPLIFY_EPSILON = 0.75;
 const SMOOTH_CHAIKIN_ITERATIONS = 2;
 const SMOOTH_CHAIKIN_WEIGHT = 0.2;
+const SMOOTH_PROTECTED_WEIGHT_STEPS = 6;
 const LOOP_EPSILON = 1e-6;
 const LOOP_COLLINEAR_EPSILON = 1e-5;
+
+type CornerCutValidator = (corner: Vector2, incoming: Vector2, outgoing: Vector2) => boolean;
+type ShortcutValidator = (points: Vector2[]) => boolean;
 
 const pointDistanceSq = (a: Vector2, b: Vector2) => {
     const dx = a.x - b.x;
     const dy = a.y - b.y;
     return dx * dx + dy * dy;
 };
+
+const triangleArea2D = (point: [number, number], a: [number, number], b: [number, number]) =>
+    (a[0] - point[0]) * (b[1] - point[1]) - (a[1] - point[1]) * (b[0] - point[0]);
+
+const pointInTriangleInterior2D = (
+    point: [number, number],
+    a: [number, number],
+    b: [number, number],
+    c: [number, number]
+) => {
+    const d1 = triangleArea2D(point, a, b);
+    const d2 = triangleArea2D(point, b, c);
+    const d3 = triangleArea2D(point, c, a);
+
+    return (
+        (d1 > LOOP_EPSILON && d2 > LOOP_EPSILON && d3 > LOOP_EPSILON) ||
+        (d1 < -LOOP_EPSILON && d2 < -LOOP_EPSILON && d3 < -LOOP_EPSILON)
+    );
+};
+
+const pointInTriangle2D = (
+    point: [number, number],
+    a: [number, number],
+    b: [number, number],
+    c: [number, number]
+) => {
+    const d1 = triangleArea2D(point, a, b);
+    const d2 = triangleArea2D(point, b, c);
+    const d3 = triangleArea2D(point, c, a);
+    const hasNegative = d1 < -LOOP_EPSILON || d2 < -LOOP_EPSILON || d3 < -LOOP_EPSILON;
+    const hasPositive = d1 > LOOP_EPSILON || d2 > LOOP_EPSILON || d3 > LOOP_EPSILON;
+
+    return !(hasNegative && hasPositive);
+};
+
+const segmentIntersectsSegmentInterior2D = (
+    a: [number, number],
+    b: [number, number],
+    c: [number, number],
+    d: [number, number]
+) => {
+    const orient = (p: [number, number], q: [number, number], r: [number, number]) =>
+        (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+
+    const o1 = orient(a, b, c);
+    const o2 = orient(a, b, d);
+    const o3 = orient(c, d, a);
+    const o4 = orient(c, d, b);
+
+    return (
+        ((o1 > LOOP_EPSILON && o2 < -LOOP_EPSILON) || (o1 < -LOOP_EPSILON && o2 > LOOP_EPSILON)) &&
+        ((o3 > LOOP_EPSILON && o4 < -LOOP_EPSILON) || (o3 < -LOOP_EPSILON && o4 > LOOP_EPSILON))
+    );
+};
+
+const triangleBoundsOverlap2D = (a: FootprintTriangle, b: FootprintTriangle) => {
+    const aMinX = Math.min(a[0][0], a[1][0], a[2][0]);
+    const aMaxX = Math.max(a[0][0], a[1][0], a[2][0]);
+    const aMinY = Math.min(a[0][1], a[1][1], a[2][1]);
+    const aMaxY = Math.max(a[0][1], a[1][1], a[2][1]);
+    const bMinX = Math.min(b[0][0], b[1][0], b[2][0]);
+    const bMaxX = Math.max(b[0][0], b[1][0], b[2][0]);
+    const bMinY = Math.min(b[0][1], b[1][1], b[2][1]);
+    const bMaxY = Math.max(b[0][1], b[1][1], b[2][1]);
+
+    return (
+        aMinX <= bMaxX + LOOP_EPSILON &&
+        aMaxX + LOOP_EPSILON >= bMinX &&
+        aMinY <= bMaxY + LOOP_EPSILON &&
+        aMaxY + LOOP_EPSILON >= bMinY
+    );
+};
+
+const trianglesOverlap2D = (a: FootprintTriangle, b: FootprintTriangle) => {
+    if (!triangleBoundsOverlap2D(a, b)) return false;
+
+    const samples = (triangle: FootprintTriangle): Array<[number, number]> => [
+        [
+            (triangle[0][0] + triangle[1][0] + triangle[2][0]) / 3,
+            (triangle[0][1] + triangle[1][1] + triangle[2][1]) / 3,
+        ],
+        [(triangle[0][0] + triangle[1][0]) / 2, (triangle[0][1] + triangle[1][1]) / 2],
+        [(triangle[1][0] + triangle[2][0]) / 2, (triangle[1][1] + triangle[2][1]) / 2],
+        [(triangle[2][0] + triangle[0][0]) / 2, (triangle[2][1] + triangle[0][1]) / 2],
+    ];
+
+    if (
+        a.some((point) => pointInTriangleInterior2D(point, b[0], b[1], b[2])) ||
+        b.some((point) => pointInTriangleInterior2D(point, a[0], a[1], a[2])) ||
+        samples(a).some((point) => pointInTriangleInterior2D(point, b[0], b[1], b[2])) ||
+        samples(b).some((point) => pointInTriangleInterior2D(point, a[0], a[1], a[2]))
+    ) {
+        return true;
+    }
+
+    for (let i = 0; i < 3; i++) {
+        const a0 = a[i];
+        const a1 = a[(i + 1) % 3];
+        for (let j = 0; j < 3; j++) {
+            const b0 = b[j];
+            const b1 = b[(j + 1) % 3];
+            if (segmentIntersectsSegmentInterior2D(a0, a1, b0, b1)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+};
+
+export function extractHorizontalCapFootprint(
+    mesh: MeshData,
+    z: number,
+    pixelSize: number
+): FootprintTriangle[] {
+    const triangles: FootprintTriangle[] = [];
+
+    for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
+        const ids = [mesh.indices[i], mesh.indices[i + 1], mesh.indices[i + 2]];
+        const points = ids.map((id) => {
+            const offset = id * 3;
+            return [
+                mesh.positions[offset] / pixelSize,
+                mesh.positions[offset + 1] / pixelSize,
+                mesh.positions[offset + 2],
+            ] as const;
+        });
+
+        if (
+            Math.abs(points[0][2] - z) <= 1e-6 &&
+            Math.abs(points[1][2] - z) <= 1e-6 &&
+            Math.abs(points[2][2] - z) <= 1e-6
+        ) {
+            const triangle: FootprintTriangle = [
+                [points[0][0], points[0][1]],
+                [points[1][0], points[1][1]],
+                [points[2][0], points[2][1]],
+            ];
+            const area = Math.abs(triangleArea2D(triangle[0], triangle[1], triangle[2]));
+
+            if (area > LOOP_EPSILON * LOOP_EPSILON) {
+                triangles.push(triangle);
+            }
+        }
+    }
+
+    return triangles;
+}
+
+const footprintSamples = (triangle: FootprintTriangle): Array<[number, number]> => [
+    [
+        (triangle[0][0] + triangle[1][0] + triangle[2][0]) / 3,
+        (triangle[0][1] + triangle[1][1] + triangle[2][1]) / 3,
+    ],
+    [(triangle[0][0] + triangle[1][0]) / 2, (triangle[0][1] + triangle[1][1]) / 2],
+    [(triangle[1][0] + triangle[2][0]) / 2, (triangle[1][1] + triangle[2][1]) / 2],
+    [(triangle[2][0] + triangle[0][0]) / 2, (triangle[2][1] + triangle[0][1]) / 2],
+];
+
+export function findUnsupportedFootprintTriangles(
+    supportFootprint: FootprintTriangle[],
+    protectedFootprint: FootprintTriangle[]
+): FootprintTriangle[] {
+    if (protectedFootprint.length === 0) return [];
+    if (supportFootprint.length === 0) return protectedFootprint;
+
+    const bucketSize = 4;
+    const buckets = new Map<string, FootprintTriangle[]>();
+    const bucketKey = (x: number, y: number) => `${x},${y}`;
+
+    for (const triangle of supportFootprint) {
+        const minX = Math.floor(
+            Math.min(triangle[0][0], triangle[1][0], triangle[2][0]) / bucketSize
+        );
+        const maxX = Math.floor(
+            Math.max(triangle[0][0], triangle[1][0], triangle[2][0]) / bucketSize
+        );
+        const minY = Math.floor(
+            Math.min(triangle[0][1], triangle[1][1], triangle[2][1]) / bucketSize
+        );
+        const maxY = Math.floor(
+            Math.max(triangle[0][1], triangle[1][1], triangle[2][1]) / bucketSize
+        );
+
+        for (let y = minY; y <= maxY; y++) {
+            for (let x = minX; x <= maxX; x++) {
+                const key = bucketKey(x, y);
+                const bucket = buckets.get(key);
+
+                if (bucket) {
+                    bucket.push(triangle);
+                } else {
+                    buckets.set(key, [triangle]);
+                }
+            }
+        }
+    }
+
+    return protectedFootprint.filter((triangle) =>
+        footprintSamples(triangle).some((sample) => {
+            const bucket = buckets.get(
+                bucketKey(Math.floor(sample[0] / bucketSize), Math.floor(sample[1] / bucketSize))
+            );
+
+            return !bucket?.some((supportTriangle) =>
+                pointInTriangle2D(
+                    sample,
+                    supportTriangle[0],
+                    supportTriangle[1],
+                    supportTriangle[2]
+                )
+            );
+        })
+    );
+}
+
+type FootprintEdge = {
+    count: number;
+    a: [number, number];
+    b: [number, number];
+};
+
+const footprintVertexKey = ([x, y]: [number, number]) =>
+    `${Math.round(x / LOOP_EPSILON)},${Math.round(y / LOOP_EPSILON)}`;
+
+const footprintEdgeKey = (a: [number, number], b: [number, number]) => {
+    const keyA = footprintVertexKey(a);
+    const keyB = footprintVertexKey(b);
+
+    return keyA < keyB ? `${keyA}|${keyB}` : `${keyB}|${keyA}`;
+};
+
+export function createFootprintSupportPrismMesh(
+    footprint: FootprintTriangle[],
+    zBottom: number,
+    zTop: number,
+    pixelSize: number
+): MeshData | null {
+    if (footprint.length === 0 || Math.abs(zTop - zBottom) <= LOOP_EPSILON) {
+        return null;
+    }
+
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const topVertices = new Map<string, number>();
+    const bottomVertices = new Map<string, number>();
+    const boundaryEdges = new Map<string, FootprintEdge>();
+
+    const getVertex = (point: [number, number], z: number, vertices: Map<string, number>) => {
+        const key = footprintVertexKey(point);
+        const existing = vertices.get(key);
+
+        if (existing !== undefined) {
+            return existing;
+        }
+
+        const index = positions.length / 3;
+        vertices.set(key, index);
+        positions.push(point[0] * pixelSize, point[1] * pixelSize, z);
+        return index;
+    };
+
+    const addEdge = (a: [number, number], b: [number, number]) => {
+        const key = footprintEdgeKey(a, b);
+        const existing = boundaryEdges.get(key);
+
+        if (existing) {
+            existing.count++;
+        } else {
+            boundaryEdges.set(key, { count: 1, a, b });
+        }
+    };
+
+    for (const sourceTriangle of footprint) {
+        const triangle: FootprintTriangle = [
+            [...sourceTriangle[0]],
+            [...sourceTriangle[1]],
+            [...sourceTriangle[2]],
+        ];
+        const area = triangleArea2D(triangle[0], triangle[1], triangle[2]);
+
+        if (Math.abs(area) <= LOOP_EPSILON * LOOP_EPSILON) {
+            continue;
+        }
+
+        if (area < 0) {
+            [triangle[1], triangle[2]] = [triangle[2], triangle[1]];
+        }
+
+        const topA = getVertex(triangle[0], zTop, topVertices);
+        const topB = getVertex(triangle[1], zTop, topVertices);
+        const topC = getVertex(triangle[2], zTop, topVertices);
+        const bottomA = getVertex(triangle[0], zBottom, bottomVertices);
+        const bottomB = getVertex(triangle[1], zBottom, bottomVertices);
+        const bottomC = getVertex(triangle[2], zBottom, bottomVertices);
+
+        indices.push(topA, topB, topC);
+        indices.push(bottomA, bottomC, bottomB);
+        addEdge(triangle[0], triangle[1]);
+        addEdge(triangle[1], triangle[2]);
+        addEdge(triangle[2], triangle[0]);
+    }
+
+    for (const edge of boundaryEdges.values()) {
+        if (edge.count !== 1) {
+            continue;
+        }
+
+        const topA = getVertex(edge.a, zTop, topVertices);
+        const topB = getVertex(edge.b, zTop, topVertices);
+        const bottomA = getVertex(edge.a, zBottom, bottomVertices);
+        const bottomB = getVertex(edge.b, zBottom, bottomVertices);
+
+        indices.push(topA, bottomB, topB);
+        indices.push(topA, bottomA, bottomB);
+    }
+
+    if (indices.length === 0) {
+        return null;
+    }
+
+    return {
+        positions: new Float32Array(positions),
+        indices,
+    };
+}
+
+export function createFootprintSupportPrismMeshes(
+    footprint: FootprintTriangle[],
+    zBottom: number,
+    zTop: number,
+    pixelSize: number
+): MeshData[] {
+    const meshes: MeshData[] = [];
+
+    for (const triangle of footprint) {
+        const mesh = createFootprintSupportPrismMesh([triangle], zBottom, zTop, pixelSize);
+        if (mesh) {
+            meshes.push(mesh);
+        }
+    }
+
+    return meshes;
+}
 
 function simplifyLoop(loop: Vector2[]): Vector2[] {
     let points = loop.filter(
@@ -85,7 +435,11 @@ const perpendicularDistanceToLine = (point: Vector2, start: Vector2, end: Vector
     );
 };
 
-function ramerDouglasPeucker(points: Vector2[], epsilon: number): Vector2[] {
+function ramerDouglasPeucker(
+    points: Vector2[],
+    epsilon: number,
+    canUseShortcut?: ShortcutValidator
+): Vector2[] {
     if (points.length <= 2) return points.map((point) => point.clone());
 
     let maxDistance = -1;
@@ -103,12 +457,16 @@ function ramerDouglasPeucker(points: Vector2[], epsilon: number): Vector2[] {
         }
     }
 
-    if (maxDistance <= epsilon || splitIndex === -1) {
+    if (
+        (maxDistance <= epsilon || splitIndex === -1) &&
+        (!canUseShortcut || canUseShortcut(points))
+    ) {
         return [points[0].clone(), points[points.length - 1].clone()];
     }
 
-    const left = ramerDouglasPeucker(points.slice(0, splitIndex + 1), epsilon);
-    const right = ramerDouglasPeucker(points.slice(splitIndex), epsilon);
+    const split = splitIndex > 0 ? splitIndex : Math.floor(points.length / 2);
+    const left = ramerDouglasPeucker(points.slice(0, split + 1), epsilon, canUseShortcut);
+    const right = ramerDouglasPeucker(points.slice(split), epsilon, canUseShortcut);
     return [...left.slice(0, -1), ...right];
 }
 
@@ -143,20 +501,34 @@ function selectLoopAnchor(loop: Vector2[]): number {
     return bestIndex;
 }
 
-function simplifyAliasedLoop(loop: Vector2[]): Vector2[] {
+function simplifyAliasedLoop(loop: Vector2[], canUseShortcut?: ShortcutValidator): Vector2[] {
     if (loop.length < 5) return loop.map((point) => point.clone());
 
     const anchor = selectLoopAnchor(loop);
     const rotated = [...loop.slice(anchor), ...loop.slice(0, anchor)];
-    const simplified = ramerDouglasPeucker([...rotated, rotated[0]], SMOOTH_SIMPLIFY_EPSILON).slice(
-        0,
-        -1
-    );
+    const simplified = ramerDouglasPeucker(
+        [...rotated, rotated[0]],
+        SMOOTH_SIMPLIFY_EPSILON,
+        canUseShortcut
+    ).slice(0, -1);
 
     return simplified.length >= 3 ? simplifyLoop(simplified) : loop.map((point) => point.clone());
 }
 
-function chaikinSmoothLoop(loop: Vector2[]): Vector2[] {
+function pushDistinctPoint(points: Vector2[], point: Vector2) {
+    if (
+        points.length === 0 ||
+        pointDistanceSq(point, points[points.length - 1]) > LOOP_EPSILON * LOOP_EPSILON
+    ) {
+        points.push(point);
+    }
+}
+
+function chaikinSmoothLoop(
+    loop: Vector2[],
+    canCutCorner?: CornerCutValidator,
+    allowPartialProtectedCuts = true
+): Vector2[] {
     let points = loop.map((point) => point.clone());
 
     for (let iteration = 0; iteration < SMOOTH_CHAIKIN_ITERATIONS; iteration++) {
@@ -164,22 +536,45 @@ function chaikinSmoothLoop(loop: Vector2[]): Vector2[] {
 
         const next: Vector2[] = [];
         for (let i = 0; i < points.length; i++) {
+            const previous = points[(i - 1 + points.length) % points.length];
             const current = points[i];
             const following = points[(i + 1) % points.length];
-            const q = current.clone().lerp(following, SMOOTH_CHAIKIN_WEIGHT);
-            const r = current.clone().lerp(following, 1 - SMOOTH_CHAIKIN_WEIGHT);
 
-            if (
-                next.length === 0 ||
-                pointDistanceSq(q, next[next.length - 1]) > LOOP_EPSILON * LOOP_EPSILON
-            ) {
-                next.push(q);
-            }
-            if (
-                next.length === 0 ||
-                pointDistanceSq(r, next[next.length - 1]) > LOOP_EPSILON * LOOP_EPSILON
-            ) {
-                next.push(r);
+            const makeCut = (weight: number) =>
+                [
+                    previous.clone().lerp(current, 1 - weight),
+                    current.clone().lerp(following, weight),
+                ] as const;
+
+            let [incoming, outgoing] = makeCut(SMOOTH_CHAIKIN_WEIGHT);
+
+            if (!canCutCorner || canCutCorner(current, incoming, outgoing)) {
+                pushDistinctPoint(next, incoming);
+                pushDistinctPoint(next, outgoing);
+            } else if (allowPartialProtectedCuts) {
+                let bestWeight = 0;
+                let highWeight = SMOOTH_CHAIKIN_WEIGHT;
+
+                for (let step = 0; step < SMOOTH_PROTECTED_WEIGHT_STEPS; step++) {
+                    const testWeight = (bestWeight + highWeight) / 2;
+                    const [testIncoming, testOutgoing] = makeCut(testWeight);
+
+                    if (canCutCorner(current, testIncoming, testOutgoing)) {
+                        bestWeight = testWeight;
+                    } else {
+                        highWeight = testWeight;
+                    }
+                }
+
+                if (bestWeight > LOOP_EPSILON) {
+                    [incoming, outgoing] = makeCut(bestWeight);
+                    pushDistinctPoint(next, incoming);
+                    pushDistinctPoint(next, outgoing);
+                } else {
+                    pushDistinctPoint(next, current.clone());
+                }
+            } else {
+                pushDistinctPoint(next, current.clone());
             }
         }
 
@@ -189,9 +584,14 @@ function chaikinSmoothLoop(loop: Vector2[]): Vector2[] {
     return points.length >= 3 ? points : loop.map((point) => point.clone());
 }
 
-function smoothLoop(loop: Vector2[]): Vector2[] {
-    const simplified = simplifyAliasedLoop(loop);
-    return chaikinSmoothLoop(simplified);
+function smoothLoop(
+    loop: Vector2[],
+    canCutCorner?: CornerCutValidator,
+    canUseShortcut?: ShortcutValidator,
+    allowPartialProtectedCuts = true
+): Vector2[] {
+    const simplified = simplifyAliasedLoop(loop, canUseShortcut);
+    return chaikinSmoothLoop(simplified, canCutCorner, allowPartialProtectedCuts);
 }
 
 function traceComponentLoops(
@@ -404,6 +804,68 @@ export async function generateSmoothMesh(
 
     const visited = new Uint8Array(width * height);
     const queue: number[] = [];
+    const protectedPixels = options?.protectedPixels;
+    const protectedFootprint = options?.protectedFootprint ?? [];
+    const allowPartialProtectedCuts = options?.allowPartialProtectedCuts !== false;
+    const cutRemovesProtectedFootprint = (
+        corner: Vector2,
+        incoming: Vector2,
+        outgoing: Vector2
+    ) => {
+        if (!protectedPixels && protectedFootprint.length === 0) {
+            return false;
+        }
+
+        const cutTriangle: FootprintTriangle = [
+            [corner.x, corner.y],
+            [incoming.x, incoming.y],
+            [outgoing.x, outgoing.y],
+        ];
+
+        if (protectedFootprint.some((triangle) => trianglesOverlap2D(cutTriangle, triangle))) {
+            return true;
+        }
+
+        if (!protectedPixels) {
+            return false;
+        }
+
+        const minX = Math.max(0, Math.floor(Math.min(corner.x, incoming.x, outgoing.x)));
+        const maxX = Math.min(width - 1, Math.ceil(Math.max(corner.x, incoming.x, outgoing.x)));
+        const minY = Math.max(0, Math.floor(Math.min(corner.y, incoming.y, outgoing.y)));
+        const maxY = Math.min(height - 1, Math.ceil(Math.max(corner.y, incoming.y, outgoing.y)));
+
+        for (let yy = minY; yy <= maxY; yy++) {
+            for (let xx = minX; xx <= maxX; xx++) {
+                if (!protectedPixels[yy * width + xx]) {
+                    continue;
+                }
+
+                const cellTriangles: FootprintTriangle[] = [
+                    [
+                        [xx, yy],
+                        [xx + 1, yy],
+                        [xx + 1, yy + 1],
+                    ],
+                    [
+                        [xx, yy],
+                        [xx + 1, yy + 1],
+                        [xx, yy + 1],
+                    ],
+                ];
+
+                if (
+                    cellTriangles.some((cellTriangle) =>
+                        trianglesOverlap2D(cutTriangle, cellTriangle)
+                    )
+                ) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    };
 
     for (let start = 0; start < activePixels.length; start++) {
         if (!activePixels[start] || visited[start]) continue;
@@ -446,6 +908,139 @@ export async function generateSmoothMesh(
             }
         }
 
+        const componentMask = new Uint8Array(width * height);
+        for (const cell of componentCells) {
+            componentMask[cell] = 1;
+        }
+        const pointInsideComponentFootprint = (x: number, y: number) => {
+            const epsilon = 1e-5;
+            const minX = Math.max(0, Math.floor(x - epsilon));
+            const maxX = Math.min(width - 1, Math.floor(x + epsilon));
+            const minY = Math.max(0, Math.floor(y - epsilon));
+            const maxY = Math.min(height - 1, Math.floor(y + epsilon));
+
+            for (let yy = minY; yy <= maxY; yy++) {
+                for (let xx = minX; xx <= maxX; xx++) {
+                    if (componentMask[yy * width + xx]) {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        };
+        const canCutCornerInsideFootprint = (
+            corner: Vector2,
+            incoming: Vector2,
+            outgoing: Vector2
+        ) => {
+            if (cutRemovesProtectedFootprint(corner, incoming, outgoing)) {
+                return false;
+            }
+
+            for (const t of [0.25, 0.5, 0.75]) {
+                const x = incoming.x + (outgoing.x - incoming.x) * t;
+                const y = incoming.y + (outgoing.y - incoming.y) * t;
+
+                if (!pointInsideComponentFootprint(x, y)) {
+                    return false;
+                }
+            }
+
+            return true;
+        };
+        const shortcutRemovesProtectedFootprint = (points: Vector2[]) => {
+            if (!protectedPixels && protectedFootprint.length === 0) {
+                return false;
+            }
+
+            const startPoint = points[0];
+
+            for (let i = 1; i + 1 < points.length; i++) {
+                const cutTriangle: FootprintTriangle = [
+                    [startPoint.x, startPoint.y],
+                    [points[i].x, points[i].y],
+                    [points[i + 1].x, points[i + 1].y],
+                ];
+
+                if (
+                    protectedFootprint.some((triangle) => trianglesOverlap2D(cutTriangle, triangle))
+                ) {
+                    return true;
+                }
+
+                if (!protectedPixels) {
+                    continue;
+                }
+
+                const minX = Math.max(
+                    0,
+                    Math.floor(Math.min(startPoint.x, points[i].x, points[i + 1].x))
+                );
+                const maxX = Math.min(
+                    width - 1,
+                    Math.ceil(Math.max(startPoint.x, points[i].x, points[i + 1].x))
+                );
+                const minY = Math.max(
+                    0,
+                    Math.floor(Math.min(startPoint.y, points[i].y, points[i + 1].y))
+                );
+                const maxY = Math.min(
+                    height - 1,
+                    Math.ceil(Math.max(startPoint.y, points[i].y, points[i + 1].y))
+                );
+
+                for (let yy = minY; yy <= maxY; yy++) {
+                    for (let xx = minX; xx <= maxX; xx++) {
+                        if (!protectedPixels[yy * width + xx]) {
+                            continue;
+                        }
+
+                        const cellTriangles: FootprintTriangle[] = [
+                            [
+                                [xx, yy],
+                                [xx + 1, yy],
+                                [xx + 1, yy + 1],
+                            ],
+                            [
+                                [xx, yy],
+                                [xx + 1, yy + 1],
+                                [xx, yy + 1],
+                            ],
+                        ];
+
+                        if (
+                            cellTriangles.some((cellTriangle) =>
+                                trianglesOverlap2D(cutTriangle, cellTriangle)
+                            )
+                        ) {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        };
+        const canUseShortcutInsideFootprint = (points: Vector2[]) => {
+            if (shortcutRemovesProtectedFootprint(points)) {
+                return false;
+            }
+
+            const startPoint = points[0];
+            const endPoint = points[points.length - 1];
+            for (const t of [0.2, 0.4, 0.6, 0.8]) {
+                const x = startPoint.x + (endPoint.x - startPoint.x) * t;
+                const y = startPoint.y + (endPoint.y - startPoint.y) * t;
+
+                if (!pointInsideComponentFootprint(x, y)) {
+                    return false;
+                }
+            }
+
+            return true;
+        };
+
         const loops = traceComponentLoops(componentCells, activePixels, width, height)
             .filter((loop) => loop.length >= 3)
             .sort((a, b) => Math.abs(ShapeUtils.area(b)) - Math.abs(ShapeUtils.area(a)));
@@ -468,8 +1063,20 @@ export async function generateSmoothMesh(
             return normalized;
         });
 
-        const smoothOuter = smoothLoop(exactOuter);
-        const smoothHoles = exactHoles.map(smoothLoop);
+        const smoothOuter = smoothLoop(
+            exactOuter,
+            canCutCornerInsideFootprint,
+            canUseShortcutInsideFootprint,
+            allowPartialProtectedCuts
+        );
+        const smoothHoles = exactHoles.map((hole) =>
+            smoothLoop(
+                hole,
+                canCutCornerInsideFootprint,
+                canUseShortcutInsideFootprint,
+                allowPartialProtectedCuts
+            )
+        );
 
         if (!ShapeUtils.isClockWise(smoothOuter)) {
             smoothOuter.reverse();
@@ -554,6 +1161,9 @@ export async function generateSmoothMesh(
 interface MeshYieldOptions {
     yieldIntervalMs?: number;
     onYield?: () => Promise<void>;
+    protectedPixels?: Uint8Array | Uint8ClampedArray | boolean[];
+    protectedFootprint?: FootprintTriangle[];
+    allowPartialProtectedCuts?: boolean;
 }
 
 /**

@@ -12,6 +12,8 @@ All notable changes to Kromacut are documented in this file.
 
 ### Fixed
 - **Slicer-safe 3MF and meshing topology** - 3MF export now preserves shared vertex connectivity for non-indexed preview geometry while keeping separate colored layer objects, and greedy/smooth meshing now avoids degenerate cap triangles and inverted hole wall winding that could trigger non-manifold or missing-layer slicer warnings
+- **Smooth meshing footprint safety** - Smooth corner cuts and simplification shortcuts now stay inside the source pixel footprint, and smooth builds add same-color manifold support prisms only where an upper smoothed cap would otherwise float, preventing small boundary leaks and unsupported overhangs without squaring off the layer underneath
+- **Smooth mesh build progress** - 3D build progress now stays monotonic while smooth layers are generated top-down for support checks
 
 ## v2.5.0 - 2026-05-03
 

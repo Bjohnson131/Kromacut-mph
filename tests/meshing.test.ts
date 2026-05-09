@@ -5,7 +5,14 @@ import { dirname, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { inflateSync } from 'node:zlib';
-import { generateGreedyMesh, generateSmoothMesh, type MeshData } from '../src/lib/meshing.ts';
+import {
+    createFootprintSupportPrismMeshes,
+    extractHorizontalCapFootprint,
+    findUnsupportedFootprintTriangles,
+    generateGreedyMesh,
+    generateSmoothMesh,
+    type MeshData,
+} from '../src/lib/meshing.ts';
 import { inspectMeshIntegrity, type MeshIntegrityReport } from './meshDiagnostics.ts';
 
 type MeshGenerator = typeof generateGreedyMesh;
@@ -21,6 +28,12 @@ interface PngImage {
     width: number;
     height: number;
     rgba: Uint8Array;
+}
+
+interface RoundedExportTopologyReport {
+    boundaryEdgeCount: number;
+    overusedEdgeCount: number;
+    skippedTriangleCount: number;
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -250,6 +263,301 @@ function assertHealthyMesh(label: string, mesh: MeshData) {
     return report;
 }
 
+function inspectRoundedExportTopology(mesh: MeshData): RoundedExportTopologyReport {
+    const vertexMap = new Map<string, number>();
+    const exportVertices: Array<[number, number, number]> = [];
+    const edges = new Map<string, number>();
+    let skippedTriangleCount = 0;
+
+    const getExportVertex = (sourceIndex: number) => {
+        const offset = sourceIndex * 3;
+        const point = [
+            Math.round(mesh.positions[offset] * 100000) / 100000,
+            Math.round(mesh.positions[offset + 1] * 100000) / 100000,
+            Math.round(mesh.positions[offset + 2] * 100000) / 100000,
+        ] as [number, number, number];
+        const key = point.join(',');
+        const existing = vertexMap.get(key);
+
+        if (existing !== undefined) {
+            return existing;
+        }
+
+        const index = exportVertices.length;
+        vertexMap.set(key, index);
+        exportVertices.push(point);
+        return index;
+    };
+
+    const addEdge = (a: number, b: number) => {
+        const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+        edges.set(key, (edges.get(key) ?? 0) + 1);
+    };
+
+    for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
+        const a = getExportVertex(mesh.indices[i]);
+        const b = getExportVertex(mesh.indices[i + 1]);
+        const c = getExportVertex(mesh.indices[i + 2]);
+        const pointA = exportVertices[a];
+        const pointB = exportVertices[b];
+        const pointC = exportVertices[c];
+        const abx = pointB[0] - pointA[0];
+        const aby = pointB[1] - pointA[1];
+        const abz = pointB[2] - pointA[2];
+        const acx = pointC[0] - pointA[0];
+        const acy = pointC[1] - pointA[1];
+        const acz = pointC[2] - pointA[2];
+        const crossX = aby * acz - abz * acy;
+        const crossY = abz * acx - abx * acz;
+        const crossZ = abx * acy - aby * acx;
+
+        if (a === b || b === c || a === c || (crossX === 0 && crossY === 0 && crossZ === 0)) {
+            skippedTriangleCount++;
+            continue;
+        }
+
+        addEdge(a, b);
+        addEdge(b, c);
+        addEdge(c, a);
+    }
+
+    let boundaryEdgeCount = 0;
+    let overusedEdgeCount = 0;
+
+    for (const count of edges.values()) {
+        if (count === 1) {
+            boundaryEdgeCount++;
+        } else if (count > 2) {
+            overusedEdgeCount++;
+        }
+    }
+
+    return {
+        boundaryEdgeCount,
+        overusedEdgeCount,
+        skippedTriangleCount,
+    };
+}
+
+function hasFractionalXY(mesh: MeshData, pixelSize: number) {
+    for (let i = 0; i + 2 < mesh.positions.length; i += 3) {
+        const x = mesh.positions[i] / pixelSize;
+        const y = mesh.positions[i + 1] / pixelSize;
+
+        if (Math.abs(x - Math.round(x)) > 1e-4 || Math.abs(y - Math.round(y)) > 1e-4) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function pointInsideMask(mask: RasterMask, x: number, y: number) {
+    const epsilon = 1e-5;
+    const minX = Math.max(0, Math.floor(x - epsilon));
+    const maxX = Math.min(mask.width - 1, Math.floor(x + epsilon));
+    const minY = Math.max(0, Math.floor(y - epsilon));
+    const maxY = Math.min(mask.height - 1, Math.floor(y + epsilon));
+
+    for (let yy = minY; yy <= maxY; yy++) {
+        for (let xx = minX; xx <= maxX; xx++) {
+            if (mask.activePixels[yy * mask.width + xx]) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+function countCapCentroidsOutsideMask(mesh: MeshData, mask: RasterMask, pixelSize: number) {
+    let outsideCount = 0;
+
+    for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
+        const a = mesh.indices[i] * 3;
+        const b = mesh.indices[i + 1] * 3;
+        const c = mesh.indices[i + 2] * 3;
+        const az = mesh.positions[a + 2];
+        const bz = mesh.positions[b + 2];
+        const cz = mesh.positions[c + 2];
+
+        if (Math.abs(az - bz) > 1e-6 || Math.abs(bz - cz) > 1e-6) {
+            continue;
+        }
+
+        const cx =
+            (mesh.positions[a] / pixelSize +
+                mesh.positions[b] / pixelSize +
+                mesh.positions[c] / pixelSize) /
+            3;
+        const cy =
+            (mesh.positions[a + 1] / pixelSize +
+                mesh.positions[b + 1] / pixelSize +
+                mesh.positions[c + 1] / pixelSize) /
+            3;
+
+        if (!pointInsideMask(mask, cx, cy)) {
+            outsideCount++;
+        }
+    }
+
+    return outsideCount;
+}
+
+function triangleArea(point: [number, number], a: [number, number], b: [number, number]) {
+    return (a[0] - point[0]) * (b[1] - point[1]) - (a[1] - point[1]) * (b[0] - point[0]);
+}
+
+function pointInTriangle(
+    point: [number, number],
+    a: [number, number],
+    b: [number, number],
+    c: [number, number]
+) {
+    const d1 = triangleArea(point, a, b);
+    const d2 = triangleArea(point, b, c);
+    const d3 = triangleArea(point, c, a);
+    const hasNegative = d1 < -1e-6 || d2 < -1e-6 || d3 < -1e-6;
+    const hasPositive = d1 > 1e-6 || d2 > 1e-6 || d3 > 1e-6;
+
+    return !(hasNegative && hasPositive);
+}
+
+type MeshOrParts = MeshData | MeshData[];
+
+function horizontalCapTriangles(meshOrParts: MeshOrParts, z: number, pixelSize: number) {
+    const triangles: Array<[[number, number], [number, number], [number, number]]> = [];
+    const meshes = Array.isArray(meshOrParts) ? meshOrParts : [meshOrParts];
+
+    for (const mesh of meshes) {
+        for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
+            const ids = [mesh.indices[i], mesh.indices[i + 1], mesh.indices[i + 2]];
+            const points = ids.map((id) => {
+                const offset = id * 3;
+                return [
+                    mesh.positions[offset] / pixelSize,
+                    mesh.positions[offset + 1] / pixelSize,
+                    mesh.positions[offset + 2],
+                ] as const;
+            });
+
+            if (
+                Math.abs(points[0][2] - z) <= 1e-6 &&
+                Math.abs(points[1][2] - z) <= 1e-6 &&
+                Math.abs(points[2][2] - z) <= 1e-6
+            ) {
+                triangles.push([
+                    [points[0][0], points[0][1]],
+                    [points[1][0], points[1][1]],
+                    [points[2][0], points[2][1]],
+                ]);
+            }
+        }
+    }
+
+    return triangles;
+}
+
+function countUnsupportedBottomCapTriangles(
+    lower: MeshOrParts,
+    upper: MeshOrParts,
+    supportZ: number,
+    upperBottomZ: number,
+    pixelSize: number
+) {
+    const support = horizontalCapTriangles(lower, supportZ, pixelSize);
+    const upperBottom = horizontalCapTriangles(upper, upperBottomZ, pixelSize);
+    let unsupportedCount = 0;
+
+    for (const triangle of upperBottom) {
+        const samples: Array<[number, number]> = [
+            [
+                (triangle[0][0] + triangle[1][0] + triangle[2][0]) / 3,
+                (triangle[0][1] + triangle[1][1] + triangle[2][1]) / 3,
+            ],
+            [(triangle[0][0] + triangle[1][0]) / 2, (triangle[0][1] + triangle[1][1]) / 2],
+            [(triangle[1][0] + triangle[2][0]) / 2, (triangle[1][1] + triangle[2][1]) / 2],
+            [(triangle[2][0] + triangle[0][0]) / 2, (triangle[2][1] + triangle[0][1]) / 2],
+        ];
+
+        if (
+            samples.some(
+                (sample) =>
+                    !support.some((supportTriangle) =>
+                        pointInTriangle(
+                            sample,
+                            supportTriangle[0],
+                            supportTriangle[1],
+                            supportTriangle[2]
+                        )
+                    )
+            )
+        ) {
+            unsupportedCount++;
+        }
+    }
+
+    return unsupportedCount;
+}
+
+function footprintSignature(meshOrParts: MeshOrParts, z: number, pixelSize: number) {
+    const meshes = Array.isArray(meshOrParts) ? meshOrParts : [meshOrParts];
+
+    return meshes
+        .flatMap((mesh) => extractHorizontalCapFootprint(mesh, z, pixelSize))
+        .map((triangle) =>
+            triangle
+                .map(([x, y]) => `${x.toFixed(5)},${y.toFixed(5)}`)
+                .sort()
+                .join('|')
+        )
+        .sort();
+}
+
+async function generateSmoothMeshWithMinimalProtection(
+    mask: RasterMask,
+    thickness: number,
+    zOffset: number,
+    pixelSize: number,
+    protectedFootprint: ReturnType<typeof extractHorizontalCapFootprint> | undefined
+) {
+    const mesh = await generateSmoothMesh(
+        mask.activePixels,
+        mask.width,
+        mask.height,
+        thickness,
+        zOffset,
+        pixelSize,
+        1,
+        noYieldOptions
+    );
+    const parts = [mesh];
+
+    if (protectedFootprint?.length) {
+        const supportFootprint = extractHorizontalCapFootprint(
+            mesh,
+            zOffset + thickness,
+            pixelSize
+        );
+        const unsupportedFootprint = findUnsupportedFootprintTriangles(
+            supportFootprint,
+            protectedFootprint
+        );
+
+        if (unsupportedFootprint.length > 0) {
+            const supportPrisms = createFootprintSupportPrismMeshes(
+                unsupportedFootprint,
+                zOffset,
+                zOffset + thickness,
+                pixelSize
+            );
+            parts.push(...supportPrisms);
+        }
+    }
+
+    return parts;
+}
+
 function assertZBounds(
     label: string,
     report: MeshIntegrityReport,
@@ -346,6 +654,295 @@ test('default logo mask stays slicer-safe across meshers and layer settings', as
                 );
             });
         }
+    }
+});
+
+test('smooth default logo stays slicer-safe after 3MF export rounding', async () => {
+    const logoMask = maskFromPngAlpha(resolve(repoRoot, 'src/assets/logo.png'), 128);
+    const mesh = await generateSmoothMesh(
+        logoMask.activePixels,
+        logoMask.width,
+        logoMask.height,
+        0.08,
+        0,
+        0.4,
+        1,
+        noYieldOptions
+    );
+
+    assertHealthyMesh('smooth export-rounded logo source mesh', mesh);
+    assert.equal(hasFractionalXY(mesh, 0.4), true, 'smooth logo should contain smoothed vertices');
+
+    const report = inspectRoundedExportTopology(mesh);
+    assert.deepEqual(report, {
+        boundaryEdgeCount: 0,
+        overusedEdgeCount: 0,
+        skippedTriangleCount: 0,
+    });
+});
+
+test('smooth caps do not create overhangs outside the source footprint', async () => {
+    const mask = maskFromRows(['######', '#....#', '#.##.#', '#.##.#', '#....#', '######']);
+    const mesh = await generateSmoothMesh(
+        mask.activePixels,
+        mask.width,
+        mask.height,
+        0.08,
+        0,
+        0.4,
+        1,
+        noYieldOptions
+    );
+
+    assertHealthyMesh('smooth concave footprint mesh', mesh);
+    assert.equal(hasFractionalXY(mesh, 0.4), true, 'concave footprint should still be smoothed');
+    assert.equal(countCapCentroidsOutsideMask(mesh, mask, 0.4), 0);
+});
+
+test('smooth lower layers preserve support for protected upper pixels', async () => {
+    const lowerMask = maskFromRows(['######', '######', '######', '######']);
+    const upperMask = maskFromRows(['#.....', '......', '......', '......']);
+    const lowerOptions = {
+        ...noYieldOptions,
+        protectedPixels: upperMask.activePixels,
+    };
+    const lower = await generateSmoothMesh(
+        lowerMask.activePixels,
+        lowerMask.width,
+        lowerMask.height,
+        0.08,
+        0,
+        0.4,
+        1,
+        lowerOptions
+    );
+    const upper = await generateSmoothMesh(
+        upperMask.activePixels,
+        upperMask.width,
+        upperMask.height,
+        0.08,
+        0.08,
+        0.4,
+        1,
+        noYieldOptions
+    );
+
+    assertHealthyMesh('protected lower support mesh', lower);
+    assertHealthyMesh('upper corner mesh', upper);
+    assert.equal(
+        hasFractionalXY(lower, 0.4),
+        true,
+        'supported lower layer should still be smoothed'
+    );
+    assert.equal(countUnsupportedBottomCapTriangles(lower, upper, 0.08, 0.08, 0.4), 0);
+});
+
+test('smooth support patches preserve the original smoothed lower footprint', async () => {
+    const lowerMask = maskFromRows(['######', '######', '######', '######']);
+    const upperMask = maskFromRows(['#.....', '......', '......', '......']);
+    const baseline = await generateSmoothMesh(
+        lowerMask.activePixels,
+        lowerMask.width,
+        lowerMask.height,
+        0.08,
+        0,
+        0.4,
+        1,
+        noYieldOptions
+    );
+    const upper = await generateSmoothMesh(
+        upperMask.activePixels,
+        upperMask.width,
+        upperMask.height,
+        0.08,
+        0.08,
+        0.4,
+        1,
+        noYieldOptions
+    );
+    const protectedFootprint = extractHorizontalCapFootprint(upper, 0.08, 0.4);
+    const unsupportedBefore = findUnsupportedFootprintTriangles(
+        extractHorizontalCapFootprint(baseline, 0.08, 0.4),
+        protectedFootprint
+    );
+    const supportPrisms = createFootprintSupportPrismMeshes(unsupportedBefore, 0, 0.08, 0.4);
+    assert.equal(supportPrisms.length > 0, true, 'fixture should produce support patch geometry');
+    const supported = [baseline, ...supportPrisms];
+    const originalFootprint = new Set(footprintSignature(baseline, 0.08, 0.4));
+    const supportedBaseFootprint = new Set(footprintSignature(baseline, 0.08, 0.4));
+
+    assert.equal(unsupportedBefore.length > 0, true, 'fixture should require support patches');
+    for (const [index, supportPrism] of supportPrisms.entries()) {
+        assertHealthyMesh(`support prism mesh ${index}`, supportPrism);
+    }
+    assert.equal(countUnsupportedBottomCapTriangles(supported, upper, 0.08, 0.08, 0.4), 0);
+
+    for (const signature of originalFootprint) {
+        assert.equal(
+            supportedBaseFootprint.has(signature),
+            true,
+            'support patches should not replace or square off the smoothed source footprint'
+        );
+    }
+});
+
+test('smooth lower layers support complex nested upper footprints', async () => {
+    const lowerMask = maskFromRows([
+        '###..###',
+        '###.##..',
+        '#.######',
+        '...##...',
+        '######.#',
+        '.#####.#',
+        '##.#####',
+        '##.#####',
+    ]);
+    const upperMask = maskFromRows([
+        '#.#..#..',
+        '###.#...',
+        '#.##....',
+        '...#....',
+        '###.#..#',
+        '..#..#.#',
+        '##..##..',
+        '#...#.#.',
+    ]);
+    const upper = await generateSmoothMesh(
+        upperMask.activePixels,
+        upperMask.width,
+        upperMask.height,
+        0.08,
+        0.08,
+        0.4,
+        1,
+        noYieldOptions
+    );
+    const protectedFootprint = extractHorizontalCapFootprint(upper, 0.08, 0.4);
+    const lower = await generateSmoothMesh(
+        lowerMask.activePixels,
+        lowerMask.width,
+        lowerMask.height,
+        0.08,
+        0,
+        0.4,
+        1,
+        { ...noYieldOptions, protectedFootprint }
+    );
+
+    assertHealthyMesh('complex protected lower support mesh', lower);
+    assertHealthyMesh('complex upper footprint mesh', upper);
+    assert.equal(hasFractionalXY(lower, 0.4), true, 'complex lower layer should still be smoothed');
+    assert.equal(countUnsupportedBottomCapTriangles(lower, upper, 0.08, 0.08, 0.4), 0);
+});
+
+test('smooth matching protected footprints keep the same smoothed edge', async () => {
+    const mask = maskFromRows([
+        '######..',
+        '#####...',
+        '..####..',
+        '..#####.',
+        '...#####',
+        '....####',
+    ]);
+    const baseline = await generateSmoothMesh(
+        mask.activePixels,
+        mask.width,
+        mask.height,
+        0.08,
+        0,
+        0.4,
+        1,
+        noYieldOptions
+    );
+    const upper = await generateSmoothMesh(
+        mask.activePixels,
+        mask.width,
+        mask.height,
+        0.08,
+        0.08,
+        0.4,
+        1,
+        noYieldOptions
+    );
+    const protectedFootprint = extractHorizontalCapFootprint(upper, 0.08, 0.4);
+    const baselineSupport = extractHorizontalCapFootprint(baseline, 0.08, 0.4);
+    const protectedLower = await generateSmoothMesh(
+        mask.activePixels,
+        mask.width,
+        mask.height,
+        0.08,
+        0,
+        0.4,
+        1,
+        { ...noYieldOptions, protectedFootprint }
+    );
+
+    assertHealthyMesh('baseline matching smooth footprint', baseline);
+    assertHealthyMesh('protected matching smooth footprint', protectedLower);
+    assert.equal(findUnsupportedFootprintTriangles(baselineSupport, protectedFootprint).length, 0);
+    assert.equal(hasFractionalXY(protectedLower, 0.4), true, 'protected edge should stay smoothed');
+    assert.deepEqual(
+        footprintSignature(protectedLower, 0.08, 0.4),
+        footprintSignature(baseline, 0.08, 0.4)
+    );
+});
+
+test('smooth stacked logo layers keep protected footprints nested', async () => {
+    const logoMask = maskFromPngAlpha(resolve(repoRoot, 'src/assets/logo.png'), 64);
+    const layerCount = 5;
+    const pixelSize = 0.4;
+    const thickness = 0.08;
+    const masks = Array.from(
+        { length: layerCount },
+        () => new Uint8Array(logoMask.width * logoMask.height)
+    );
+
+    for (let y = 0; y < logoMask.height; y++) {
+        for (let x = 0; x < logoMask.width; x++) {
+            const index = y * logoMask.width + x;
+            if (!logoMask.activePixels[index]) continue;
+
+            const gradient = (x + y) / Math.max(1, logoMask.width + logoMask.height - 2);
+            const maxLayer = Math.min(layerCount - 1, Math.floor(gradient * layerCount));
+            for (let layer = 0; layer <= maxLayer; layer++) {
+                masks[layer][index] = 1;
+            }
+        }
+    }
+
+    const meshes: MeshData[][] = new Array(layerCount);
+    let protectedFootprint: ReturnType<typeof extractHorizontalCapFootprint> | undefined;
+
+    for (let layer = layerCount - 1; layer >= 0; layer--) {
+        const layerMask: RasterMask = {
+            activePixels: masks[layer],
+            width: logoMask.width,
+            height: logoMask.height,
+            activeCount: masks[layer].reduce((count, value) => count + value, 0),
+        };
+        const meshParts = await generateSmoothMeshWithMinimalProtection(
+            layerMask,
+            thickness,
+            layer * thickness,
+            pixelSize,
+            protectedFootprint
+        );
+
+        for (const [partIndex, mesh] of meshParts.entries()) {
+            assertHealthyMesh(`stacked logo layer ${layer} part ${partIndex}`, mesh);
+        }
+
+        meshes[layer] = meshParts;
+        protectedFootprint = horizontalCapTriangles(meshParts, layer * thickness, pixelSize);
+    }
+
+    for (let layer = 0; layer + 1 < layerCount; layer++) {
+        const z = (layer + 1) * thickness;
+        assert.equal(
+            countUnsupportedBottomCapTriangles(meshes[layer], meshes[layer + 1], z, z, pixelSize),
+            0,
+            `stacked logo layer ${layer} should support layer ${layer + 1}`
+        );
     }
 });
 
