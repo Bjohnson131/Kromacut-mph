@@ -41,7 +41,8 @@ export async function exportObjectTo3MFBlob(
 </Relationships>`;
     zip.folder('_rels')?.file('.rels', rels);
 
-    // Collect meshes
+    // Collect visible meshes. Each preview layer should already be one manifold mesh,
+    // so each visible mesh maps directly to one 3MF object.
     const meshes: THREE.Mesh[] = [];
     root.updateMatrixWorld(true);
     root.traverse((obj) => {
@@ -82,15 +83,9 @@ export async function exportObjectTo3MFBlob(
         return colorMap.get(hex)!;
     };
 
-    const getMeshOverrideHex = (mesh: THREE.Mesh, meshIndex: number): string | undefined => {
-        const userHex = mesh.userData.exportColorHex;
-        return typeof userHex === 'string' ? userHex : options?.layerFilamentColors?.[meshIndex];
-    };
-
     // Pre-calculate all materials so we can write the header correctly
     for (let i = 0; i < meshes.length; i++) {
-        const overrideHex = getMeshOverrideHex(meshes[i], i);
-        getMaterialIndex(meshes[i].material, overrideHex);
+        getMaterialIndex(meshes[i].material, options?.layerFilamentColors?.[i]);
     }
 
     // Prepare Project Settings (Minimal)
@@ -210,7 +205,7 @@ export async function exportObjectTo3MFBlob(
 
     for (let i = 0; i < meshes.length; i++) {
         const mesh = meshes[i];
-        const overrideHex = getMeshOverrideHex(mesh, i);
+        const overrideHex = options?.layerFilamentColors?.[i];
         const matIdx = getMaterialIndex(mesh.material, overrideHex);
         const objectId = nextId++;
         componentIds.push(objectId);
@@ -229,126 +224,145 @@ export async function exportObjectTo3MFBlob(
             name: `Layer ${i + 1} (#${hex})`,
             colorIdx: matIdx + 1,
         });
-        const objUuid = generateUUID();
 
-        write(`<object id="${objectId}" p:UUID="${objUuid}" pid="${baseMatId}" pindex="${matIdx}" type="model" name="Layer ${i + 1} (#${hex})">
+        const layerName = `Layer ${i + 1} (#${hex})`;
+        const writeMeshObject = async (
+            mesh: THREE.Mesh,
+            meshObjectId: number,
+            meshName: string,
+            progressStart: number,
+            progressSpan: number
+        ) => {
+            write(`<object id="${meshObjectId}" p:UUID="${generateUUID()}" pid="${baseMatId}" pindex="${matIdx}" type="model" name="${meshName}">
 `);
-        write(` <mesh>
+            write(` <mesh>
 `);
-        const geom = mesh.geometry;
-        const pos = geom.getAttribute('position');
-        const index = geom.getIndex();
-        const exportVertexMap = new Map<string, number>();
-        const exportVertices: THREE.Vector3[] = [];
-        const exportTriangles: number[] = [];
+            const geom = mesh.geometry;
+            const pos = geom.getAttribute('position');
+            const index = geom.getIndex();
+            const exportVertexMap = new Map<string, number>();
+            const exportVertices: THREE.Vector3[] = [];
+            const exportTriangles: number[] = [];
+            const partProgress = (value: number) => progressStart + value * progressSpan;
 
-        const getExportVertex = (vertexIndex: number) => {
-            v.fromBufferAttribute(pos, vertexIndex).applyMatrix4(mesh.matrixWorld);
-            const x = roundForExport(v.x);
-            const y = roundForExport(v.y);
-            const z = roundForExport(v.z);
-            const key = `${x},${y},${z}`;
-            const existing = exportVertexMap.get(key);
+            const getExportVertex = (vertexIndex: number) => {
+                v.fromBufferAttribute(pos, vertexIndex).applyMatrix4(mesh.matrixWorld);
+                const x = roundForExport(v.x);
+                const y = roundForExport(v.y);
+                const z = roundForExport(v.z);
+                const key = `${x},${y},${z}`;
+                const existing = exportVertexMap.get(key);
 
-            if (existing !== undefined) {
-                return existing;
+                if (existing !== undefined) {
+                    return existing;
+                }
+
+                const exportIndex = exportVertices.length;
+                exportVertexMap.set(key, exportIndex);
+                exportVertices.push(new THREE.Vector3(x, y, z));
+                return exportIndex;
+            };
+
+            const addExportTriangle = (a: number, b: number, c: number) => {
+                const v1 = getExportVertex(a);
+                const v2 = getExportVertex(b);
+                const v3 = getExportVertex(c);
+
+                if (v1 === v2 || v2 === v3 || v1 === v3) {
+                    return;
+                }
+
+                const p1 = exportVertices[v1];
+                const p2 = exportVertices[v2];
+                const p3 = exportVertices[v3];
+                const abx = p2.x - p1.x;
+                const aby = p2.y - p1.y;
+                const abz = p2.z - p1.z;
+                const acx = p3.x - p1.x;
+                const acy = p3.y - p1.y;
+                const acz = p3.z - p1.z;
+                const crossX = aby * acz - abz * acy;
+                const crossY = abz * acx - abx * acz;
+                const crossZ = abx * acy - aby * acx;
+
+                if (crossX === 0 && crossY === 0 && crossZ === 0) {
+                    return;
+                }
+
+                exportTriangles.push(v1, v2, v3);
+            };
+
+            if (index) {
+                const triCount = index.count;
+                for (let j = 0; j < triCount; j += 3) {
+                    addExportTriangle(index.getX(j), index.getX(j + 1), index.getX(j + 2));
+                    opsSinceYield++;
+                    if (opsSinceYield > YIELD_EVERY) {
+                        opsSinceYield = 0;
+                        reportMeshProgress(i, 'vertices', partProgress((j + 3) / triCount));
+                        await new Promise((resolve) => setTimeout(resolve, 0));
+                    }
+                }
+            } else {
+                for (let j = 0; j < pos.count; j += 3) {
+                    addExportTriangle(j, j + 1, j + 2);
+                    opsSinceYield++;
+                    if (opsSinceYield > YIELD_EVERY) {
+                        opsSinceYield = 0;
+                        reportMeshProgress(i, 'vertices', partProgress((j + 3) / pos.count));
+                        await new Promise((resolve) => setTimeout(resolve, 0));
+                    }
+                }
             }
 
-            const exportIndex = exportVertices.length;
-            exportVertexMap.set(key, exportIndex);
-            exportVertices.push(new THREE.Vector3(x, y, z));
-            return exportIndex;
-        };
+            write(`  <vertices>
+`);
 
-        const addExportTriangle = (a: number, b: number, c: number) => {
-            const v1 = getExportVertex(a);
-            const v2 = getExportVertex(b);
-            const v3 = getExportVertex(c);
+            for (let j = 0; j < exportVertices.length; j++) {
+                const vertex = exportVertices[j];
+                write(`   <vertex x="${f(vertex.x)}" y="${f(vertex.y)}" z="${f(vertex.z)}" />
+`);
 
-            if (v1 === v2 || v2 === v3 || v1 === v3) {
-                return;
-            }
-
-            const p1 = exportVertices[v1];
-            const p2 = exportVertices[v2];
-            const p3 = exportVertices[v3];
-            const abx = p2.x - p1.x;
-            const aby = p2.y - p1.y;
-            const abz = p2.z - p1.z;
-            const acx = p3.x - p1.x;
-            const acy = p3.y - p1.y;
-            const acz = p3.z - p1.z;
-            const crossX = aby * acz - abz * acy;
-            const crossY = abz * acx - abx * acz;
-            const crossZ = abx * acy - aby * acx;
-
-            if (crossX === 0 && crossY === 0 && crossZ === 0) {
-                return;
-            }
-
-            exportTriangles.push(v1, v2, v3);
-        };
-
-        if (index) {
-            const triCount = index.count;
-            for (let j = 0; j < triCount; j += 3) {
-                addExportTriangle(index.getX(j), index.getX(j + 1), index.getX(j + 2));
                 opsSinceYield++;
                 if (opsSinceYield > YIELD_EVERY) {
                     opsSinceYield = 0;
-                    reportMeshProgress(i, 'vertices', (j + 3) / triCount);
+                    reportMeshProgress(
+                        i,
+                        'vertices',
+                        partProgress((j + 1) / exportVertices.length)
+                    );
                     await new Promise((resolve) => setTimeout(resolve, 0));
                 }
             }
-        } else {
-            for (let j = 0; j < pos.count; j += 3) {
-                addExportTriangle(j, j + 1, j + 2);
+            write(`  </vertices>
+`);
+            write(`  <triangles>
+`);
+
+            for (let j = 0; j < exportTriangles.length; j += 3) {
+                write(`   <triangle v1="${exportTriangles[j]}" v2="${exportTriangles[j + 1]}" v3="${exportTriangles[j + 2]}" />
+`);
                 opsSinceYield++;
                 if (opsSinceYield > YIELD_EVERY) {
                     opsSinceYield = 0;
-                    reportMeshProgress(i, 'vertices', (j + 3) / pos.count);
+                    reportMeshProgress(
+                        i,
+                        'triangles',
+                        partProgress((j + 3) / exportTriangles.length)
+                    );
                     await new Promise((resolve) => setTimeout(resolve, 0));
                 }
             }
-        }
 
-        write(`  <vertices>
+            write(`  </triangles>
 `);
+            write(` </mesh>
+`);
+            write(`</object>
+`);
+        };
 
-        for (let j = 0; j < exportVertices.length; j++) {
-            const vertex = exportVertices[j];
-            write(`   <vertex x="${f(vertex.x)}" y="${f(vertex.y)}" z="${f(vertex.z)}" />
-`);
-
-            opsSinceYield++;
-            if (opsSinceYield > YIELD_EVERY) {
-                opsSinceYield = 0;
-                reportMeshProgress(i, 'vertices', (j + 1) / exportVertices.length);
-                await new Promise((resolve) => setTimeout(resolve, 0));
-            }
-        }
-        write(`  </vertices>
-`);
-        write(`  <triangles>
-`);
-
-        for (let j = 0; j < exportTriangles.length; j += 3) {
-            write(`   <triangle v1="${exportTriangles[j]}" v2="${exportTriangles[j + 1]}" v3="${exportTriangles[j + 2]}" />
-`);
-            opsSinceYield++;
-            if (opsSinceYield > YIELD_EVERY) {
-                opsSinceYield = 0;
-                reportMeshProgress(i, 'triangles', (j + 3) / exportTriangles.length);
-                await new Promise((resolve) => setTimeout(resolve, 0));
-            }
-        }
-
-        write(`  </triangles>
-`);
-        write(` </mesh>
-`);
-        write(`</object>
-`);
+        await writeMeshObject(mesh, objectId, layerName, 0, 1);
     }
 
     // Assembly Object

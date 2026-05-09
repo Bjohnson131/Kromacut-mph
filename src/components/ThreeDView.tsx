@@ -1,14 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import useThreeScene from '../hooks/useThreeScene';
-import {
-    createFootprintSupportPrismMeshes,
-    extractHorizontalCapFootprint,
-    findUnsupportedFootprintTriangles,
-    generateGreedyMesh,
-    generateSmoothMesh,
-    type FootprintTriangle,
-} from '../lib/meshing';
+import { generateGreedyMesh, generateSmoothMesh } from '../lib/meshing';
 import { Slider } from '@/components/ui/slider';
 import { Layers } from 'lucide-react';
 
@@ -773,16 +766,14 @@ export default function ThreeDView({
                         }
                     }
 
-                    // Smooth builds run top-down so each lower layer can support the layer above it.
+                    // Build each layer once; smooth meshing does not run overhang repair passes.
                     const layerBuildOrder = Array.from(
                         { length: colorOrder.length },
-                        (_, layerIndex) =>
-                            smoothMeshing ? colorOrder.length - 1 - layerIndex : layerIndex
+                        (_, layerIndex) => layerIndex
                     );
-                    const builtLayerMeshes: Array<THREE.Mesh[] | undefined> = new Array(
+                    const builtLayerMeshes: Array<THREE.Mesh | undefined> = new Array(
                         colorOrder.length
                     );
-                    let protectedFootprint: FootprintTriangle[] | undefined;
 
                     for (
                         let buildLayerIndex = 0;
@@ -834,54 +825,16 @@ export default function ThreeDView({
                         if (activeCount === 0) continue;
 
                         // Generate mesh for this layer
-                        const { positions, indices } = await (
+                        const generatedMesh = await (
                             smoothMeshing ? generateSmoothMesh : generateGreedyMesh
                         )(activePixels, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
                             yieldIntervalMs: 8,
                         });
-                        let supportPrisms: ReturnType<typeof createFootprintSupportPrismMeshes> =
-                            [];
 
-                        if (smoothMeshing && protectedFootprint?.length) {
-                            const supportFootprint = extractHorizontalCapFootprint(
-                                { positions, indices },
-                                (baseZ + thickness) * heightScale,
-                                pixelSize
-                            );
-                            const unsupportedFootprint = findUnsupportedFootprintTriangles(
-                                supportFootprint,
-                                protectedFootprint
-                            );
-
-                            if (unsupportedFootprint.length > 0) {
-                                supportPrisms = createFootprintSupportPrismMeshes(
-                                    unsupportedFootprint,
-                                    baseZ * heightScale,
-                                    (baseZ + thickness) * heightScale,
-                                    pixelSize
-                                );
-                            }
-                        }
-
-                        if (smoothMeshing) {
-                            protectedFootprint = extractHorizontalCapFootprint(
-                                { positions, indices },
-                                baseZ * heightScale,
-                                pixelSize
-                            );
-
-                            for (const supportPrism of supportPrisms) {
-                                protectedFootprint.push(
-                                    ...extractHorizontalCapFootprint(
-                                        supportPrism,
-                                        baseZ * heightScale,
-                                        pixelSize
-                                    )
-                                );
-                            }
-                        }
-
-                        const geom = createFlatShadedGeometry(positions, indices);
+                        const geom = createFlatShadedGeometry(
+                            generatedMesh.positions,
+                            generatedMesh.indices
+                        );
                         const mat = new THREE.MeshStandardMaterial({
                             color: colorHex,
                             side: THREE.FrontSide,
@@ -894,20 +847,7 @@ export default function ThreeDView({
                         // Store layer Z range for preview slider
                         mesh.userData.baseZ = baseZ;
                         mesh.userData.topZ = topZ;
-                        mesh.userData.exportColorHex = colorHex;
-                        builtLayerMeshes[i] = [mesh];
-
-                        for (const supportPrism of supportPrisms) {
-                            const supportGeom = createFlatShadedGeometry(
-                                supportPrism.positions,
-                                supportPrism.indices
-                            );
-                            const supportMesh = new THREE.Mesh(supportGeom, mat);
-                            supportMesh.userData.baseZ = baseZ;
-                            supportMesh.userData.topZ = topZ;
-                            supportMesh.userData.exportColorHex = colorHex;
-                            builtLayerMeshes[i].push(supportMesh);
-                        }
+                        builtLayerMeshes[i] = mesh;
 
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
@@ -916,11 +856,9 @@ export default function ThreeDView({
                         }
                     }
 
-                    for (const layerMeshes of builtLayerMeshes) {
-                        if (layerMeshes) {
-                            for (const mesh of layerMeshes) {
-                                modelGroup.add(mesh);
-                            }
+                    for (const mesh of builtLayerMeshes) {
+                        if (mesh) {
+                            modelGroup.add(mesh);
                         }
                     }
                 } else {
@@ -978,16 +916,14 @@ export default function ThreeDView({
                         }
                     }
 
-                    // Smooth builds run top-down so each lower layer can support the layer above it.
+                    // Build each layer once; smooth meshing does not run overhang repair passes.
                     const layerBuildOrder = Array.from(
                         { length: colorOrder.length },
-                        (_, layerIndex) =>
-                            smoothMeshing ? colorOrder.length - 1 - layerIndex : layerIndex
+                        (_, layerIndex) => layerIndex
                     );
-                    const builtLayerMeshes: Array<THREE.Mesh[] | undefined> = new Array(
+                    const builtLayerMeshes: Array<THREE.Mesh | undefined> = new Array(
                         colorOrder.length
                     );
-                    let protectedFootprint: FootprintTriangle[] | undefined;
 
                     for (
                         let buildLayerIndex = 0;
@@ -1037,54 +973,16 @@ export default function ThreeDView({
                         if (activeCount === 0) continue;
 
                         // Generate Optimized Greedy Mesh
-                        const { positions, indices } = await (
+                        const generatedMesh = await (
                             smoothMeshing ? generateSmoothMesh : generateGreedyMesh
                         )(activePixels, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
                             yieldIntervalMs: 8,
                         });
-                        let supportPrisms: ReturnType<typeof createFootprintSupportPrismMeshes> =
-                            [];
 
-                        if (smoothMeshing && protectedFootprint?.length) {
-                            const supportFootprint = extractHorizontalCapFootprint(
-                                { positions, indices },
-                                (baseZ + thickness) * heightScale,
-                                pixelSize
-                            );
-                            const unsupportedFootprint = findUnsupportedFootprintTriangles(
-                                supportFootprint,
-                                protectedFootprint
-                            );
-
-                            if (unsupportedFootprint.length > 0) {
-                                supportPrisms = createFootprintSupportPrismMeshes(
-                                    unsupportedFootprint,
-                                    baseZ * heightScale,
-                                    (baseZ + thickness) * heightScale,
-                                    pixelSize
-                                );
-                            }
-                        }
-
-                        if (smoothMeshing) {
-                            protectedFootprint = extractHorizontalCapFootprint(
-                                { positions, indices },
-                                baseZ * heightScale,
-                                pixelSize
-                            );
-
-                            for (const supportPrism of supportPrisms) {
-                                protectedFootprint.push(
-                                    ...extractHorizontalCapFootprint(
-                                        supportPrism,
-                                        baseZ * heightScale,
-                                        pixelSize
-                                    )
-                                );
-                            }
-                        }
-
-                        const geom = createFlatShadedGeometry(positions, indices);
+                        const geom = createFlatShadedGeometry(
+                            generatedMesh.positions,
+                            generatedMesh.indices
+                        );
                         const mat = new THREE.MeshStandardMaterial({
                             color: colorHex,
                             side: THREE.FrontSide,
@@ -1099,20 +997,7 @@ export default function ThreeDView({
                         // Store layer Z range for preview slider
                         mesh.userData.baseZ = baseZ;
                         mesh.userData.topZ = topZ;
-                        mesh.userData.exportColorHex = colorHex;
-                        builtLayerMeshes[i] = [mesh];
-
-                        for (const supportPrism of supportPrisms) {
-                            const supportGeom = createFlatShadedGeometry(
-                                supportPrism.positions,
-                                supportPrism.indices
-                            );
-                            const supportMesh = new THREE.Mesh(supportGeom, mat);
-                            supportMesh.userData.baseZ = baseZ;
-                            supportMesh.userData.topZ = topZ;
-                            supportMesh.userData.exportColorHex = colorHex;
-                            builtLayerMeshes[i].push(supportMesh);
-                        }
+                        builtLayerMeshes[i] = mesh;
 
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
@@ -1121,11 +1006,9 @@ export default function ThreeDView({
                         }
                     }
 
-                    for (const layerMeshes of builtLayerMeshes) {
-                        if (layerMeshes) {
-                            for (const mesh of layerMeshes) {
-                                modelGroup.add(mesh);
-                            }
+                    for (const mesh of builtLayerMeshes) {
+                        if (mesh) {
+                            modelGroup.add(mesh);
                         }
                     }
                 }
