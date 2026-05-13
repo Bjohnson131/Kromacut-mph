@@ -256,6 +256,30 @@ function createMeshDataLayer(mesh: MeshData, color: number) {
     return createLayerMesh(geometry, color);
 }
 
+function createLargeIndexedProgressGeometry() {
+    return new THREE.PlaneGeometry(40, 40, 128, 128);
+}
+
+function assertMonotonicProgress(samples: number[], label: string) {
+    assert.ok(samples.length > 2, `${label} should emit multiple progress samples`);
+
+    for (let i = 0; i < samples.length; i++) {
+        const sample = samples[i];
+        assert.ok(Number.isFinite(sample), `${label} sample ${i} should be finite`);
+        assert.ok(sample >= 0, `${label} sample ${i} should be >= 0, got ${sample}`);
+        assert.ok(sample <= 1, `${label} sample ${i} should be <= 1, got ${sample}`);
+
+        if (i > 0) {
+            assert.ok(
+                sample >= samples[i - 1],
+                `${label} sample ${i} went backwards from ${samples[i - 1]} to ${sample}`
+            );
+        }
+    }
+
+    assert.equal(samples[samples.length - 1], 1, `${label} should finish at 100%`);
+}
+
 function maskFromRows(rows: string[]): RasterMask {
     const width = rows[0]?.length ?? 0;
     const height = rows.length;
@@ -842,6 +866,31 @@ test('3MF export keeps visible meshes as separate layer objects', async () => {
         objects.map((object) => object.name),
         ['Layer 1 (#FF0000)', 'Layer 2 (#00FF00)']
     );
+});
+
+test('3MF export progress stays monotonic for large indexed meshes', async () => {
+    const { exportObjectTo3MFBlob } = await loadExport3mfModule();
+    const root = new THREE.Group();
+    const progressSamples: number[] = [];
+
+    root.add(createLayerMesh(createLargeIndexedProgressGeometry(), 0x3366ff));
+
+    await exportObjectTo3MFBlob(root, {
+        onProgress: (value) => progressSamples.push(value),
+    });
+
+    assertMonotonicProgress(progressSamples, '3MF large indexed export progress');
+});
+
+test('STL export progress stays monotonic for large indexed meshes', async () => {
+    const root = new THREE.Group();
+    const progressSamples: number[] = [];
+
+    root.add(createLayerMesh(createLargeIndexedProgressGeometry(), 0x3366ff));
+
+    await exportObjectToStlBlob(root, (value) => progressSamples.push(value));
+
+    assertMonotonicProgress(progressSamples, 'STL large indexed export progress');
 });
 
 test('3MF export preserves raw edge topology for indexed geometry', async () => {

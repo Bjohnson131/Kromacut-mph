@@ -5,6 +5,7 @@ import { message, save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import type { CanvasPreviewHandle } from '../components/CanvasPreview';
 import type { SwatchEntry } from './useSwatches';
+import { clampProgress } from '../lib/progress';
 import type * as THREE from 'three';
 
 export interface UseAppHandlersParams {
@@ -124,7 +125,9 @@ export function useAppHandlers(params: UseAppHandlersParams) {
         setExportingSTL(true);
         setExportProgress(0);
         try {
-            const blob = await exportObjectToStlBlob(threeObject, (p) => setExportProgress(p));
+            const blob = await exportObjectToStlBlob(threeObject, (p) =>
+                setExportProgress(clampProgress(p))
+            );
             await saveBlob(blob, {
                 defaultFileName: exportFileName('stl'),
                 extension: 'stl',
@@ -152,7 +155,9 @@ export function useAppHandlers(params: UseAppHandlersParams) {
         setExportingSTL(true);
         setExportProgress(0);
         try {
-            const blob = await exportObjectTo3MFBlob(threeObject, (p) => setExportProgress(p));
+            const blob = await exportObjectTo3MFBlob(threeObject, (p) =>
+                setExportProgress(clampProgress(p))
+            );
             await saveBlob(blob, {
                 defaultFileName: exportFileName('3mf'),
                 extension: '3mf',

@@ -11,6 +11,7 @@ All notable changes to Kromacut are documented in this file.
 - **3MF layer-count export tests** - Added fixture-backed regression tests using saved `.kapp` filament profiles to verify generated layers, 3MF mesh objects, assembly references, build items, and slicer metadata parts stay in sync
 - **3MF filament color export tests** - Added regression coverage that verifies exported base materials, project filament settings, mesh material indices, and slicer extruder metadata match the physical filament colors without missing colors or color-count explosions
 - **Final export manifold tests** - Added 3MF and STL topology checks across both image fixtures, all saved filament profiles, and both greedy and smooth meshers to catch boundary edges, non-manifold edges, and inverted normals after export serialization
+- **Progress regression tests** - Added coverage for quantize, dedither, 3D model build, large-mesh 3MF/STL export, and image algorithm progress callbacks so progress percentages advance through their real work stages without going backwards
 
 ### Changed
 
@@ -23,6 +24,8 @@ All notable changes to Kromacut are documented in this file.
 - **Smooth meshing footprint safety** - Smooth corner cuts and simplification shortcuts now stay inside the source pixel footprint without running support-repair or clipping passes during smooth layer generation
 - **3MF smooth layer packaging** - Smooth layers now export as one manifold mesh object per non-empty color layer, and auto-paint exports use the intended physical filament colors instead of the preview's virtual blend colors
 - **Smooth mesh build progress** - 3D build progress now stays monotonic while smooth layers are generated
+- **3MF export progress** - 3MF export progress now reports explicit geometry collection, vertex writing, triangle writing, and zip compression phases instead of reusing an earlier percentage range
+- **2D processing progress** - Quantize and dedither progress bars now display their staged producer progress directly instead of masking backwards updates in the app shell
 
 ## v2.5.0 - 2026-05-03
 

@@ -10,6 +10,12 @@ import {
 import { PALETTES } from '../data/palettes';
 import type { CustomPalette } from '../types';
 import { rgbToHsl } from '../lib/color';
+import {
+    clampProgress,
+    quantizeAlgorithmProgress,
+    quantizePostProgress,
+    quantizeSwatchProgress,
+} from '../lib/progress';
 import type { CanvasPreviewHandle } from '../components/CanvasPreview';
 
 interface Params {
@@ -53,7 +59,7 @@ export function useQuantize({
     ) => {
         if (!canvasPreviewRef.current || !imageSrc) return;
         const bump = (value: number) => {
-            onProgress?.(Math.max(0, Math.min(1, value)));
+            onProgress?.(clampProgress(value));
         };
         // Yield to the event loop so the browser can paint the progress bar.
         // setTimeout(0) schedules on the macrotask queue, guaranteeing a render
@@ -104,9 +110,8 @@ export function useQuantize({
         };
         // Algorithm progress maps from 0.10 to 0.65.
         // The algorithm functions now accept { onProgress } and yield internally.
-        const algoStart = 0.1;
-        const algoEnd = 0.65;
-        const algoProgress = (f: number) => bump(algoStart + f * (algoEnd - algoStart));
+        const algoEnd = quantizeAlgorithmProgress(1);
+        const algoProgress = (f: number) => bump(quantizeAlgorithmProgress(f));
         onStage?.('algorithm');
         if (algorithm === 'median-cut')
             await medianCutImageData(data, weight, { onProgress: algoProgress });
@@ -130,9 +135,8 @@ export function useQuantize({
         // fall back to selectedPalette (named palettes) or auto (enforce finalColors)
         const overridePalette = options?.overridePalette;
         const overrideFinal = options?.overrideFinalColors;
-        const postStart = 0.68;
-        const postEnd = 0.85;
-        const postProgress = (f: number) => bump(postStart + f * (postEnd - postStart));
+        const postEnd = quantizePostProgress(1);
+        const postProgress = (f: number) => bump(quantizePostProgress(f));
         if (overridePalette && overridePalette.length > 0) {
             await mapImageToPalette(data, overridePalette, { onProgress: postProgress });
             ctx.putImageData(data, 0, 0);
@@ -175,7 +179,7 @@ export function useQuantize({
                 const k = (dd[i] << 16) | (dd[i + 1] << 8) | dd[i + 2];
                 cmap.set(k, (cmap.get(k) || 0) + 1);
                 if ((i / 4) % 10000 === 0) {
-                    bump(0.88 + (i / 4 / Math.max(1, total)) * 0.1);
+                    bump(quantizeSwatchProgress(i / 4, total));
                 }
             }
             const topLocal = Array.from(cmap.entries())

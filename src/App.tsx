@@ -24,6 +24,7 @@ import { exportObjectTo3MFBlob } from './lib/export3mf';
 import { useAppHandlers } from './hooks/useAppHandlers';
 import { useProcessingState } from './hooks/useProcessingState';
 import { useBuildWarning } from './hooks/useBuildWarning';
+import { clampProgress } from './lib/progress';
 import ResizableSplitter from './components/ResizableSplitter';
 import { ControlsPanel } from './components/ControlsPanel';
 import { usePaletteManager } from './hooks/usePaletteManager';
@@ -151,7 +152,7 @@ function App(): React.ReactElement | null {
         },
         onImmediateSwatches: (colors: SwatchEntry[]) => immediateOverride(colors),
         onProgress: (value) => {
-            setProcessingProgress((prev) => (value > prev ? value : prev));
+            setProcessingProgress(clampProgress(value));
         },
         onStage: (stage) => {
             if (stage === 'final') {
@@ -362,9 +363,7 @@ function App(): React.ReactElement | null {
                                                 }
                                             }}
                                             onProgress={(value) => {
-                                                setProcessingProgress((prev) =>
-                                                    value > prev ? value : prev
-                                                );
+                                                setProcessingProgress(clampProgress(value));
                                             }}
                                         />
                                         <ControlsPanel

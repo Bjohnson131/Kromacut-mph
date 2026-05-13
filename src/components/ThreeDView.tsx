@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import useThreeScene from '../hooks/useThreeScene';
 import { generateGreedyMesh, generateSmoothMesh } from '../lib/meshing';
+import {
+    clampProgress,
+    layeredBuildLayerProgress,
+    layeredBuildScanProgress,
+} from '../lib/progress';
 import { Slider } from '@/components/ui/slider';
 import { Layers } from 'lucide-react';
 
@@ -119,10 +124,10 @@ export default function ThreeDView({
     const progressRef = useRef(0);
     const progressLastUpdateRef = useRef(0);
     const pushProgress = (value: number) => {
-        const nextValue = value <= 0 ? 0 : Math.max(progressRef.current, Math.min(1, value));
+        const nextValue = clampProgress(value);
         progressRef.current = nextValue;
         const now = performance.now();
-        if (nextValue >= 1 || now - progressLastUpdateRef.current > 60) {
+        if (nextValue <= 0 || nextValue >= 1 || now - progressLastUpdateRef.current > 60) {
             progressLastUpdateRef.current = now;
             setBuildProgress(nextValue);
         }
@@ -256,8 +261,6 @@ export default function ThreeDView({
                 const fullW = img.naturalWidth;
                 const fullH = img.naturalHeight;
                 const { minX, minY, boxW, boxH } = bbox;
-                const totalUnitsBase = Math.max(1, colorOrder.length * boxH);
-                const totalUnits = Math.max(1, totalUnitsBase + boxH);
 
                 const canvas = document.createElement('canvas');
                 canvas.width = fullW;
@@ -532,7 +535,9 @@ export default function ThreeDView({
                                 pixelHeightMap[mapIdx] = targetHeight;
                                 colorHeightCache.set(cacheKey, targetHeight);
                             }
-                            pushProgress((py - minY + 1) / totalUnits);
+                            pushProgress(
+                                layeredBuildScanProgress(py - minY, boxH, colorOrder.length)
+                            );
                         }
 
                         // --- Pass 2: Quantize heights (with optional dithering) ---
@@ -762,7 +767,9 @@ export default function ThreeDView({
 
                                 pixelHeightMap[mapIdx] = pixelHeight;
                             }
-                            pushProgress((py - minY + 1) / totalUnits);
+                            pushProgress(
+                                layeredBuildScanProgress(py - minY, boxH, colorOrder.length)
+                            );
                         }
                     }
 
@@ -813,7 +820,14 @@ export default function ThreeDView({
                                 }
                             }
 
-                            pushProgress((boxH + buildLayerIndex * boxH + (y + 1)) / totalUnits);
+                            pushProgress(
+                                layeredBuildLayerProgress(
+                                    buildLayerIndex,
+                                    y,
+                                    boxH,
+                                    colorOrder.length
+                                )
+                            );
 
                             if (performance.now() - lastYield > YIELD_MS) {
                                 await new Promise((r) => requestAnimationFrame(r));
@@ -908,7 +922,7 @@ export default function ThreeDView({
                             pixelLayerPos[flippedRowOffset + x] = layerPos;
                         }
 
-                        pushProgress((y + 1) / totalUnits);
+                        pushProgress(layeredBuildScanProgress(y, boxH, colorOrder.length));
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
                             if (token !== buildTokenRef.current) return;
@@ -962,7 +976,14 @@ export default function ThreeDView({
                                     activeCount++;
                                 }
                             }
-                            pushProgress((boxH + buildLayerIndex * boxH + (y + 1)) / totalUnits);
+                            pushProgress(
+                                layeredBuildLayerProgress(
+                                    buildLayerIndex,
+                                    y,
+                                    boxH,
+                                    colorOrder.length
+                                )
+                            );
                             if (performance.now() - lastYield > YIELD_MS) {
                                 await new Promise((r) => requestAnimationFrame(r));
                                 if (token !== buildTokenRef.current) return;

@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { RotateCcw, Check, Loader } from 'lucide-react';
 import type { CanvasPreviewHandle } from './CanvasPreview';
+import { deditherRowProgress } from '../lib/progress';
 
 interface Props {
     canvasRef: React.RefObject<CanvasPreviewHandle | null>;
@@ -149,7 +150,7 @@ export const DeditherPanel: React.FC<Props> = ({
                     }
                     processedRows++;
                     if (y % 16 === 0) {
-                        onProgress?.(0.1 + (processedRows / totalRows) * 0.85);
+                        onProgress?.(deditherRowProgress(processedRows, totalRows));
                     }
                 }
                 current = out;
@@ -157,7 +158,7 @@ export const DeditherPanel: React.FC<Props> = ({
                     await new Promise((r) => requestAnimationFrame(r));
                     lastYield = performance.now();
                 }
-                onProgress?.(0.1 + (processedRows / totalRows) * 0.85);
+                onProgress?.(deditherRowProgress(processedRows, totalRows));
             }
 
             const outData = new ImageData(current, w, h);

@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import * as THREE from 'three';
 import { MINIMAL_PROJECT_SETTINGS, KROMACUT_CONFIG } from './slicerDefaults';
+import { clampProgress, exportMeshProgress, exportZipProgress, progressInSpan } from './progress';
 
 export interface Export3MFOptions {
     layerHeight?: number;
@@ -188,19 +189,14 @@ export async function exportObjectTo3MFBlob(
 
     // Progress tracking
     const onProgress = options?.onProgress;
+    const reportProgress = (value: number) => {
+        onProgress?.(clampProgress(value));
+    };
     const totalMeshes = meshes.length;
-    // Each mesh has two phases: vertices (~40%) and triangles (~40%), zip is last ~20%
-    const reportMeshProgress = (
-        meshIdx: number,
-        phase: 'vertices' | 'triangles',
-        phaseFrac: number
-    ) => {
+    // Mesh generation is the first 80%; zip generation owns the final 20%.
+    const reportMeshProgress = (meshIdx: number, meshFrac: number) => {
         if (!onProgress) return;
-        const meshFrac =
-            (meshIdx + (phase === 'vertices' ? phaseFrac * 0.5 : 0.5 + phaseFrac * 0.5)) /
-            totalMeshes;
-        // Mesh processing is ~80% of total, zip generation is ~20%
-        onProgress(meshFrac * 0.8);
+        reportProgress(exportMeshProgress(meshIdx, totalMeshes, meshFrac));
     };
 
     for (let i = 0; i < meshes.length; i++) {
@@ -243,7 +239,12 @@ export async function exportObjectTo3MFBlob(
             const exportVertexMap = new Map<string, number>();
             const exportVertices: THREE.Vector3[] = [];
             const exportTriangles: number[] = [];
-            const partProgress = (value: number) => progressStart + value * progressSpan;
+            const phaseProgress = (value: number) =>
+                progressInSpan(progressStart, progressSpan, value);
+            const COLLECT_START = phaseProgress(0);
+            const COLLECT_END = phaseProgress(0.42);
+            const VERTEX_WRITE_END = phaseProgress(0.68);
+            const TRIANGLE_WRITE_END = phaseProgress(1);
 
             const getExportVertex = (vertexIndex: number) => {
                 v.fromBufferAttribute(pos, vertexIndex).applyMatrix4(mesh.matrixWorld);
@@ -293,27 +294,43 @@ export async function exportObjectTo3MFBlob(
             };
 
             if (index) {
-                const triCount = index.count;
-                for (let j = 0; j < triCount; j += 3) {
+                const elementCount = index.count;
+                for (let j = 0; j < elementCount; j += 3) {
                     addExportTriangle(index.getX(j), index.getX(j + 1), index.getX(j + 2));
                     opsSinceYield++;
                     if (opsSinceYield > YIELD_EVERY) {
                         opsSinceYield = 0;
-                        reportMeshProgress(i, 'vertices', partProgress((j + 3) / triCount));
+                        reportMeshProgress(
+                            i,
+                            progressInSpan(
+                                COLLECT_START,
+                                COLLECT_END - COLLECT_START,
+                                (j + 3) / elementCount
+                            )
+                        );
                         await new Promise((resolve) => setTimeout(resolve, 0));
                     }
                 }
             } else {
-                for (let j = 0; j < pos.count; j += 3) {
+                const elementCount = pos.count;
+                for (let j = 0; j < elementCount; j += 3) {
                     addExportTriangle(j, j + 1, j + 2);
                     opsSinceYield++;
                     if (opsSinceYield > YIELD_EVERY) {
                         opsSinceYield = 0;
-                        reportMeshProgress(i, 'vertices', partProgress((j + 3) / pos.count));
+                        reportMeshProgress(
+                            i,
+                            progressInSpan(
+                                COLLECT_START,
+                                COLLECT_END - COLLECT_START,
+                                (j + 3) / elementCount
+                            )
+                        );
                         await new Promise((resolve) => setTimeout(resolve, 0));
                     }
                 }
             }
+            reportMeshProgress(i, COLLECT_END);
 
             write(`  <vertices>
 `);
@@ -328,12 +345,16 @@ export async function exportObjectTo3MFBlob(
                     opsSinceYield = 0;
                     reportMeshProgress(
                         i,
-                        'vertices',
-                        partProgress((j + 1) / exportVertices.length)
+                        progressInSpan(
+                            COLLECT_END,
+                            VERTEX_WRITE_END - COLLECT_END,
+                            (j + 1) / exportVertices.length
+                        )
                     );
                     await new Promise((resolve) => setTimeout(resolve, 0));
                 }
             }
+            reportMeshProgress(i, VERTEX_WRITE_END);
             write(`  </vertices>
 `);
             write(`  <triangles>
@@ -347,12 +368,16 @@ export async function exportObjectTo3MFBlob(
                     opsSinceYield = 0;
                     reportMeshProgress(
                         i,
-                        'triangles',
-                        partProgress((j + 3) / exportTriangles.length)
+                        progressInSpan(
+                            VERTEX_WRITE_END,
+                            TRIANGLE_WRITE_END - VERTEX_WRITE_END,
+                            (j + 3) / exportTriangles.length
+                        )
                     );
                     await new Promise((resolve) => setTimeout(resolve, 0));
                 }
             }
+            reportMeshProgress(i, TRIANGLE_WRITE_END);
 
             write(`  </triangles>
 `);
@@ -446,15 +471,17 @@ export async function exportObjectTo3MFBlob(
         JSON.stringify(projectSettings, null, 4)
     );
 
-    onProgress?.(0.8);
+    reportProgress(exportZipProgress(0));
 
-    return await zip.generateAsync(
+    const blob = await zip.generateAsync(
         { type: 'blob' },
         onProgress
             ? (meta) => {
                   // zip progress goes from 80% to 100%
-                  onProgress(0.8 + (meta.percent / 100) * 0.2);
+                  reportProgress(exportZipProgress(meta.percent / 100));
               }
             : undefined
     );
+    reportProgress(exportZipProgress(1));
+    return blob;
 }
