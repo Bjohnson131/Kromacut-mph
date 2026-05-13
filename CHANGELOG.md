@@ -13,7 +13,7 @@ All notable changes to Kromacut are documented in this file.
 ### Changed
 
 - **3D preview lighting** - Reworked the 3D view shading to use flat face normals with balanced directional lighting, reducing fake shadow bands on flat meshed surfaces while keeping more model depth than the unlit preview
-- **Agent guidance** - Refocused `AGENTS.md` on Kromacut-specific domain rules, topology/export caveats, persistence boundaries, and testing guidance instead of duplicating commands and repo structure
+- **Agent guidance** - Refocused `AGENTS.md` on Kromacut-specific domain rules, topology/export caveats, persistence boundaries, testing guidance, and when agents should update the changelog
 
 ### Fixed
 

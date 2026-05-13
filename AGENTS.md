@@ -72,6 +72,14 @@ Run the focused tests when touching:
 For UI-only edits, lint/build is usually enough. For geometry, export, or auto-paint changes, prefer
 adding a small regression test over relying on screenshots.
 
+## Changelog Guidance
+
+Update `CHANGELOG.md` under the current unreleased version for most completed changes. In general,
+add an entry for user-visible features, bug fixes, behavior changes, export/geometry changes,
+persistence or data-format changes, performance work, release/build changes, and meaningful new test
+coverage or fixtures. Skip changelog entries for purely internal cleanup, typo-only edits, temporary
+debugging, or mechanical refactors that do not change behavior or coverage.
+
 ## Editing Heuristics
 
 - Preserve printability over cosmetic simplification. If mesh/export code gets shorter but loses
