@@ -1,27 +1,16 @@
 import assert from 'node:assert/strict';
-import { Buffer } from 'node:buffer';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { inflateSync } from 'node:zlib';
 import { generateGreedyMesh, generateSmoothMesh, type MeshData } from '../src/lib/meshing.ts';
+import {
+    largeIssueFixturePath,
+    logoFixturePath,
+    maskFromJpegLuminance,
+    maskFromPngAlpha,
+    type RasterMask,
+} from './imageFixtures.ts';
 import { inspectMeshIntegrity, type MeshIntegrityReport } from './meshDiagnostics.ts';
 
 type MeshGenerator = typeof generateGreedyMesh;
-
-interface RasterMask {
-    activePixels: Uint8Array;
-    width: number;
-    height: number;
-    activeCount: number;
-}
-
-interface PngImage {
-    width: number;
-    height: number;
-    rgba: Uint8Array;
-}
 
 interface RoundedExportTopologyReport {
     boundaryEdgeCount: number;
@@ -29,7 +18,6 @@ interface RoundedExportTopologyReport {
     skippedTriangleCount: number;
 }
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const noYieldOptions = {
     yieldIntervalMs: Infinity,
     onYield: async () => undefined,
@@ -39,172 +27,6 @@ const meshers: Array<{ name: string; generate: MeshGenerator }> = [
     { name: 'greedy', generate: generateGreedyMesh },
     { name: 'smooth', generate: generateSmoothMesh },
 ];
-
-function paeth(left: number, up: number, upLeft: number) {
-    const estimate = left + up - upLeft;
-    const leftDistance = Math.abs(estimate - left);
-    const upDistance = Math.abs(estimate - up);
-    const upLeftDistance = Math.abs(estimate - upLeft);
-
-    if (leftDistance <= upDistance && leftDistance <= upLeftDistance) return left;
-    if (upDistance <= upLeftDistance) return up;
-    return upLeft;
-}
-
-function bytesPerPixelForColorType(colorType: number) {
-    switch (colorType) {
-        case 0:
-            return 1;
-        case 2:
-            return 3;
-        case 4:
-            return 2;
-        case 6:
-            return 4;
-        default:
-            throw new Error(`Unsupported PNG color type ${colorType}`);
-    }
-}
-
-function readPng(filePath: string): PngImage {
-    const data = readFileSync(filePath);
-    const signature = data.subarray(0, 8).toString('hex');
-    assert.equal(signature, '89504e470d0a1a0a', `${filePath} is not a PNG`);
-
-    let offset = 8;
-    let width = 0;
-    let height = 0;
-    let bitDepth = 0;
-    let colorType = 0;
-    let interlaceMethod = 0;
-    const idatChunks: Buffer[] = [];
-
-    while (offset < data.length) {
-        const length = data.readUInt32BE(offset);
-        const type = data.toString('ascii', offset + 4, offset + 8);
-        const chunk = data.subarray(offset + 8, offset + 8 + length);
-        offset += length + 12;
-
-        if (type === 'IHDR') {
-            width = chunk.readUInt32BE(0);
-            height = chunk.readUInt32BE(4);
-            bitDepth = chunk[8];
-            colorType = chunk[9];
-            interlaceMethod = chunk[12];
-        } else if (type === 'IDAT') {
-            idatChunks.push(chunk);
-        } else if (type === 'IEND') {
-            break;
-        }
-    }
-
-    assert.equal(bitDepth, 8, 'Only 8-bit PNG fixtures are supported');
-    assert.equal(interlaceMethod, 0, 'Interlaced PNG fixtures are not supported');
-
-    const bytesPerPixel = bytesPerPixelForColorType(colorType);
-    const stride = width * bytesPerPixel;
-    const inflated = inflateSync(Buffer.concat(idatChunks));
-    const scanlines = new Uint8Array(stride * height);
-    let sourceOffset = 0;
-
-    for (let y = 0; y < height; y++) {
-        const filter = inflated[sourceOffset++];
-        const rowOffset = y * stride;
-        const previousRowOffset = rowOffset - stride;
-
-        for (let x = 0; x < stride; x++) {
-            const raw = inflated[sourceOffset++];
-            const left = x >= bytesPerPixel ? scanlines[rowOffset + x - bytesPerPixel] : 0;
-            const up = y > 0 ? scanlines[previousRowOffset + x] : 0;
-            const upLeft =
-                y > 0 && x >= bytesPerPixel ? scanlines[previousRowOffset + x - bytesPerPixel] : 0;
-
-            switch (filter) {
-                case 0:
-                    scanlines[rowOffset + x] = raw;
-                    break;
-                case 1:
-                    scanlines[rowOffset + x] = (raw + left) & 0xff;
-                    break;
-                case 2:
-                    scanlines[rowOffset + x] = (raw + up) & 0xff;
-                    break;
-                case 3:
-                    scanlines[rowOffset + x] = (raw + Math.floor((left + up) / 2)) & 0xff;
-                    break;
-                case 4:
-                    scanlines[rowOffset + x] = (raw + paeth(left, up, upLeft)) & 0xff;
-                    break;
-                default:
-                    throw new Error(`Unsupported PNG row filter ${filter}`);
-            }
-        }
-    }
-
-    const rgba = new Uint8Array(width * height * 4);
-    for (let pixel = 0; pixel < width * height; pixel++) {
-        const src = pixel * bytesPerPixel;
-        const dst = pixel * 4;
-
-        if (colorType === 6) {
-            rgba[dst] = scanlines[src];
-            rgba[dst + 1] = scanlines[src + 1];
-            rgba[dst + 2] = scanlines[src + 2];
-            rgba[dst + 3] = scanlines[src + 3];
-        } else if (colorType === 2) {
-            rgba[dst] = scanlines[src];
-            rgba[dst + 1] = scanlines[src + 1];
-            rgba[dst + 2] = scanlines[src + 2];
-            rgba[dst + 3] = 255;
-        } else if (colorType === 4) {
-            rgba[dst] = scanlines[src];
-            rgba[dst + 1] = scanlines[src];
-            rgba[dst + 2] = scanlines[src];
-            rgba[dst + 3] = scanlines[src + 1];
-        } else {
-            rgba[dst] = scanlines[src];
-            rgba[dst + 1] = scanlines[src];
-            rgba[dst + 2] = scanlines[src];
-            rgba[dst + 3] = 255;
-        }
-    }
-
-    return { width, height, rgba };
-}
-
-function maskFromPngAlpha(filePath: string, maxSide: number): RasterMask {
-    const image = readPng(filePath);
-    const sampleSize = Math.max(1, Math.ceil(Math.max(image.width, image.height) / maxSide));
-    const width = Math.ceil(image.width / sampleSize);
-    const height = Math.ceil(image.height / sampleSize);
-    const activePixels = new Uint8Array(width * height);
-    let activeCount = 0;
-
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            const sourceMinX = x * sampleSize;
-            const sourceMinY = y * sampleSize;
-            const sourceMaxX = Math.min(sourceMinX + sampleSize, image.width);
-            const sourceMaxY = Math.min(sourceMinY + sampleSize, image.height);
-            let alphaTotal = 0;
-            let samples = 0;
-
-            for (let sourceY = sourceMinY; sourceY < sourceMaxY; sourceY++) {
-                for (let sourceX = sourceMinX; sourceX < sourceMaxX; sourceX++) {
-                    alphaTotal += image.rgba[(sourceY * image.width + sourceX) * 4 + 3];
-                    samples++;
-                }
-            }
-
-            if (alphaTotal / samples >= 24) {
-                activePixels[y * width + x] = 1;
-                activeCount++;
-            }
-        }
-    }
-
-    return { activePixels, width, height, activeCount };
-}
 
 function maskFromRows(rows: string[]): RasterMask {
     const width = rows[0].length;
@@ -460,8 +282,8 @@ test('meshers produce valid closed meshes for topology-heavy masks', async (t: T
     }
 });
 
-test('default logo mask stays slicer-safe across meshers and layer settings', async (t: TestContext) => {
-    const logoMask = maskFromPngAlpha(resolve(repoRoot, 'src/assets/logo.png'), 96);
+test('1024px logo fixture mask stays slicer-safe across meshers and layer settings', async (t: TestContext) => {
+    const logoMask = maskFromPngAlpha(logoFixturePath, 96);
     assert.ok(logoMask.activeCount > 0, 'default logo mask should contain active pixels');
 
     const settings = [
@@ -496,8 +318,52 @@ test('default logo mask stays slicer-safe across meshers and layer settings', as
     }
 });
 
-test('smooth default logo stays slicer-safe after 3MF export rounding', async () => {
-    const logoMask = maskFromPngAlpha(resolve(repoRoot, 'src/assets/logo.png'), 128);
+test('large issue JPG fixture masks stay slicer-safe across meshers', async (t: TestContext) => {
+    const fixtureMasks = [
+        { name: 'midtone threshold', mask: maskFromJpegLuminance(largeIssueFixturePath, 128, 144) },
+        {
+            name: 'upper-midtone threshold',
+            mask: maskFromJpegLuminance(largeIssueFixturePath, 128, 176),
+        },
+        {
+            name: 'highlight threshold',
+            mask: maskFromJpegLuminance(largeIssueFixturePath, 128, 192),
+        },
+    ];
+
+    for (const { name: fixtureName, mask } of fixtureMasks) {
+        assert.ok(mask.activeCount > 0, `${fixtureName} should contain active pixels`);
+        assert.ok(
+            mask.activeCount < mask.width * mask.height,
+            `${fixtureName} should not collapse to a full mask`
+        );
+
+        for (const { name: mesherName, generate } of meshers) {
+            await t.test(`${mesherName}: ${fixtureName}`, async () => {
+                const mesh = await generate(
+                    mask.activePixels,
+                    mask.width,
+                    mask.height,
+                    0.12,
+                    0.04,
+                    0.32,
+                    1,
+                    noYieldOptions
+                );
+                const report = assertHealthyMesh(`${mesherName} large JPG ${fixtureName}`, mesh);
+
+                assertZBounds(`${mesherName} large JPG ${fixtureName}`, report, 0.12, 0.04, 1);
+                assert.ok(
+                    report.triangleCount < 200_000,
+                    `${mesherName} large JPG ${fixtureName} should stay within a practical test mesh size`
+                );
+            });
+        }
+    }
+});
+
+test('smooth 1024px logo stays slicer-safe after 3MF export rounding', async () => {
+    const logoMask = maskFromPngAlpha(logoFixturePath, 128);
     const mesh = await generateSmoothMesh(
         logoMask.activePixels,
         logoMask.width,

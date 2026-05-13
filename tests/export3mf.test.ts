@@ -4,6 +4,12 @@ import JSZip from 'jszip';
 import * as THREE from 'three';
 import { createServer } from 'vite';
 import { generateSmoothMesh, type MeshData } from '../src/lib/meshing.ts';
+import {
+    largeIssueFixturePath,
+    logoFixturePath,
+    maskFromJpegLuminance,
+    maskFromPngAlpha,
+} from './imageFixtures.ts';
 
 type Export3mfModule = typeof import('../src/lib/export3mf.ts');
 type Export3MFOptions = Parameters<Export3mfModule['exportObjectTo3MFBlob']>[1];
@@ -368,6 +374,56 @@ test('3MF export keeps smooth stacks to one object per layer', async () => {
 
     assert.equal(objects.length, masks.length, 'smooth stack should export one object per layer');
     assert.deepEqual(parseBaseMaterialColors(modelXml), ['FFFFFF', '000000']);
+
+    for (const object of objects) {
+        assert.equal(object.topology.badEdgeCount, 0, `${object.name} should be manifold`);
+        assert.equal(object.topology.boundaryEdgeCount, 0, `${object.name} should be closed`);
+        assert.equal(
+            object.topology.overusedEdgeCount,
+            0,
+            `${object.name} should not overuse edges`
+        );
+    }
+});
+
+test('3MF export keeps image fixture smooth meshes manifold', async () => {
+    const fixtures = [
+        {
+            name: '1024px logo',
+            mask: maskFromPngAlpha(logoFixturePath, 80),
+            color: 0x00b8c4,
+            filamentColor: '#00b8c4',
+        },
+        {
+            name: 'large issue JPG',
+            mask: maskFromJpegLuminance(largeIssueFixturePath, 80, 176),
+            color: 0xff00a1,
+            filamentColor: '#ff00a1',
+        },
+    ];
+    const thickness = 0.08;
+    const pixelSize = 0.4;
+    const root = new THREE.Group();
+
+    for (let layer = 0; layer < fixtures.length; layer++) {
+        const fixture = fixtures[layer];
+        assert.ok(fixture.mask.activeCount > 0, `${fixture.name} should contain active pixels`);
+        assert.ok(
+            fixture.mask.activeCount < fixture.mask.width * fixture.mask.height,
+            `${fixture.name} should not collapse to a full mask`
+        );
+
+        const mesh = await buildSmoothLayer(fixture.mask, thickness, layer * thickness, pixelSize);
+        root.add(createMeshDataLayer(mesh, fixture.color));
+    }
+
+    const modelXml = await exportModelXml(root, {
+        layerFilamentColors: fixtures.map((fixture) => fixture.filamentColor),
+    });
+    const objects = parseMeshObjects(modelXml);
+
+    assert.equal(objects.length, fixtures.length, 'image fixtures should export one object each');
+    assert.deepEqual(parseBaseMaterialColors(modelXml), ['00B8C4', 'FF00A1']);
 
     for (const object of objects) {
         assert.equal(object.topology.badEdgeCount, 0, `${object.name} should be manifold`);
