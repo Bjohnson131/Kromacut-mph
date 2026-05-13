@@ -25,6 +25,7 @@ interface ExportedMeshObject {
     id: string;
     name: string;
     materialIndex: number;
+    mesh: MeshData;
     vertexCount: number;
     triangleCount: number;
     topology: RawTopologyReport;
@@ -463,6 +464,25 @@ function assertStlLayerIsManifold(mesh: MeshData, label: string) {
     );
 }
 
+function assertExportLayerHasOutwardNormals(mesh: MeshData, label: string) {
+    const report = inspectMeshIntegrity(mesh, { edgeEpsilon: 1e-5 });
+
+    assert.equal(
+        report.inconsistentWindingEdgeCount,
+        0,
+        `${label} should have consistently wound normals:\n${reportForMessage(report)}`
+    );
+    assert.equal(
+        report.isOutwardFacing,
+        true,
+        `${label} should have outward-facing normals:\n${reportForMessage(report)}`
+    );
+    assert.ok(
+        report.signedVolume > 0,
+        `${label} should have positive signed volume:\n${reportForMessage(report)}`
+    );
+}
+
 function getAttribute(source: string, name: string) {
     const match = new RegExp(`${name}="([^"]*)"`).exec(source);
     return match?.[1] ?? '';
@@ -530,22 +550,36 @@ function parseMeshObjects(modelXml: string): ExportedMeshObject[] {
             continue;
         }
 
+        const vertices: number[] = [];
+        const vertexPattern = /<vertex x="([^"]+)" y="([^"]+)" z="([^"]+)" \/>/g;
+        for (const vertexMatch of body.matchAll(vertexPattern)) {
+            vertices.push(Number(vertexMatch[1]), Number(vertexMatch[2]), Number(vertexMatch[3]));
+        }
+
         const triangles: Array<[number, number, number]> = [];
+        const indices: number[] = [];
         const trianglePattern = /<triangle v1="(\d+)" v2="(\d+)" v3="(\d+)" \/>/g;
 
         for (const triangleMatch of body.matchAll(trianglePattern)) {
-            triangles.push([
+            const triangle = [
                 Number(triangleMatch[1]),
                 Number(triangleMatch[2]),
                 Number(triangleMatch[3]),
-            ]);
+            ] as [number, number, number];
+
+            triangles.push(triangle);
+            indices.push(...triangle);
         }
 
         objects.push({
             id: resourceObject.id,
             name: resourceObject.name,
             materialIndex: Number(getAttribute(resourceObject.attributes, 'pindex')),
-            vertexCount: Array.from(body.matchAll(/<vertex /g)).length,
+            mesh: {
+                positions: Float32Array.from(vertices),
+                indices,
+            },
+            vertexCount: vertices.length / 3,
             triangleCount: triangles.length,
             topology: inspectRawTopology(triangles),
         });
@@ -1142,6 +1176,12 @@ test(
                                         index + 1
                                     }`
                                 );
+                                assertExportLayerHasOutwardNormals(
+                                    object.mesh,
+                                    `${imageFixture.name} ${profile.name} ${mesher.name} 3MF layer ${
+                                        index + 1
+                                    }`
+                                );
                             }
 
                             const stlLayerMeshes = await exportStlLayerMeshes(stack.root);
@@ -1153,6 +1193,12 @@ test(
 
                             for (const [index, mesh] of stlLayerMeshes.entries()) {
                                 assertStlLayerIsManifold(
+                                    mesh,
+                                    `${imageFixture.name} ${profile.name} ${mesher.name} STL layer ${
+                                        index + 1
+                                    }`
+                                );
+                                assertExportLayerHasOutwardNormals(
                                     mesh,
                                     `${imageFixture.name} ${profile.name} ${mesher.name} STL layer ${
                                         index + 1

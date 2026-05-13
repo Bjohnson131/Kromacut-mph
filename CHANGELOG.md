@@ -10,7 +10,7 @@ All notable changes to Kromacut are documented in this file.
 - **Image fixture meshing coverage** - Added dedicated test fixtures for the 1024px logo source and a large GitHub issue JPEG, covering meshing and 3MF export topology with real image-derived masks
 - **3MF layer-count export tests** - Added fixture-backed regression tests using saved `.kapp` filament profiles to verify generated layers, 3MF mesh objects, assembly references, build items, and slicer metadata parts stay in sync
 - **3MF filament color export tests** - Added regression coverage that verifies exported base materials, project filament settings, mesh material indices, and slicer extruder metadata match the physical filament colors without missing colors or color-count explosions
-- **Final export manifold tests** - Added 3MF and STL topology checks across both image fixtures, all saved filament profiles, and both greedy and smooth meshers to catch boundary and non-manifold edges after export serialization
+- **Final export manifold tests** - Added 3MF and STL topology checks across both image fixtures, all saved filament profiles, and both greedy and smooth meshers to catch boundary edges, non-manifold edges, and inverted normals after export serialization
 
 ### Changed
 
