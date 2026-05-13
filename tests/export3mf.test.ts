@@ -22,6 +22,7 @@ type MeshGenerator = typeof generateSmoothMesh;
 interface ExportedMeshObject {
     id: string;
     name: string;
+    materialIndex: number;
     vertexCount: number;
     triangleCount: number;
     topology: RawTopologyReport;
@@ -34,6 +35,7 @@ interface RawTopologyReport {
 }
 
 interface ExportedResourceObject {
+    attributes: string;
     id: string;
     name: string;
     body: string;
@@ -42,6 +44,7 @@ interface ExportedResourceObject {
 interface ExportedArchiveXml {
     modelXml: string;
     modelSettingsXml: string;
+    projectSettings: Record<string, unknown>;
 }
 
 interface FixtureLayerSpec {
@@ -133,6 +136,22 @@ function cycleProfileColors(profile: FilamentProfileFixture, count: number) {
 
 function hexToMaterialColor(hex: string) {
     return Number.parseInt(hex.slice(1), 16);
+}
+
+function uniqueMaterialHexes(colors: string[]) {
+    const seen = new Set<string>();
+    const result: string[] = [];
+
+    for (const color of colors) {
+        const hex = normalizeFixtureHex(color, 'layer filament color').slice(1);
+
+        if (!seen.has(hex)) {
+            seen.add(hex);
+            result.push(hex);
+        }
+    }
+
+    return result;
 }
 
 class NodeFileReader {
@@ -339,6 +358,7 @@ function parseResourceObjects(modelXml: string): ExportedResourceObject[] {
 
     for (const match of modelXml.matchAll(objectPattern)) {
         objects.push({
+            attributes: match[1],
             id: getAttribute(match[1], 'id'),
             name: getAttribute(match[1], 'name'),
             body: match[2],
@@ -372,6 +392,7 @@ function parseMeshObjects(modelXml: string): ExportedMeshObject[] {
         objects.push({
             id: resourceObject.id,
             name: resourceObject.name,
+            materialIndex: Number(getAttribute(resourceObject.attributes, 'pindex')),
             vertexCount: Array.from(body.matchAll(/<vertex /g)).length,
             triangleCount: triangles.length,
             topology: inspectRawTopology(triangles),
@@ -397,6 +418,33 @@ function parseModelSettingsPartIds(modelSettingsXml: string): string[] {
     return Array.from(modelSettingsXml.matchAll(/<part\b[^>]*id="(\d+)"/g)).map(
         (match) => match[1]
     );
+}
+
+function parseModelSettingsPartExtruders(modelSettingsXml: string) {
+    const extruders = new Map<string, number>();
+    const partPattern =
+        /<part\b[^>]*id="(\d+)"[^>]*>[\s\S]*?<metadata key="extruder" value="(\d+)"/g;
+
+    for (const match of modelSettingsXml.matchAll(partPattern)) {
+        extruders.set(match[1], Number(match[2]));
+    }
+
+    return extruders;
+}
+
+function readProjectSettingsStringArray(
+    projectSettings: Record<string, unknown>,
+    key: string,
+    label: string
+) {
+    const value = projectSettings[key];
+
+    assert.ok(Array.isArray(value), `${label} project setting ${key} should be an array`);
+    for (const item of value) {
+        assert.equal(typeof item, 'string', `${label} project setting ${key} should be strings`);
+    }
+
+    return value as string[];
 }
 
 function assertLayerObjectCounts(
@@ -441,6 +489,57 @@ function assertLayerObjectCounts(
     );
 }
 
+function assertPhysicalFilamentColorResources(
+    archive: ExportedArchiveXml,
+    expectedLayerColors: string[],
+    label: string
+) {
+    const expectedMaterialHexes = uniqueMaterialHexes(expectedLayerColors);
+    const expectedMaterialColors = expectedMaterialHexes.map((hex) => `#${hex}`);
+    const expectedLayerMaterialIndices = expectedLayerColors.map((color) =>
+        expectedMaterialHexes.indexOf(normalizeFixtureHex(color, `${label} layer color`).slice(1))
+    );
+    const meshObjects = parseMeshObjects(archive.modelXml);
+    const partExtruders = parseModelSettingsPartExtruders(archive.modelSettingsXml);
+
+    assert.equal(
+        meshObjects.length,
+        expectedLayerColors.length,
+        `${label} should export one mesh object per layer color`
+    );
+    assert.deepEqual(
+        parseBaseMaterialColors(archive.modelXml),
+        expectedMaterialHexes,
+        `${label} base materials should match physical filament colors exactly`
+    );
+    assert.deepEqual(
+        readProjectSettingsStringArray(archive.projectSettings, 'filament_colour', label).map(
+            (color) => normalizeFixtureHex(color, `${label} project filament color`)
+        ),
+        expectedMaterialColors,
+        `${label} project settings should contain exactly the physical filament colors`
+    );
+
+    for (const key of ['filament_type', 'filament_settings_id', 'filament_vendor']) {
+        assert.equal(
+            readProjectSettingsStringArray(archive.projectSettings, key, label).length,
+            expectedMaterialHexes.length,
+            `${label} project setting ${key} should match the filament color count`
+        );
+    }
+
+    assert.deepEqual(
+        meshObjects.map((object) => object.materialIndex),
+        expectedLayerMaterialIndices,
+        `${label} mesh objects should reference the expected physical filament material`
+    );
+    assert.deepEqual(
+        meshObjects.map((object) => partExtruders.get(object.id)),
+        expectedLayerMaterialIndices.map((index) => index + 1),
+        `${label} slicer metadata extruders should match physical filament material order`
+    );
+}
+
 async function exportArchiveXml(
     root: THREE.Object3D,
     options?: Export3MFOptions
@@ -452,13 +551,19 @@ async function exportArchiveXml(
     const zip = await JSZip.loadAsync(await blob.arrayBuffer());
     const model = zip.file('3D/3dmodel.model');
     const modelSettings = zip.file('Metadata/model_settings.config');
+    const projectSettings = zip.file('Metadata/project_settings.config');
 
     assert.ok(model, '3MF archive should contain 3D/3dmodel.model');
     assert.ok(modelSettings, '3MF archive should contain Metadata/model_settings.config');
+    assert.ok(projectSettings, '3MF archive should contain Metadata/project_settings.config');
 
     return {
         modelXml: await model.async('string'),
         modelSettingsXml: await modelSettings.async('string'),
+        projectSettings: JSON.parse(await projectSettings.async('string')) as Record<
+            string,
+            unknown
+        >,
     };
 }
 
@@ -545,6 +650,50 @@ test('3MF export uses physical filament colors without virtual color explosion',
         assert.equal(object.topology.boundaryEdgeCount, 0);
         assert.equal(object.topology.overusedEdgeCount, 0);
     }
+});
+
+test('3MF export color resources match physical filament count', async (t: TestContext) => {
+    await t.test('all 8 profile filaments export as exactly 8 physical colors', async () => {
+        const filamentColors = profileColors(current8Profile);
+        const root = new THREE.Group();
+
+        for (let layer = 0; layer < filamentColors.length; layer++) {
+            root.add(
+                createLayerMesh(
+                    createSharedCubeGeometry().toNonIndexed(),
+                    hexToMaterialColor(filamentColors[(layer + 3) % filamentColors.length])
+                )
+            );
+        }
+
+        const archive = await exportArchiveXml(root, {
+            layerFilamentColors: filamentColors,
+        });
+
+        assertPhysicalFilamentColorResources(archive, filamentColors, '8-color profile export');
+        assert.equal(
+            parseBaseMaterialColors(archive.modelXml).length,
+            current8Profile.filaments.length
+        );
+    });
+
+    await t.test('repeated B&W swap layers do not create extra physical colors', async () => {
+        const layerCount = 16;
+        const filamentColors = cycleProfileColors(bwProfile, layerCount);
+        const root = new THREE.Group();
+
+        for (let layer = 0; layer < layerCount; layer++) {
+            const previewColor = (0x224466 + layer * 0x10203) & 0xffffff;
+            root.add(createLayerMesh(createSharedCubeGeometry().toNonIndexed(), previewColor));
+        }
+
+        const archive = await exportArchiveXml(root, {
+            layerFilamentColors: filamentColors,
+        });
+
+        assertPhysicalFilamentColorResources(archive, filamentColors, 'repeated B&W export');
+        assert.equal(parseBaseMaterialColors(archive.modelXml).length, bwProfile.filaments.length);
+    });
 });
 
 test('3MF export does not collapse meshes by legacy layer tags', async () => {
