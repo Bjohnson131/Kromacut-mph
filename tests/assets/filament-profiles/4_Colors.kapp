@@ -1,0 +1,29 @@
+{
+  "id": "a8e763c2-0d2d-461d-9bab-6e50fd28b4a5",
+  "name": "GH#27",
+  "version": 1,
+  "filaments": [
+    {
+      "id": "plvjtmc",
+      "color": "#000000",
+      "td": 0.8
+    },
+    {
+      "id": "h8zuocq",
+      "color": "#787453",
+      "td": 3.5
+    },
+    {
+      "id": "xud8mzr",
+      "color": "#8b7658",
+      "td": 3.7
+    },
+    {
+      "id": "y202l1e",
+      "color": "#c8c1aa",
+      "td": 4.7
+    }
+  ],
+  "createdAt": 1778699250621,
+  "updatedAt": 1778699250621
+}

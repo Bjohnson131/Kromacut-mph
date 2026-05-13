@@ -1,0 +1,49 @@
+{
+  "id": "e5a7cbc9-04e3-4123-8f54-74df1fb18310",
+  "name": "Current 8 Colors",
+  "version": 1,
+  "filaments": [
+    {
+      "id": "p9c63ms",
+      "color": "#ffffff",
+      "td": 6
+    },
+    {
+      "id": "plvjtmc",
+      "color": "#000000",
+      "td": 0.16
+    },
+    {
+      "id": "98z555k",
+      "color": "#ff2f9f",
+      "td": 3.9
+    },
+    {
+      "id": "w8cncoa",
+      "color": "#f7d000",
+      "td": 6.3
+    },
+    {
+      "id": "vsn9q6u",
+      "color": "#d83400",
+      "td": 3.8
+    },
+    {
+      "id": "azwg1yp",
+      "color": "#6300c5",
+      "td": 2.8
+    },
+    {
+      "id": "xyyxysq",
+      "color": "#00b8c4",
+      "td": 5.1
+    },
+    {
+      "id": "upcjpfe",
+      "color": "#04bb00",
+      "td": 4.9
+    }
+  ],
+  "createdAt": 1778699253224,
+  "updatedAt": 1778699253224
+}

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import JSZip from 'jszip';
 import * as THREE from 'three';
@@ -9,6 +11,7 @@ import {
     logoFixturePath,
     maskFromJpegLuminance,
     maskFromPngAlpha,
+    testAssetsRoot,
     type RasterMask,
 } from './imageFixtures.ts';
 
@@ -54,7 +57,83 @@ interface GeneratedLayerStack {
     filamentColors: string[];
 }
 
+interface FilamentProfileFixture {
+    name: string;
+    filaments: Array<{
+        id: string;
+        color: string;
+        td: number;
+    }>;
+}
+
 let export3mfModule: Promise<Export3mfModule> | null = null;
+const filamentProfilesRoot = resolve(testAssetsRoot, 'filament-profiles');
+
+function normalizeFixtureHex(value: string, label: string) {
+    assert.match(value, /^#[0-9A-Fa-f]{6}$/, `${label} should be a hex color`);
+    return value.toUpperCase();
+}
+
+function loadFilamentProfileFixture(
+    fileName: string,
+    expectedFilamentCount: number
+): FilamentProfileFixture {
+    const raw = JSON.parse(
+        readFileSync(resolve(filamentProfilesRoot, fileName), 'utf8')
+    ) as Partial<FilamentProfileFixture>;
+    const name = raw.name;
+    const filaments = raw.filaments;
+
+    if (typeof name !== 'string') {
+        assert.fail(`${fileName} should include a profile name`);
+    }
+    if (!Array.isArray(filaments)) {
+        assert.fail(`${fileName} should include filaments`);
+    }
+    assert.equal(
+        filaments.length,
+        expectedFilamentCount,
+        `${fileName} should contain the expected filament count`
+    );
+
+    return {
+        name,
+        filaments: filaments.map((filament, index) => {
+            assert.equal(typeof filament.id, 'string', `${fileName} filament ${index} id`);
+            assert.equal(typeof filament.td, 'number', `${fileName} filament ${index} TD`);
+            assert.ok(filament.td > 0, `${fileName} filament ${index} TD should be positive`);
+
+            return {
+                id: filament.id,
+                color: normalizeFixtureHex(filament.color, `${fileName} filament ${index}`),
+                td: filament.td,
+            };
+        }),
+    };
+}
+
+const bwProfile = loadFilamentProfileFixture('2_Colors.kapp', 2);
+const gh27Profile = loadFilamentProfileFixture('4_Colors.kapp', 4);
+const current8Profile = loadFilamentProfileFixture('8_Colors.kapp', 8);
+
+function profileColors(profile: FilamentProfileFixture) {
+    return profile.filaments.map((filament) => filament.color);
+}
+
+function profileMaterialHexes(profile: FilamentProfileFixture) {
+    return profileColors(profile).map((color) => color.slice(1));
+}
+
+function cycleProfileColors(profile: FilamentProfileFixture, count: number) {
+    const colors = profileColors(profile);
+    assert.ok(colors.length > 0, `${profile.name} should include at least one color`);
+
+    return Array.from({ length: count }, (_, index) => colors[index % colors.length]);
+}
+
+function hexToMaterialColor(hex: string) {
+    return Number.parseInt(hex.slice(1), 16);
+}
 
 class NodeFileReader {
     error: Error | null = null;
@@ -449,16 +528,17 @@ test('3MF export uses physical filament colors without virtual color explosion',
     root.add(createLayerMesh(createSharedCubeGeometry().toNonIndexed(), 0x667788));
     root.add(createLayerMesh(createSharedCubeGeometry().toNonIndexed(), 0x8899aa));
 
+    const filamentColors = cycleProfileColors(bwProfile, 4);
     const modelXml = await exportModelXml(root, {
-        layerFilamentColors: ['#ffffff', '#000000', '#ffffff', '#000000'],
+        layerFilamentColors: filamentColors,
     });
     const objects = parseMeshObjects(modelXml);
 
     assert.deepEqual(
         objects.map((object) => object.name),
-        ['Layer 1 (#FFFFFF)', 'Layer 2 (#000000)', 'Layer 3 (#FFFFFF)', 'Layer 4 (#000000)']
+        filamentColors.map((color, index) => `Layer ${index + 1} (${color})`)
     );
-    assert.deepEqual(parseBaseMaterialColors(modelXml), ['FFFFFF', '000000']);
+    assert.deepEqual(parseBaseMaterialColors(modelXml), profileMaterialHexes(bwProfile));
     for (const object of objects) {
         assert.equal(object.triangleCount, 12);
         assert.equal(object.topology.badEdgeCount, 0);
@@ -475,13 +555,14 @@ test('3MF export does not collapse meshes by legacy layer tags', async () => {
     second.userData.exportLayerIndex = 0;
     root.add(first, second);
 
+    const filamentColors = profileColors(bwProfile);
     const objects = await exportMeshObjects(root, {
-        layerFilamentColors: ['#ffffff', '#000000'],
+        layerFilamentColors: filamentColors,
     });
 
     assert.deepEqual(
         objects.map((object) => object.name),
-        ['Layer 1 (#FFFFFF)', 'Layer 2 (#000000)']
+        filamentColors.map((color, index) => `Layer ${index + 1} (${color})`)
     );
 });
 
@@ -506,18 +587,19 @@ test('3MF export keeps smooth stacks to one object per layer', async () => {
     }
 
     const root = new THREE.Group();
-    const previewColors = [0x00b8c4, 0x6300c5, 0xff00a1, 0xf7d000];
+    const filamentColors = profileColors(gh27Profile);
+    const previewColors = filamentColors.map(hexToMaterialColor);
     for (let layer = 0; layer < meshes.length; layer++) {
         root.add(createMeshDataLayer(meshes[layer], previewColors[layer]));
     }
 
     const modelXml = await exportModelXml(root, {
-        layerFilamentColors: ['#ffffff', '#000000', '#ffffff', '#000000'],
+        layerFilamentColors: filamentColors,
     });
     const objects = parseMeshObjects(modelXml);
 
     assert.equal(objects.length, masks.length, 'smooth stack should export one object per layer');
-    assert.deepEqual(parseBaseMaterialColors(modelXml), ['FFFFFF', '000000']);
+    assert.deepEqual(parseBaseMaterialColors(modelXml), profileMaterialHexes(gh27Profile));
 
     for (const object of objects) {
         assert.equal(object.topology.badEdgeCount, 0, `${object.name} should be manifold`);
@@ -531,18 +613,19 @@ test('3MF export keeps smooth stacks to one object per layer', async () => {
 });
 
 test('3MF export keeps image fixture smooth meshes manifold', async () => {
+    const profileFixtureColors = profileColors(current8Profile);
     const fixtures = [
         {
             name: '1024px logo',
             mask: maskFromPngAlpha(logoFixturePath, 80),
-            color: 0x00b8c4,
-            filamentColor: '#00b8c4',
+            color: hexToMaterialColor(profileFixtureColors[6]),
+            filamentColor: profileFixtureColors[6],
         },
         {
             name: 'large issue JPG',
             mask: maskFromJpegLuminance(largeIssueFixturePath, 80, 176),
-            color: 0xff00a1,
-            filamentColor: '#ff00a1',
+            color: hexToMaterialColor(profileFixtureColors[2]),
+            filamentColor: profileFixtureColors[2],
         },
     ];
     const thickness = 0.08;
@@ -567,7 +650,10 @@ test('3MF export keeps image fixture smooth meshes manifold', async () => {
     const objects = parseMeshObjects(modelXml);
 
     assert.equal(objects.length, fixtures.length, 'image fixtures should export one object each');
-    assert.deepEqual(parseBaseMaterialColors(modelXml), ['00B8C4', 'FF00A1']);
+    assert.deepEqual(
+        parseBaseMaterialColors(modelXml),
+        fixtures.map((fixture) => fixture.filamentColor.slice(1))
+    );
 
     for (const object of objects) {
         assert.equal(object.topology.badEdgeCount, 0, `${object.name} should be manifold`);
@@ -581,19 +667,20 @@ test('3MF export keeps image fixture smooth meshes manifold', async () => {
 });
 
 test('3MF export object counts match generated fixture layers', async (t: TestContext) => {
-    await t.test('repeated logo fixture layers stay separate even with one filament color', async () => {
+    await t.test('8-color profile logo stack exports every generated layer', async () => {
         const logoMask = maskFromPngAlpha(logoFixturePath, 72);
         assert.ok(logoMask.activeCount > 0, 'logo fixture should contain active pixels');
 
-        const layerSpecs: FixtureLayerSpec[] = Array.from({ length: 5 }, (_, layer) => ({
+        const profileFixtureColors = profileColors(current8Profile);
+        const layerSpecs: FixtureLayerSpec[] = profileFixtureColors.map((color, layer) => ({
             mask: logoMask,
             thickness: layer === 0 ? 0.16 : 0.08,
-            color: [0x00b8c4, 0xff00a1, 0xf7d000, 0x4c9f38, 0x7a42f4][layer],
-            filamentColor: '#ffffff',
+            color: hexToMaterialColor(color),
+            filamentColor: color,
         }));
         const stack = await buildFixtureLayerStack(layerSpecs, 0.42, generateGreedyMesh);
 
-        assert.equal(stack.generatedLayerCount, layerSpecs.length);
+        assert.equal(stack.generatedLayerCount, current8Profile.filaments.length);
 
         const archive = await exportArchiveXml(stack.root, {
             firstLayerHeight: 0.16,
@@ -604,15 +691,14 @@ test('3MF export object counts match generated fixture layers', async (t: TestCo
         assertLayerObjectCounts(
             archive,
             stack.generatedLayerCount,
-            'repeated logo fixture stack'
+            '8-color profile logo stack'
         );
-        assert.deepEqual(parseBaseMaterialColors(archive.modelXml), ['FFFFFF']);
+        assert.deepEqual(parseBaseMaterialColors(archive.modelXml), profileMaterialHexes(current8Profile));
     });
 
     await t.test('large JPG threshold stack keeps one object per generated smooth layer', async () => {
         const thresholds = [96, 112, 128, 144];
-        const colors = [0x141414, 0x555555, 0x999999, 0xdddddd];
-        const filamentColors = ['#111111', '#444444', '#777777', '#aaaaaa'];
+        const filamentColors = profileColors(gh27Profile);
         const layerSpecs: FixtureLayerSpec[] = thresholds.map((threshold, layer) => {
             const mask = maskFromJpegLuminance(largeIssueFixturePath, 64, threshold);
 
@@ -625,7 +711,7 @@ test('3MF export object counts match generated fixture layers', async (t: TestCo
             return {
                 mask,
                 thickness: layer === 0 ? 0.12 : 0.08,
-                color: colors[layer],
+                color: hexToMaterialColor(filamentColors[layer]),
                 filamentColor: filamentColors[layer],
             };
         });
@@ -640,12 +726,7 @@ test('3MF export object counts match generated fixture layers', async (t: TestCo
         });
 
         assertLayerObjectCounts(archive, stack.generatedLayerCount, 'large JPG threshold stack');
-        assert.deepEqual(parseBaseMaterialColors(archive.modelXml), [
-            '111111',
-            '444444',
-            '777777',
-            'AAAAAA',
-        ]);
+        assert.deepEqual(parseBaseMaterialColors(archive.modelXml), profileMaterialHexes(gh27Profile));
     });
 });
 
@@ -697,20 +778,19 @@ test('3MF export keeps many smooth layers bounded to layer count', async () => {
     }
 
     const root = new THREE.Group();
+    const filamentColors = cycleProfileColors(bwProfile, layerCount);
     for (let layer = 0; layer < meshes.length; layer++) {
-        root.add(createMeshDataLayer(meshes[layer], layer % 2 === 0 ? 0xff00a1 : 0x00b8c4));
+        root.add(createMeshDataLayer(meshes[layer], hexToMaterialColor(filamentColors[layer])));
     }
 
     const modelXml = await exportModelXml(root, {
-        layerFilamentColors: Array.from({ length: layerCount }, (_, layer) =>
-            layer % 2 === 0 ? '#ffffff' : '#000000'
-        ),
+        layerFilamentColors: filamentColors,
     });
     const objects = parseMeshObjects(modelXml);
 
     assert.equal(objects.length, layerCount, 'smooth export should not create support sub-objects');
     assert.ok(objects.length < 100, 'smooth export should stay bounded to the layer count');
-    assert.deepEqual(parseBaseMaterialColors(modelXml), ['FFFFFF', '000000']);
+    assert.deepEqual(parseBaseMaterialColors(modelXml), profileMaterialHexes(bwProfile));
 
     for (const object of objects) {
         assert.equal(object.topology.badEdgeCount, 0, `${object.name} should be manifold`);
