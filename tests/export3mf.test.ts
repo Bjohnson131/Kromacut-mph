@@ -1,18 +1,20 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import JSZip from 'jszip';
 import * as THREE from 'three';
 import { createServer } from 'vite';
-import { generateSmoothMesh, type MeshData } from '../src/lib/meshing.ts';
+import { generateGreedyMesh, generateSmoothMesh, type MeshData } from '../src/lib/meshing.ts';
 import {
     largeIssueFixturePath,
     logoFixturePath,
     maskFromJpegLuminance,
     maskFromPngAlpha,
+    type RasterMask,
 } from './imageFixtures.ts';
 
 type Export3mfModule = typeof import('../src/lib/export3mf.ts');
 type Export3MFOptions = Parameters<Export3mfModule['exportObjectTo3MFBlob']>[1];
+type MeshGenerator = typeof generateSmoothMesh;
 
 interface ExportedMeshObject {
     id: string;
@@ -28,10 +30,28 @@ interface RawTopologyReport {
     badEdgeCount: number;
 }
 
-interface RasterMask {
-    activePixels: Uint8Array;
-    width: number;
-    height: number;
+interface ExportedResourceObject {
+    id: string;
+    name: string;
+    body: string;
+}
+
+interface ExportedArchiveXml {
+    modelXml: string;
+    modelSettingsXml: string;
+}
+
+interface FixtureLayerSpec {
+    mask: RasterMask;
+    thickness: number;
+    color: number;
+    filamentColor: string;
+}
+
+interface GeneratedLayerStack {
+    root: THREE.Group;
+    generatedLayerCount: number;
+    filamentColors: string[];
 }
 
 let export3mfModule: Promise<Export3mfModule> | null = null;
@@ -124,25 +144,28 @@ function maskFromRows(rows: string[]): RasterMask {
     const width = rows[0]?.length ?? 0;
     const height = rows.length;
     const activePixels = new Uint8Array(width * height);
+    let activeCount = 0;
 
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
             if (rows[y][x] === '#') {
                 activePixels[y * width + x] = 1;
+                activeCount++;
             }
         }
     }
 
-    return { activePixels, width, height };
+    return { activePixels, width, height, activeCount };
 }
 
-async function buildSmoothLayer(
+async function buildLayer(
     mask: RasterMask,
     thickness: number,
     zOffset: number,
-    pixelSize: number
+    pixelSize: number,
+    generate: MeshGenerator
 ) {
-    return await generateSmoothMesh(
+    return await generate(
         mask.activePixels,
         mask.width,
         mask.height,
@@ -152,6 +175,42 @@ async function buildSmoothLayer(
         1,
         { yieldIntervalMs: Infinity, onYield: async () => undefined }
     );
+}
+
+async function buildSmoothLayer(
+    mask: RasterMask,
+    thickness: number,
+    zOffset: number,
+    pixelSize: number
+) {
+    return await buildLayer(mask, thickness, zOffset, pixelSize, generateSmoothMesh);
+}
+
+async function buildFixtureLayerStack(
+    layerSpecs: FixtureLayerSpec[],
+    pixelSize: number,
+    generate: MeshGenerator
+): Promise<GeneratedLayerStack> {
+    const root = new THREE.Group();
+    const filamentColors: string[] = [];
+    let zOffset = 0;
+    let generatedLayerCount = 0;
+
+    for (const spec of layerSpecs) {
+        const baseZ = zOffset;
+        zOffset += spec.thickness;
+
+        if (spec.thickness <= 0.0001 || spec.mask.activeCount === 0) {
+            continue;
+        }
+
+        const mesh = await buildLayer(spec.mask, spec.thickness, baseZ, pixelSize, generate);
+        root.add(createMeshDataLayer(mesh, spec.color));
+        filamentColors.push(spec.filamentColor);
+        generatedLayerCount++;
+    }
+
+    return { root, generatedLayerCount, filamentColors };
 }
 
 function getAttribute(source: string, name: string) {
@@ -195,13 +254,26 @@ function inspectRawTopology(triangles: Array<[number, number, number]>): RawTopo
     };
 }
 
-function parseMeshObjects(modelXml: string): ExportedMeshObject[] {
-    const objects: ExportedMeshObject[] = [];
+function parseResourceObjects(modelXml: string): ExportedResourceObject[] {
+    const objects: ExportedResourceObject[] = [];
     const objectPattern = /<object\b([^>]*)>([\s\S]*?)<\/object>/g;
 
     for (const match of modelXml.matchAll(objectPattern)) {
-        const attributes = match[1];
-        const body = match[2];
+        objects.push({
+            id: getAttribute(match[1], 'id'),
+            name: getAttribute(match[1], 'name'),
+            body: match[2],
+        });
+    }
+
+    return objects;
+}
+
+function parseMeshObjects(modelXml: string): ExportedMeshObject[] {
+    const objects: ExportedMeshObject[] = [];
+
+    for (const resourceObject of parseResourceObjects(modelXml)) {
+        const body = resourceObject.body;
 
         if (!body.includes('<mesh>')) {
             continue;
@@ -219,8 +291,8 @@ function parseMeshObjects(modelXml: string): ExportedMeshObject[] {
         }
 
         objects.push({
-            id: getAttribute(attributes, 'id'),
-            name: getAttribute(attributes, 'name'),
+            id: resourceObject.id,
+            name: resourceObject.name,
             vertexCount: Array.from(body.matchAll(/<vertex /g)).length,
             triangleCount: triangles.length,
             topology: inspectRawTopology(triangles),
@@ -230,17 +302,89 @@ function parseMeshObjects(modelXml: string): ExportedMeshObject[] {
     return objects;
 }
 
-async function exportModelXml(root: THREE.Object3D, options?: Export3MFOptions): Promise<string> {
+function parseAssemblyComponentIds(assemblyBody: string): string[] {
+    return Array.from(assemblyBody.matchAll(/<component\b[^>]*objectid="(\d+)"/g)).map(
+        (match) => match[1]
+    );
+}
+
+function parseBuildItemObjectIds(modelXml: string): string[] {
+    return Array.from(modelXml.matchAll(/<item\b[^>]*objectid="(\d+)"/g)).map(
+        (match) => match[1]
+    );
+}
+
+function parseModelSettingsPartIds(modelSettingsXml: string): string[] {
+    return Array.from(modelSettingsXml.matchAll(/<part\b[^>]*id="(\d+)"/g)).map(
+        (match) => match[1]
+    );
+}
+
+function assertLayerObjectCounts(
+    archive: ExportedArchiveXml,
+    expectedGeneratedLayers: number,
+    label: string
+) {
+    const resourceObjects = parseResourceObjects(archive.modelXml);
+    const meshObjects = parseMeshObjects(archive.modelXml);
+    const assemblyObjects = resourceObjects.filter((object) => object.body.includes('<components>'));
+    const meshObjectIds = meshObjects.map((object) => object.id);
+
+    assert.equal(
+        meshObjects.length,
+        expectedGeneratedLayers,
+        `${label} should export one mesh object per generated layer`
+    );
+    assert.equal(
+        assemblyObjects.length,
+        1,
+        `${label} should contain exactly one assembly object`
+    );
+    assert.equal(
+        resourceObjects.length,
+        expectedGeneratedLayers + 1,
+        `${label} should contain generated layer objects plus one assembly object`
+    );
+    assert.deepEqual(
+        parseAssemblyComponentIds(assemblyObjects[0].body),
+        meshObjectIds,
+        `${label} assembly should reference every generated layer object once`
+    );
+    assert.deepEqual(
+        parseBuildItemObjectIds(archive.modelXml),
+        [assemblyObjects[0].id],
+        `${label} build item should reference the assembly object`
+    );
+    assert.deepEqual(
+        parseModelSettingsPartIds(archive.modelSettingsXml),
+        meshObjectIds,
+        `${label} slicer metadata should describe every generated layer object once`
+    );
+}
+
+async function exportArchiveXml(
+    root: THREE.Object3D,
+    options?: Export3MFOptions
+): Promise<ExportedArchiveXml> {
     installFileReaderPolyfill();
 
     const { exportObjectTo3MFBlob } = await loadExport3mfModule();
     const blob = await exportObjectTo3MFBlob(root, options);
     const zip = await JSZip.loadAsync(await blob.arrayBuffer());
     const model = zip.file('3D/3dmodel.model');
+    const modelSettings = zip.file('Metadata/model_settings.config');
 
     assert.ok(model, '3MF archive should contain 3D/3dmodel.model');
+    assert.ok(modelSettings, '3MF archive should contain Metadata/model_settings.config');
 
-    return await model.async('string');
+    return {
+        modelXml: await model.async('string'),
+        modelSettingsXml: await modelSettings.async('string'),
+    };
+}
+
+async function exportModelXml(root: THREE.Object3D, options?: Export3MFOptions): Promise<string> {
+    return (await exportArchiveXml(root, options)).modelXml;
 }
 
 async function exportMeshObjects(
@@ -436,6 +580,75 @@ test('3MF export keeps image fixture smooth meshes manifold', async () => {
     }
 });
 
+test('3MF export object counts match generated fixture layers', async (t: TestContext) => {
+    await t.test('repeated logo fixture layers stay separate even with one filament color', async () => {
+        const logoMask = maskFromPngAlpha(logoFixturePath, 72);
+        assert.ok(logoMask.activeCount > 0, 'logo fixture should contain active pixels');
+
+        const layerSpecs: FixtureLayerSpec[] = Array.from({ length: 5 }, (_, layer) => ({
+            mask: logoMask,
+            thickness: layer === 0 ? 0.16 : 0.08,
+            color: [0x00b8c4, 0xff00a1, 0xf7d000, 0x4c9f38, 0x7a42f4][layer],
+            filamentColor: '#ffffff',
+        }));
+        const stack = await buildFixtureLayerStack(layerSpecs, 0.42, generateGreedyMesh);
+
+        assert.equal(stack.generatedLayerCount, layerSpecs.length);
+
+        const archive = await exportArchiveXml(stack.root, {
+            firstLayerHeight: 0.16,
+            layerHeight: 0.08,
+            layerFilamentColors: stack.filamentColors,
+        });
+
+        assertLayerObjectCounts(
+            archive,
+            stack.generatedLayerCount,
+            'repeated logo fixture stack'
+        );
+        assert.deepEqual(parseBaseMaterialColors(archive.modelXml), ['FFFFFF']);
+    });
+
+    await t.test('large JPG threshold stack keeps one object per generated smooth layer', async () => {
+        const thresholds = [96, 112, 128, 144];
+        const colors = [0x141414, 0x555555, 0x999999, 0xdddddd];
+        const filamentColors = ['#111111', '#444444', '#777777', '#aaaaaa'];
+        const layerSpecs: FixtureLayerSpec[] = thresholds.map((threshold, layer) => {
+            const mask = maskFromJpegLuminance(largeIssueFixturePath, 64, threshold);
+
+            assert.ok(mask.activeCount > 0, `threshold ${threshold} should generate pixels`);
+            assert.ok(
+                mask.activeCount < mask.width * mask.height,
+                `threshold ${threshold} should not cover the whole fixture`
+            );
+
+            return {
+                mask,
+                thickness: layer === 0 ? 0.12 : 0.08,
+                color: colors[layer],
+                filamentColor: filamentColors[layer],
+            };
+        });
+        const stack = await buildFixtureLayerStack(layerSpecs, 0.36, generateSmoothMesh);
+
+        assert.equal(stack.generatedLayerCount, layerSpecs.length);
+
+        const archive = await exportArchiveXml(stack.root, {
+            firstLayerHeight: 0.12,
+            layerHeight: 0.08,
+            layerFilamentColors: stack.filamentColors,
+        });
+
+        assertLayerObjectCounts(archive, stack.generatedLayerCount, 'large JPG threshold stack');
+        assert.deepEqual(parseBaseMaterialColors(archive.modelXml), [
+            '111111',
+            '444444',
+            '777777',
+            'AAAAAA',
+        ]);
+    });
+});
+
 test('3MF export keeps many smooth layers bounded to layer count', async () => {
     const layerCount = 16;
     const width = 32;
@@ -444,6 +657,7 @@ test('3MF export keeps many smooth layers bounded to layer count', async () => {
     const pixelSize = 0.35;
     const masks = Array.from({ length: layerCount }, (_, layer) => {
         const activePixels = new Uint8Array(width * height);
+        let activeCount = 0;
         const left = Math.floor(layer * 0.45);
         const right = width - 1 - Math.floor(layer * 0.55);
         const top = Math.floor(layer * 0.25);
@@ -463,11 +677,12 @@ test('3MF export keeps many smooth layers bounded to layer count', async () => {
                     !notchRemovesPixel
                 ) {
                     activePixels[y * width + x] = 1;
+                    activeCount++;
                 }
             }
         }
 
-        return { activePixels, width, height };
+        return { activePixels, width, height, activeCount };
     });
 
     const meshes: MeshData[] = new Array(masks.length);
