@@ -37,6 +37,11 @@ export function deditherRowProgress(processedRows: number, totalRows: number): n
     return progressInSpan(0.1, 0.85, Math.max(0, processedRows) / Math.max(1, totalRows));
 }
 
+export function progressBarIndicatorClass(indeterminate = false): string {
+    const baseClass = 'h-2 rounded-full bg-primary';
+    return indeterminate ? `${baseClass} animate-pulse` : baseClass;
+}
+
 function progressRowFraction(rowIndex: number, rowCount: number): number {
     return clampProgress((Math.max(0, Math.floor(rowIndex)) + 1) / Math.max(1, rowCount));
 }

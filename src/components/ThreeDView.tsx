@@ -6,6 +6,7 @@ import {
     clampProgress,
     layeredBuildLayerProgress,
     layeredBuildScanProgress,
+    progressBarIndicatorClass,
 } from '../lib/progress';
 import { Slider } from '@/components/ui/slider';
 import { Layers } from 'lucide-react';
@@ -1191,7 +1192,7 @@ export default function ThreeDView({
                         </div>
                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
                             <div
-                                className="h-2 rounded-full bg-primary transition-[width] duration-150"
+                                className={progressBarIndicatorClass()}
                                 style={{ width: `${Math.round(buildProgress * 100)}%` }}
                             />
                         </div>

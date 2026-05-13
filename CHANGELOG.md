@@ -26,6 +26,7 @@ All notable changes to Kromacut are documented in this file.
 - **Smooth mesh build progress** - 3D build progress now stays monotonic while smooth layers are generated
 - **3MF export progress** - 3MF export progress now reports explicit geometry collection, vertex writing, triangle writing, and zip compression phases instead of reusing an earlier percentage range
 - **2D processing progress** - Quantize and dedither progress bars now display their staged producer progress directly instead of masking backwards updates in the app shell
+- **Progress bar fill accuracy** - Determinate progress bars now update without width-transition lag, keeping the blue fill aligned with the displayed percentage during dedither, export, and mesh generation
 
 ## v2.5.0 - 2026-05-03
 

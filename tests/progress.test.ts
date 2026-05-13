@@ -8,6 +8,7 @@ import {
     layeredBuildLayerProgress,
     layeredBuildScanProgress,
     progressInSpan,
+    progressBarIndicatorClass,
     quantizeAlgorithmProgress,
     quantizePostProgress,
     quantizeSwatchProgress,
@@ -43,6 +44,16 @@ test('progress spans map phase-local work into a stable global range', () => {
     assert.equal(progressInSpan(0.2, 0.3, 1), 0.5);
     assert.equal(progressInSpan(0.2, 0.3, 2), 0.5);
     assert.equal(progressInSpan(0.2, -0.3, 1), 0.2);
+});
+
+test('determinate progress bars render without lagging width transitions', () => {
+    const determinateClass = progressBarIndicatorClass(false);
+    const indeterminateClass = progressBarIndicatorClass(true);
+
+    assert.equal(determinateClass.includes('transition-[width]'), false);
+    assert.equal(determinateClass.includes('duration-'), false);
+    assert.equal(determinateClass.includes('animate-pulse'), false);
+    assert.equal(indeterminateClass.includes('animate-pulse'), true);
 });
 
 test('export progress advances through mesh and zip stages', () => {

@@ -24,7 +24,7 @@ import { exportObjectTo3MFBlob } from './lib/export3mf';
 import { useAppHandlers } from './hooks/useAppHandlers';
 import { useProcessingState } from './hooks/useProcessingState';
 import { useBuildWarning } from './hooks/useBuildWarning';
-import { clampProgress } from './lib/progress';
+import { clampProgress, progressBarIndicatorClass } from './lib/progress';
 import ResizableSplitter from './components/ResizableSplitter';
 import { ControlsPanel } from './components/ControlsPanel';
 import { usePaletteManager } from './hooks/usePaletteManager';
@@ -483,11 +483,9 @@ function App(): React.ReactElement | null {
                                                         </div>
                                                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
                                                             <div
-                                                                className={`h-2 rounded-full bg-primary ${
-                                                                    showPercent
-                                                                        ? 'transition-[width] duration-150'
-                                                                        : 'animate-pulse'
-                                                                }`}
+                                                                className={progressBarIndicatorClass(
+                                                                    !showPercent
+                                                                )}
                                                                 style={{
                                                                     width: barWidth,
                                                                 }}
@@ -540,7 +538,9 @@ function App(): React.ReactElement | null {
                                                         </div>
                                                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
                                                             <div
-                                                                className={`h-2 rounded-full bg-primary ${hasProgress ? 'transition-[width] duration-150' : 'animate-pulse'}`}
+                                                                className={progressBarIndicatorClass(
+                                                                    !hasProgress
+                                                                )}
                                                                 style={{
                                                                     width: hasProgress
                                                                         ? `${pct}%`
