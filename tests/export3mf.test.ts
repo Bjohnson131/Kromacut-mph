@@ -5,6 +5,7 @@ import test, { type TestContext } from 'node:test';
 import JSZip from 'jszip';
 import * as THREE from 'three';
 import { createServer } from 'vite';
+import { exportObjectToStlBlob } from '../src/lib/exportStl.ts';
 import { generateGreedyMesh, generateSmoothMesh, type MeshData } from '../src/lib/meshing.ts';
 import {
     largeIssueFixturePath,
@@ -14,6 +15,7 @@ import {
     testAssetsRoot,
     type RasterMask,
 } from './imageFixtures.ts';
+import { inspectMeshIntegrity, type MeshIntegrityReport } from './meshDiagnostics.ts';
 
 type Export3mfModule = typeof import('../src/lib/export3mf.ts');
 type Export3MFOptions = Parameters<Export3mfModule['exportObjectTo3MFBlob']>[1];
@@ -118,6 +120,11 @@ function loadFilamentProfileFixture(
 const bwProfile = loadFilamentProfileFixture('2_Colors.kapp', 2);
 const gh27Profile = loadFilamentProfileFixture('4_Colors.kapp', 4);
 const current8Profile = loadFilamentProfileFixture('8_Colors.kapp', 8);
+const filamentProfileFixtures = [bwProfile, gh27Profile, current8Profile];
+const exportTopologyMeshers: Array<{ name: string; generate: MeshGenerator }> = [
+    { name: 'greedy', generate: generateGreedyMesh },
+    { name: 'smooth', generate: generateSmoothMesh },
+];
 
 function profileColors(profile: FilamentProfileFixture) {
     return profile.filaments.map((filament) => filament.color);
@@ -152,6 +159,16 @@ function uniqueMaterialHexes(colors: string[]) {
     }
 
     return result;
+}
+
+function pickEvenly<T>(values: T[], count: number) {
+    assert.ok(count > 0, 'count should be positive');
+    if (count === 1) return [values[0]];
+
+    return Array.from({ length: count }, (_, index) => {
+        const sourceIndex = Math.round((index * (values.length - 1)) / (count - 1));
+        return values[sourceIndex];
+    });
 }
 
 class NodeFileReader {
@@ -309,6 +326,141 @@ async function buildFixtureLayerStack(
     }
 
     return { root, generatedLayerCount, filamentColors };
+}
+
+function reportForMessage(report: MeshIntegrityReport) {
+    return JSON.stringify(
+        {
+            vertexCount: report.vertexCount,
+            triangleCount: report.triangleCount,
+            invalidPositionCount: report.invalidPositionCount,
+            invalidIndexCount: report.invalidIndexCount,
+            degenerateTriangleCount: report.degenerateTriangleCount,
+            duplicateTriangleCount: report.duplicateTriangleCount,
+            boundaryEdgeCount: report.boundaryEdgeCount,
+            nonManifoldEdgeCount: report.nonManifoldEdgeCount,
+            inconsistentWindingEdgeCount: report.inconsistentWindingEdgeCount,
+            signedVolume: report.signedVolume,
+            bounds: report.bounds,
+        },
+        null,
+        2
+    );
+}
+
+function collectVisibleMeshTriangleCounts(root: THREE.Object3D) {
+    const triangleCounts: number[] = [];
+    root.updateMatrixWorld(true);
+
+    root.traverse((object) => {
+        if (!(object as THREE.Mesh).isMesh) {
+            return;
+        }
+
+        const mesh = object as THREE.Mesh;
+        if (!mesh.visible || !mesh.geometry) {
+            return;
+        }
+
+        const position = mesh.geometry.getAttribute('position');
+        const index = mesh.geometry.getIndex();
+        const elementCount = index ? index.count : position.count;
+
+        assert.equal(elementCount % 3, 0, 'exported layer geometry should contain whole triangles');
+        triangleCounts.push(elementCount / 3);
+    });
+
+    return triangleCounts;
+}
+
+function parseBinaryStlLayers(buffer: ArrayBuffer, triangleCounts: number[]) {
+    const view = new DataView(buffer);
+    const totalTriangles = view.getUint32(80, true);
+    const expectedTriangles = triangleCounts.reduce((sum, count) => sum + count, 0);
+
+    assert.equal(totalTriangles, expectedTriangles, 'STL triangle count should match layer meshes');
+
+    const layerMeshes: MeshData[] = [];
+    let offset = 84;
+
+    for (const triangleCount of triangleCounts) {
+        const positions = new Float32Array(triangleCount * 9);
+        const indices: number[] = new Array(triangleCount * 3);
+        let positionOffset = 0;
+
+        for (let triangle = 0; triangle < triangleCount; triangle++) {
+            offset += 12;
+
+            for (let vertex = 0; vertex < 3; vertex++) {
+                const vertexIndex = triangle * 3 + vertex;
+                positions[positionOffset++] = view.getFloat32(offset, true);
+                positions[positionOffset++] = view.getFloat32(offset + 4, true);
+                positions[positionOffset++] = view.getFloat32(offset + 8, true);
+                indices[vertexIndex] = vertexIndex;
+                offset += 12;
+            }
+
+            offset += 2;
+        }
+
+        layerMeshes.push({ positions, indices });
+    }
+
+    assert.equal(offset, buffer.byteLength, 'STL parser should consume the whole binary file');
+
+    return layerMeshes;
+}
+
+async function exportStlLayerMeshes(root: THREE.Object3D) {
+    const triangleCounts = collectVisibleMeshTriangleCounts(root);
+    const blob = await exportObjectToStlBlob(root);
+
+    return parseBinaryStlLayers(await blob.arrayBuffer(), triangleCounts);
+}
+
+function assertRawExportObjectIsManifold(object: ExportedMeshObject, label: string) {
+    assert.ok(object.vertexCount > 0, `${label} should contain vertices`);
+    assert.ok(object.triangleCount > 0, `${label} should contain triangles`);
+    assert.equal(object.topology.badEdgeCount, 0, `${label} should not have bad edges`);
+    assert.equal(object.topology.boundaryEdgeCount, 0, `${label} should not have boundary edges`);
+    assert.equal(object.topology.overusedEdgeCount, 0, `${label} should not have overused edges`);
+}
+
+function assertStlLayerIsManifold(mesh: MeshData, label: string) {
+    const report = inspectMeshIntegrity(mesh, { edgeEpsilon: 1e-5 });
+
+    assert.ok(report.vertexCount > 0, `${label} should contain vertices`);
+    assert.ok(report.triangleCount > 0, `${label} should contain triangles`);
+    assert.equal(
+        report.invalidPositionCount,
+        0,
+        `${label} invalid positions:\n${reportForMessage(report)}`
+    );
+    assert.equal(
+        report.invalidIndexCount,
+        0,
+        `${label} invalid indices:\n${reportForMessage(report)}`
+    );
+    assert.equal(
+        report.degenerateTriangleCount,
+        0,
+        `${label} degenerate triangles:\n${reportForMessage(report)}`
+    );
+    assert.equal(
+        report.boundaryEdgeCount,
+        0,
+        `${label} boundary edges:\n${reportForMessage(report)}`
+    );
+    assert.equal(
+        report.nonManifoldEdgeCount,
+        0,
+        `${label} non-manifold edges:\n${reportForMessage(report)}`
+    );
+    assert.equal(
+        report.inconsistentWindingEdgeCount,
+        0,
+        `${label} inconsistent winding:\n${reportForMessage(report)}`
+    );
 }
 
 function getAttribute(source: string, name: string) {
@@ -582,6 +734,67 @@ function parseBaseMaterialColors(modelXml: string) {
     return Array.from(modelXml.matchAll(/<base\b[^>]*displaycolor="#([0-9A-Fa-f]{6})/g)).map(
         (match) => match[1].toUpperCase()
     );
+}
+
+const exportTopologyImageFixtures = [
+    {
+        name: '1024px logo PNG',
+        pixelSize: 0.42,
+        masksForLayerCount: (layerCount: number) => {
+            const mask = maskFromPngAlpha(logoFixturePath, 56);
+
+            assert.ok(mask.activeCount > 0, 'logo topology mask should contain active pixels');
+            assert.ok(
+                mask.activeCount < mask.width * mask.height,
+                'logo topology mask should not cover the whole image'
+            );
+
+            return Array.from({ length: layerCount }, () => mask);
+        },
+    },
+    {
+        name: 'large issue JPG',
+        pixelSize: 0.36,
+        masksForLayerCount: (layerCount: number) => {
+            const thresholds = pickEvenly([144, 150, 156, 162, 168, 174, 180, 184], layerCount);
+
+            return thresholds.map((threshold) => {
+                const mask = maskFromJpegLuminance(largeIssueFixturePath, 56, threshold);
+
+                assert.ok(
+                    mask.activeCount > 0,
+                    `JPG topology mask threshold ${threshold} should contain active pixels`
+                );
+                assert.ok(
+                    mask.activeCount < mask.width * mask.height,
+                    `JPG topology mask threshold ${threshold} should not cover the whole image`
+                );
+
+                return mask;
+            });
+        },
+    },
+];
+
+function buildProfileImageLayerSpecs(
+    imageFixture: (typeof exportTopologyImageFixtures)[number],
+    profile: FilamentProfileFixture
+) {
+    const filamentColors = profileColors(profile);
+    const masks = imageFixture.masksForLayerCount(filamentColors.length);
+
+    assert.equal(
+        masks.length,
+        filamentColors.length,
+        `${imageFixture.name} should generate one mask per profile filament`
+    );
+
+    return filamentColors.map((color, layer) => ({
+        mask: masks[layer],
+        thickness: layer === 0 ? 0.16 : 0.08,
+        color: hexToMaterialColor(color),
+        filamentColor: color,
+    }));
 }
 
 test('3MF export keeps visible meshes as separate layer objects', async () => {
@@ -875,9 +1088,84 @@ test('3MF export object counts match generated fixture layers', async (t: TestCo
         });
 
         assertLayerObjectCounts(archive, stack.generatedLayerCount, 'large JPG threshold stack');
-        assert.deepEqual(parseBaseMaterialColors(archive.modelXml), profileMaterialHexes(gh27Profile));
+        assert.deepEqual(
+            parseBaseMaterialColors(archive.modelXml),
+            profileMaterialHexes(gh27Profile)
+        );
     });
 });
+
+test(
+    '3MF and STL exports stay manifold across image fixtures and filament profiles',
+    async (t: TestContext) => {
+        for (const imageFixture of exportTopologyImageFixtures) {
+            for (const profile of filamentProfileFixtures) {
+                for (const mesher of exportTopologyMeshers) {
+                    await t.test(
+                        `${imageFixture.name} / ${profile.name} / ${mesher.name}`,
+                        async () => {
+                            const layerSpecs = buildProfileImageLayerSpecs(imageFixture, profile);
+                            const stack = await buildFixtureLayerStack(
+                                layerSpecs,
+                                imageFixture.pixelSize,
+                                mesher.generate
+                            );
+
+                            assert.equal(
+                                stack.generatedLayerCount,
+                                profile.filaments.length,
+                                `${imageFixture.name} ${profile.name} should generate one layer per filament`
+                            );
+
+                            const archive = await exportArchiveXml(stack.root, {
+                                firstLayerHeight: 0.16,
+                                layerHeight: 0.08,
+                                layerFilamentColors: stack.filamentColors,
+                            });
+                            const objects = parseMeshObjects(archive.modelXml);
+
+                            assertLayerObjectCounts(
+                                archive,
+                                stack.generatedLayerCount,
+                                `${imageFixture.name} ${profile.name} ${mesher.name} 3MF`
+                            );
+                            assertPhysicalFilamentColorResources(
+                                archive,
+                                stack.filamentColors,
+                                `${imageFixture.name} ${profile.name} ${mesher.name} 3MF`
+                            );
+
+                            for (const [index, object] of objects.entries()) {
+                                assertRawExportObjectIsManifold(
+                                    object,
+                                    `${imageFixture.name} ${profile.name} ${mesher.name} 3MF layer ${
+                                        index + 1
+                                    }`
+                                );
+                            }
+
+                            const stlLayerMeshes = await exportStlLayerMeshes(stack.root);
+                            assert.equal(
+                                stlLayerMeshes.length,
+                                stack.generatedLayerCount,
+                                `${imageFixture.name} ${profile.name} ${mesher.name} STL should include every generated layer`
+                            );
+
+                            for (const [index, mesh] of stlLayerMeshes.entries()) {
+                                assertStlLayerIsManifold(
+                                    mesh,
+                                    `${imageFixture.name} ${profile.name} ${mesher.name} STL layer ${
+                                        index + 1
+                                    }`
+                                );
+                            }
+                        }
+                    );
+                }
+            }
+        }
+    }
+);
 
 test('3MF export keeps many smooth layers bounded to layer count', async () => {
     const layerCount = 16;
