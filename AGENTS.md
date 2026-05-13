@@ -1,112 +1,86 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Repository guidance for coding agents working on Kromacut.
 
-## What is Kromacut
+## Product Context
 
-Kromacut is a browser-based tool for converting images into stacked, color-layered 3D prints (lithophanes). Users upload an image, reduce it to a small color palette via quantization algorithms, configure per-color layer heights and ordering, preview in 3D, and export to STL or 3MF for multi-material printing.
+Kromacut turns a 2D image into a stacked, color-layered 3D print. The app reduces an uploaded
+image to a small palette, lets users tune color order and per-color layer heights, previews the
+result in Three.js, and exports printable STL or 3MF files.
 
-Key domain concepts:
-- **Transmission Distance (TD):** Models how light transmits through thin filament layers; used by the auto-paint algorithm to simulate multi-filament lithophane effects via Beer-Lambert law optical simulation.
-- **Greedy meshing:** Maximal rectangle algorithm generates optimized 3D geometry with separate wall generation to prevent T-junctions.
-- **Quantization algorithms:** Posterize, median-cut, K-means, octree, and Wu methods for color reduction.
-- **Dedithering:** Median-filter-like smoothing pass that replaces isolated dithered pixels with their most frequent neighbor color; runs as a pre-quantization step.
-- **Filament profiles:** Reusable auto-paint filament configurations persisted to localStorage, importable/exportable as `.kapp` JSON files.
+The important mental model is "image colors become physical layers." UI changes often affect
+geometry, slicer behavior, and print instructions at the same time.
 
-## Commands
+## Domain Notes
 
-```bash
-npm run dev        # Start Vite dev server
-npm run build      # TypeScript check + Vite production build
-npm run lint       # ESLint with zero warnings policy (--max-warnings=0)
-npm run lint:fix   # ESLint with auto-fix
-npm run format     # Prettier format all src files
-npm run preview    # Preview production build locally
-```
+- **Transmission Distance (TD):** Used by auto-paint to model light through thin filament layers
+  with Beer-Lambert-style optical simulation. TD is not just a display value; changing how it is
+  stored or rounded can change generated layer stacks.
+- **Auto-paint layers:** Auto-paint chooses physical filament stacks for target image colors. The
+  worker path exists so optimizer choices such as exhaustive, simulated annealing, and genetic
+  search do not freeze the UI.
+- **Layer snapping:** Per-color heights and swap plans must stay aligned with layer height and
+  first-layer height. Preserve the reconciliation logic in `useColorSlicing` and `useSwapPlan`
+  when touching print settings.
+- **Greedy/smooth meshing:** Mesh code is judged by slicer-safe topology, not just visual output.
+  Avoid T-junctions, open boundaries, inverted winding, duplicate triangles, and non-manifold
+  edges. The regression tests inspect these properties directly.
+- **3MF exports:** The 3MF path preserves one printable object per physical layer where possible
+  and uses physical filament colors instead of creating a new material for every preview color.
+- **Dedithering:** This is a pre-quantization smoothing pass for isolated dithered pixels. Keep it
+  separate from the quantizers unless the user asks for a combined workflow.
+- **Filament profiles:** Auto-paint filament configurations persist to localStorage and can be
+  imported/exported as `.kapp` JSON. Treat file shape and localStorage migration code as user data
+  compatibility boundaries.
 
-No test framework is configured.
+## Architecture To Preserve
 
-## Architecture
+- `App.tsx` owns the main workflow state and passes it down. Components should stay presentational
+  or orchestration-focused; reusable behavior belongs in hooks.
+- `src/lib/*` is intended to stay React-free. Put algorithmic work there and keep browser/UI
+  concerns in hooks/components.
+- Shared domain types live in `src/types/index.ts` to avoid circular imports between hooks,
+  components, workers, and lib modules.
+- The image pipeline uses separate original and processed canvases for non-destructive edits.
+  Baking adjustments intentionally bumps `adjustmentsEpoch` so adjustment controls reset.
+- Long-running work should keep the UI responsive. Existing patterns include worker offload for
+  auto-paint and chunked/yielding mesh/export loops.
+- The 3D preview uses crisp pixel textures (`NearestFilter`, no mipmaps) and layer geometry with
+  per-face color/material semantics. A visually equivalent refactor can still break export
+  topology, so verify both preview and exported model behavior.
 
-**Stack:** React 19 + TypeScript + Vite 7 + Three.js + Tailwind CSS v4 + Shadcn/Radix UI
+## Persistence And User Data
 
-**Path alias:** `@/*` maps to `./src/*`
+- Auto-paint UI state is stored under `kromacut.autopaint.v1` with legacy migration support.
+- Print settings have their own storage helper; do not silently change units, defaults, or key
+  names without a migration.
+- Palette and filament profile import/export are user-facing data formats. Be conservative when
+  renaming fields or changing validation.
 
-### Code organization
+## Testing Guidance
 
-- `src/types/index.ts` — Shared TypeScript types (`Swatch`, `Filament`, `ThreeDControlsStateShape`). Canonical location to avoid circular imports between lib modules and components.
-- `src/components/` — React UI components. `App.tsx` is the root, holds top-level state.
-  - `ThreeDControls.tsx` — Orchestrator for 3D print settings; delegates to extracted sub-components and hooks.
-  - `FilamentRow.tsx` — Individual filament row with color picker, TD input, and auto-estimate.
-  - `PrintSettingsCard.tsx` — Print settings Card (pixel size, layer height, first layer height).
-  - `PrintInstructions.tsx` — Print instructions Card (recommended settings, swap plan, copy button).
-  - `AutoPaintTab.tsx` — Auto-paint tab content (profiles, filament list, max height, transition zones).
-- `src/components/ui/` — Shadcn/Radix primitive components (buttons, sliders, popovers, etc.).
-- `src/hooks/` — Custom hooks that encapsulate business logic and state management:
-  - `useSwatches` — Async image histogram computation with cancellation
-  - `useQuantize` — Color quantization algorithm dispatch
-  - `useThreeScene` — Three.js scene setup, camera, controls, render loop
-  - `useAppHandlers` — STL/3MF export orchestration, image download
-  - `useImageHistory` — Undo/redo stack
-  - `useDropzone` — Drag-and-drop file upload
-  - `useHorizontalSplit` — Draggable horizontal splitter state via CSS custom properties
-  - `useFilaments` — Filament CRUD state (add, remove, update)
-  - `useProfileManager` — Profile save/load/delete/import/export for auto-paint filament configurations
-  - `useColorSlicing` — Color order and per-color slice height reconciliation with layer-height snapping
-  - `useSwapPlan` — Swap plan computation (manual and auto-paint modes) and clipboard copy
-  - `useProcessingState` — Processing overlay state (quantizing, dedithering, progress, label)
-  - `useBuildWarning` — Build warning logic, image dimension tracking, 3D state and rebuild signal
-- `src/lib/` — Pure algorithmic logic (no React dependencies):
-  - `algorithms.ts` — All quantization algorithms (K-means, median-cut, octree, Wu)
-  - `meshing.ts` — Greedy mesh generation for 3D geometry
-  - `autoPaint.ts` — Auto-paint layer stacking algorithm using TD and Beer-Lambert law
-  - `exportStl.ts` — Binary STL file generation
-  - `export3mf.ts` — 3MF multi-material export (uses JSZip)
-  - `applyAdjustments.ts` — Image adjustment filters (exposure, contrast, saturation, etc.)
-  - `color.ts` — RGB/HSL/Lab color space conversions
-  - `colorUtils.ts` — Shared color utilities: `hexLuminance()` and `estimateTDFromColor()`
-  - `profileManager.ts` — CRUD + localStorage persistence for auto-paint filament profiles; import/export as `.kapp` files
-  - `printSettingsStorage.ts` — Print settings localStorage persistence (layer height, first layer height, pixel size)
-  - `slicerDefaults.ts` — Default slicer metadata (layer height, infill, nozzle diameter) embedded in 3MF exports
-  - `logger.ts` — Environment-aware logger; `debug` is a no-op in production
-  - `compose-refs.ts` — Utility to compose multiple React refs into a single callback ref
-  - `utils.ts` — Shadcn `cn()` helper (clsx + tailwind-merge)
-- `src/data/palettes.ts` — Predefined color palettes
+The project uses a lightweight Node test runner with `node:test`; the script name is in
+`package.json`. The current tests focus on meshing and 3MF topology using synthetic masks and image
+fixtures.
 
-### Data flow
+Run the focused tests when touching:
 
-State lives in `App.tsx` and flows down through props. The pipeline is:
+- `src/lib/meshing.ts`
+- `src/lib/export3mf.ts`
+- code that changes layer counts, layer ordering, material colors, or generated geometry
 
-1. Image upload → `useDropzone` / `useImageHistory`
-2. Adjustments applied → `applyAdjustments.ts` on offscreen canvases
-3. Dedithering (optional) → `DeditherPanel` runs a smoothing pass on quantized output
-4. Quantization → `useQuantize` dispatches to algorithm in `algorithms.ts`
-5. Swatch management → `useSwatches` computes histogram, user reorders via dnd-kit
-6. 3D preview → `useThreeScene` builds geometry via `meshing.ts`, renders with Three.js
-7. Export → `useAppHandlers` calls `exportStl.ts` or `export3mf.ts`
+For UI-only edits, lint/build is usually enough. For geometry, export, or auto-paint changes, prefer
+adding a small regression test over relying on screenshots.
 
-Canvas rendering uses dual offscreen canvases (`originalCanvasRef`, `processedCanvasRef`) for non-destructive adjustment processing. `CanvasPreview` and the Three.js scene expose imperative handles via `useImperativeHandle`.
+## Editing Heuristics
 
-### Key UI patterns
-
-- **Processing overlay:** Managed by `useProcessingState` hook; unified progress indicator (`processingActive`, `processingLabel`, `processingProgress`) gates on quantization or dedithering and displays a progress bar.
-- **`adjustmentsEpoch` counter:** Forces `AdjustmentsPanel` to remount and reset sliders after baking adjustments into the image.
-- **Build warning dialog:** Managed by `useBuildWarning` hook; an `AlertDialog` warns before building 3D geometry when layer count exceeds 64 or pixel count exceeds 2.5M.
-- **`ResizableSplitter` layout:** The main 2-pane layout uses a percentage-based draggable splitter (30% default, 20–50% range).
-- **Auto-paint persistence:** `threeDState` (filaments, `paintMode: 'manual' | 'autopaint'`) is persisted to localStorage under `kromacut.autopaint.v1` with legacy migration.
-- **3MF export enrichment:** Exports embed `layerHeight`, `firstLayerHeight`, auto-paint filament colors, and slicer defaults from `slicerDefaults.ts`.
-
-### Rendering details
-
-- Three.js BufferGeometry with per-face (non-indexed) triangles so each color slice is a solid block.
-- `CanvasTexture` with `NearestFilter` and disabled mipmaps for crisp pixel mapping.
-- STL/3MF export uses chunked processing with `setTimeout(_, 0)` to keep the UI responsive.
-
-## Code style
-
-- **Prettier:** 4-space indentation, single quotes, trailing commas (es5), semicolons, 100-char print width.
-- **ESLint:** Zero warnings policy. `no-console` warns (allows `warn`/`error`). Unused vars warn (underscore-prefixed args ignored).
-- **Naming:** PascalCase for components/types, camelCase for hooks/functions, UPPER_SNAKE_CASE for constants.
-- **Hooks-first architecture:** No class components. Business logic extracted into custom hooks. Event handlers stabilized with `useCallback`.
-- **TypeScript strict mode** enabled. Explicit interfaces for component props and shared types.
-
+- Preserve printability over cosmetic simplification. If mesh/export code gets shorter but loses
+  topology guarantees, it is probably wrong.
+- Keep algorithm changes deterministic where possible. If randomness is involved, expose or reuse a
+  seed so regressions can be reproduced.
+- Be careful with "obvious" rounding. Color values, TD values, layer heights, and 3MF vertex
+  coordinates each have different tolerance constraints.
+- When adding UI controls, wire them through print instructions, persistence, export metadata, and
+  preview rebuild triggers if they affect the physical model.
+- Prefer existing Shadcn/Radix and hook patterns. New abstractions should reduce real duplication
+  or isolate a domain rule, not just move code around.
