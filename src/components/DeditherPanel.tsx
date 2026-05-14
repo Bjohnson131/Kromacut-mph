@@ -234,6 +234,8 @@ export const DeditherPanel: React.FC<Props> = ({
                 </div>
                 <Slider
                     id="weight-slider"
+                    data-testid="dedither-weight-slider"
+                    aria-label="Dedither weight"
                     min={1}
                     max={9}
                     step={1}
@@ -270,6 +272,8 @@ export const DeditherPanel: React.FC<Props> = ({
                 </div>
                 <Slider
                     id="passes-slider"
+                    data-testid="dedither-passes-slider"
+                    aria-label="Dedither passes"
                     min={1}
                     max={10}
                     step={1}
@@ -283,6 +287,7 @@ export const DeditherPanel: React.FC<Props> = ({
 
             <Button
                 onClick={handleApply}
+                data-testid="dedither-apply"
                 disabled={working}
                 className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold disabled:bg-green-600/50 disabled:cursor-not-allowed transition-all duration-200 shadow-md hover:shadow-lg active:scale-95 gap-1.5"
             >

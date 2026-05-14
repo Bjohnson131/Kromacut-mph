@@ -285,6 +285,7 @@ export const ControlsPanel: React.FC<Props> = ({
             </div>
             <Button
                 onClick={onApply}
+                data-testid="quantize-apply"
                 disabled={disabled || applying}
                 className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold disabled:bg-green-600/50 disabled:cursor-not-allowed transition-all duration-200 shadow-md hover:shadow-lg active:scale-95 gap-1.5"
             >

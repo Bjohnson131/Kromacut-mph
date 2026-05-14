@@ -286,6 +286,7 @@ export default function AutoPaintTab({
                             ref={importInputRef}
                             type="file"
                             accept=".kapp,.json"
+                            data-testid="autopaint-profile-import-input"
                             className="hidden"
                             onChange={handleImportFile}
                         />
@@ -446,6 +447,7 @@ export default function AutoPaintTab({
                                 </Label>
                                 <Switch
                                     id="enhanced-color-match"
+                                    data-testid="autopaint-enhanced-color-match"
                                     checked={enhancedColorMatch}
                                     onCheckedChange={setEnhancedColorMatch}
                                 />
@@ -461,6 +463,7 @@ export default function AutoPaintTab({
                                 </Label>
                                 <Switch
                                     id="allow-repeated-swaps"
+                                    data-testid="autopaint-allow-repeated-swaps"
                                     checked={allowRepeatedSwaps}
                                     onCheckedChange={setAllowRepeatedSwaps}
                                     disabled={!enhancedColorMatch}
@@ -477,6 +480,7 @@ export default function AutoPaintTab({
                                 </Label>
                                 <Switch
                                     id="height-dithering"
+                                    data-testid="autopaint-height-dithering"
                                     checked={heightDithering}
                                     onCheckedChange={setHeightDithering}
                                     disabled={!enhancedColorMatch}

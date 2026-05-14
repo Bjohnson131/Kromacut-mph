@@ -76,6 +76,7 @@ export default function PrintSettingsCard({
                             </span>
                         </div>
                         <NumberInput
+                            data-testid="print-pixel-size"
                             min={0.01}
                             max={10}
                             step={0.01}
@@ -105,6 +106,7 @@ export default function PrintSettingsCard({
                             </span>
                         </div>
                         <NumberInput
+                            data-testid="print-layer-height"
                             min={0.01}
                             max={10}
                             step={0.01}
@@ -136,6 +138,7 @@ export default function PrintSettingsCard({
                             </span>
                         </div>
                         <NumberInput
+                            data-testid="print-first-layer-height"
                             min={0}
                             max={10}
                             step={0.01}
@@ -164,6 +167,8 @@ export default function PrintSettingsCard({
                         </p>
                     </div>
                     <Switch
+                        id="smooth-meshing"
+                        data-testid="print-smooth-meshing"
                         checked={smoothMeshing}
                         onCheckedChange={onSmoothMeshingChange}
                     />

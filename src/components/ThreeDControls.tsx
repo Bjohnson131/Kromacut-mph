@@ -278,6 +278,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
             <div className="sticky -top-4 z-20 -mx-4 -mt-4 px-4 pt-4 pb-2 bg-card border-b border-border flex justify-end">
                 <Button
                     onClick={handleApply}
+                    data-testid="build-3d-model"
                     disabled={isAutoPaintComputing}
                     className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold transition-all duration-200 shadow-md hover:shadow-lg active:scale-95 gap-1.5 disabled:opacity-60"
                 >

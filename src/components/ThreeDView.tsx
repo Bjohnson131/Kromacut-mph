@@ -86,6 +86,78 @@ function createFlatShadedGeometry(positions: Float32Array, indices: number[]) {
     return flatGeom;
 }
 
+interface E2EBuildMetrics {
+    status: 'building' | 'complete';
+    startedAt?: number;
+    completedAt?: number;
+    elapsedMs?: number;
+    imageWidth?: number;
+    imageHeight?: number;
+    cropWidth?: number;
+    cropHeight?: number;
+    meshCount?: number;
+    visibleMeshCount?: number;
+    vertexCount?: number;
+    triangleCount?: number;
+    dimensions?: {
+        width: number;
+        height: number;
+        depth: number;
+    };
+    settings?: {
+        pixelSize: number;
+        layerHeight: number;
+        slicerFirstLayerHeight: number;
+        smoothMeshing: boolean;
+        autoPaintEnabled: boolean;
+        enhancedColorMatch: boolean;
+        heightDithering: boolean;
+    };
+}
+
+declare global {
+    interface Window {
+        __KROMACUT_E2E?: {
+            lastBuild?: E2EBuildMetrics;
+            buildHistory?: E2EBuildMetrics[];
+        };
+    }
+}
+
+function updateE2EBuild(metrics: E2EBuildMetrics) {
+    if (typeof window === 'undefined' || !window.__KROMACUT_E2E) return;
+    const next = { ...(window.__KROMACUT_E2E.lastBuild ?? {}), ...metrics };
+    window.__KROMACUT_E2E.lastBuild = next;
+    if (metrics.status === 'complete') {
+        window.__KROMACUT_E2E.buildHistory = [
+            ...(window.__KROMACUT_E2E.buildHistory ?? []),
+            next,
+        ];
+    }
+}
+
+function collectMeshStats(root: THREE.Object3D) {
+    let meshCount = 0;
+    let visibleMeshCount = 0;
+    let vertexCount = 0;
+    let triangleCount = 0;
+
+    root.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+
+        meshCount++;
+        if (child.visible) visibleMeshCount++;
+
+        const geometry = child.geometry;
+        const position = geometry.getAttribute('position');
+        const index = geometry.getIndex();
+        vertexCount += position?.count ?? 0;
+        triangleCount += index ? index.count / 3 : (position?.count ?? 0) / 3;
+    });
+
+    return { meshCount, visibleMeshCount, vertexCount, triangleCount };
+}
+
 export default function ThreeDView({
     imageSrc,
     baseSliceHeight,
@@ -228,9 +300,23 @@ export default function ThreeDView({
         if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = window.setTimeout(() => {
             const token = ++buildTokenRef.current;
+            const buildStartedAt = performance.now();
             // mark that a build is in progress for the overlay
             setIsBuilding(true);
             pushProgress(0);
+            updateE2EBuild({
+                status: 'building',
+                startedAt: buildStartedAt,
+                settings: {
+                    pixelSize,
+                    layerHeight,
+                    slicerFirstLayerHeight,
+                    smoothMeshing,
+                    autoPaintEnabled,
+                    enhancedColorMatch,
+                    heightDithering,
+                },
+            });
 
             const requestIdle = (fn: () => void) => {
                 const ric = (
@@ -1050,14 +1136,36 @@ export default function ThreeDView({
                 const maxDepth = box.max.z - box.min.z;
                 const finalW = boxW;
                 const finalH = boxH;
-                setModelDimensions({
+                const nextModelDimensions = {
                     width: finalW * pixelSize,
                     height: finalH * pixelSize,
                     depth: maxDepth,
-                });
+                };
+                setModelDimensions(nextModelDimensions);
                 // Set max height for layer preview slider
                 setMaxModelHeight(box.max.z);
                 setPreviewHeight(box.max.z); // Start at full height
+                updateE2EBuild({
+                    status: 'complete',
+                    startedAt: buildStartedAt,
+                    completedAt: performance.now(),
+                    elapsedMs: performance.now() - buildStartedAt,
+                    imageWidth: fullW,
+                    imageHeight: fullH,
+                    cropWidth: finalW,
+                    cropHeight: finalH,
+                    ...collectMeshStats(modelGroup),
+                    dimensions: nextModelDimensions,
+                    settings: {
+                        pixelSize,
+                        layerHeight,
+                        slicerFirstLayerHeight,
+                        smoothMeshing,
+                        autoPaintEnabled,
+                        enhancedColorMatch,
+                        heightDithering,
+                    },
+                });
 
                 // Auto-frame
                 try {

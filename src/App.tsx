@@ -312,6 +312,7 @@ function App(): React.ReactElement | null {
                                         ref={inputRef}
                                         type="file"
                                         accept="image/*"
+                                        data-testid="image-file-input"
                                         onChange={(e) => {
                                             if (e.target.files && e.target.files[0])
                                                 handleFiles(e.target.files[0]);
