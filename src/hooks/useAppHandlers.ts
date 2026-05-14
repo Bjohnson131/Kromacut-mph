@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import type { RefObject } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
 import { message, save } from '@tauri-apps/plugin-dialog';
-import { writeFile } from '@tauri-apps/plugin-fs';
+import { open } from '@tauri-apps/plugin-fs';
 import type { CanvasPreviewHandle } from '../components/CanvasPreview';
 import type { SwatchEntry } from './useSwatches';
 import { clampProgress } from '../lib/progress';
@@ -37,6 +37,41 @@ interface SaveBlobOptions {
     filterName: string;
 }
 
+function createExportProgressReporter(setExportProgress: (n: number) => void) {
+    let lastProgressUpdate = 0;
+
+    return (progress: number) => {
+        const clamped = clampProgress(progress);
+        const now = performance.now();
+
+        if (clamped >= 1 || now - lastProgressUpdate >= 250) {
+            lastProgressUpdate = now;
+            setExportProgress(clamped);
+        }
+    };
+}
+
+async function writeBlobToTauriFile(filePath: string, blob: Blob) {
+    const file = await open(filePath, {
+        read: false,
+        write: true,
+        create: true,
+        truncate: true,
+    });
+    const reader = blob.stream().getReader();
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            await file.write(value);
+        }
+    } finally {
+        reader.releaseLock();
+        await file.close();
+    }
+}
+
 async function saveBlob(blob: Blob, options: SaveBlobOptions): Promise<string | null> {
     if (isTauri()) {
         const filePath = await save({
@@ -54,7 +89,7 @@ async function saveBlob(blob: Blob, options: SaveBlobOptions): Promise<string | 
             return null;
         }
 
-        await writeFile(filePath, new Uint8Array(await blob.arrayBuffer()));
+        await writeBlobToTauriFile(filePath, blob);
         await message(`Saved to:\n${filePath}`, {
             title: 'Kromacut',
             kind: 'info',
@@ -125,8 +160,9 @@ export function useAppHandlers(params: UseAppHandlersParams) {
         setExportingSTL(true);
         setExportProgress(0);
         try {
-            const blob = await exportObjectToStlBlob(threeObject, (p) =>
-                setExportProgress(clampProgress(p))
+            const blob = await exportObjectToStlBlob(
+                threeObject,
+                createExportProgressReporter(setExportProgress)
             );
             await saveBlob(blob, {
                 defaultFileName: exportFileName('stl'),
@@ -155,8 +191,9 @@ export function useAppHandlers(params: UseAppHandlersParams) {
         setExportingSTL(true);
         setExportProgress(0);
         try {
-            const blob = await exportObjectTo3MFBlob(threeObject, (p) =>
-                setExportProgress(clampProgress(p))
+            const blob = await exportObjectTo3MFBlob(
+                threeObject,
+                createExportProgressReporter(setExportProgress)
             );
             await saveBlob(blob, {
                 defaultFileName: exportFileName('3mf'),

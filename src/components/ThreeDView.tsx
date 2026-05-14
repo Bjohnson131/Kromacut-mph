@@ -82,6 +82,7 @@ function createFlatShadedGeometry(positions: Float32Array, indices: number[]) {
 
     const flatGeom = geom.toNonIndexed();
     flatGeom.computeVertexNormals();
+    flatGeom.userData.kromacutExportGeometry = { positions, indices };
     geom.dispose();
     return flatGeom;
 }

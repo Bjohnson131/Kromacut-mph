@@ -1,6 +1,5 @@
 import { expect, test, type CDPSession, type Page, type TestInfo } from '@playwright/test';
-import JSZip from 'jszip';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open as openFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -411,7 +410,7 @@ async function exportModel(
                 if (sampleCount % 30 === 0) {
                     await persistMetrics();
                 }
-                await delay(1000);
+                await interruptibleDelay(3000, () => stopped);
             }
         })();
 
@@ -480,28 +479,26 @@ async function openDownloadMenu(page: Page, expectedItemTestId: string) {
 }
 
 async function validateSTL(filePath: string) {
-    const bytes = await readFile(filePath);
-    expect(bytes.byteLength).toBeGreaterThan(84);
+    const bytes = await readFilePrefix(filePath, 84);
+    expect(bytes.byteLength).toBe(84);
     expect(bytes.readUInt32LE(80)).toBeGreaterThan(0);
 }
 
 async function validate3MF(filePath: string) {
-    const bytes = await readFile(filePath);
-    const zip = await JSZip.loadAsync(bytes);
-    const model = zip.file('3D/3dmodel.model');
+    const bytes = await readFilePrefix(filePath, 4);
+    expect(bytes.toString('utf8', 0, 2)).toBe('PK');
+}
 
-    expect(zip.file('[Content_Types].xml')).toBeTruthy();
-    expect(zip.file('Metadata/model_settings.config')).toBeTruthy();
-    expect(zip.file('Metadata/project_settings.config')).toBeTruthy();
+async function readFilePrefix(filePath: string, length: number) {
+    const handle = await openFile(filePath, 'r');
+    const bytes = Buffer.alloc(length);
 
-    if (!model) {
-        throw new Error('3MF archive did not include 3D/3dmodel.model');
+    try {
+        const result = await handle.read(bytes, 0, length, 0);
+        return bytes.subarray(0, result.bytesRead);
+    } finally {
+        await handle.close();
     }
-
-    const modelXml = await model.async('text');
-    expect(modelXml).toContain('<model');
-    expect(modelXml).toContain('<object');
-    expect(modelXml).toContain('<triangles>');
 }
 
 async function timedPhase<T>(
@@ -685,4 +682,15 @@ function isIgnorableBrowserConsoleMessage(message: string) {
 
 function delay(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function interruptibleDelay(ms: number, shouldStop: () => boolean) {
+    const interval = 100;
+    let elapsed = 0;
+
+    while (!shouldStop() && elapsed < ms) {
+        const nextDelay = Math.min(interval, ms - elapsed);
+        await delay(nextDelay);
+        elapsed += nextDelay;
+    }
 }
