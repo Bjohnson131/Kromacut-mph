@@ -38,7 +38,7 @@ export function deditherRowProgress(processedRows: number, totalRows: number): n
 }
 
 export function progressBarIndicatorClass(indeterminate = false): string {
-    const baseClass = 'h-2 rounded-full bg-primary';
+    const baseClass = 'h-full rounded-full bg-primary';
     return indeterminate ? `${baseClass} animate-pulse` : baseClass;
 }
 

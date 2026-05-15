@@ -12,6 +12,7 @@ interface Props {
     onApplyResult: (blobUrl: string) => void;
     onWorkingChange?: (working: boolean) => void;
     onProgress?: (value: number) => void;
+    onStepChange?: (step: { stepIndex: number; stepCount: number; label: string }) => void;
 }
 
 export const DeditherPanel: React.FC<Props> = ({
@@ -19,6 +20,7 @@ export const DeditherPanel: React.FC<Props> = ({
     onApplyResult,
     onWorkingChange,
     onProgress,
+    onStepChange,
 }) => {
     const [weight, setWeight] = useState<number>(4);
     const [passes, setPasses] = useState<number>(1);
@@ -28,8 +30,14 @@ export const DeditherPanel: React.FC<Props> = ({
 
     const handleApply = useCallback(async () => {
         if (!canvasRef.current) return;
+        const totalPasses = Math.max(1, Math.min(10, Math.round(passes)));
         setWorking(true);
         onWorkingChange?.(true);
+        onStepChange?.({
+            stepIndex: 1,
+            stepCount: totalPasses,
+            label: 'Dedithering pass 1',
+        });
         onProgress?.(0.01);
         await new Promise((r) => requestAnimationFrame(r));
         try {
@@ -71,11 +79,15 @@ export const DeditherPanel: React.FC<Props> = ({
 
             const YIELD_MS = 12;
             let lastYield = performance.now();
-            const totalPasses = Math.max(1, Math.min(10, Math.round(passes)));
             const totalRows = Math.max(1, totalPasses * h);
             let processedRows = 0;
 
             for (let pass = 0; pass < totalPasses; pass++) {
+                onStepChange?.({
+                    stepIndex: pass + 1,
+                    stepCount: totalPasses,
+                    label: `Dedithering pass ${pass + 1}`,
+                });
                 const out = new Uint8ClampedArray(current);
                 // iterate pixels
                 for (let y = 0; y < h; y++) {
@@ -177,7 +189,7 @@ export const DeditherPanel: React.FC<Props> = ({
             setWorking(false);
             onWorkingChange?.(false);
         }
-    }, [canvasRef, weight, passes, onApplyResult, onWorkingChange, onProgress]);
+    }, [canvasRef, weight, passes, onApplyResult, onWorkingChange, onProgress, onStepChange]);
 
     const allDefault = weight === DEFAULT_WEIGHT && passes === DEFAULT_PASSES;
 

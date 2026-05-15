@@ -6,10 +6,10 @@ import {
     clampProgress,
     layeredBuildLayerProgress,
     layeredBuildScanProgress,
-    progressBarIndicatorClass,
 } from '../lib/progress';
 import { Slider } from '@/components/ui/slider';
 import { Layers } from 'lucide-react';
+import ProgressOverlay from './ProgressOverlay';
 
 interface ThreeDViewProps {
     imageSrc?: string | null;
@@ -81,6 +81,38 @@ interface KromacutExportLayerData {
     height: number;
     pixelSize: number;
     topZ: number;
+}
+
+function getBuildOverlayStep(progress: number, layerCount: number, autoPaintEnabled: boolean) {
+    const stepCount = Math.max(1, Math.floor(layerCount) + 1);
+    const stepIndex =
+        progress >= 1
+            ? stepCount
+            : Math.max(1, Math.min(stepCount, Math.floor(clampProgress(progress) * stepCount) + 1));
+
+    if (stepCount === 1) {
+        return {
+            stepLabel: 'Preparing mesh inputs',
+            stepIndex,
+            stepCount,
+        };
+    }
+
+    if (stepIndex === 1) {
+        return {
+            stepLabel: autoPaintEnabled
+                ? 'Mapping image colors to printable heights'
+                : 'Reading image color layers',
+            stepIndex,
+            stepCount,
+        };
+    }
+
+    return {
+        stepLabel: `Building color layer ${stepIndex - 1} of ${stepCount - 1}`,
+        stepIndex,
+        stepCount,
+    };
 }
 
 function createFlatShadedGeometry(
@@ -1310,25 +1342,22 @@ export default function ThreeDView({
         requestRender,
     ]);
 
+    const buildOverlayStep = getBuildOverlayStep(
+        buildProgress,
+        colorOrder.length,
+        autoPaintEnabled
+    );
+
     return (
         <div className="w-full h-full relative" ref={mountRef}>
             {isBuilding && (
-                <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-                    <div className="w-[260px] rounded-xl border border-border/60 bg-background/90 shadow-lg px-4 py-3">
-                        <div className="text-sm font-semibold text-foreground">
-                            Generating mesh...
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                            {Math.round(buildProgress * 100)}%
-                        </div>
-                        <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                            <div
-                                className={progressBarIndicatorClass()}
-                                style={{ width: `${Math.round(buildProgress * 100)}%` }}
-                            />
-                        </div>
-                    </div>
-                </div>
+                <ProgressOverlay
+                    title={smoothMeshing ? 'Generating smooth mesh' : 'Generating mesh'}
+                    stepLabel={buildOverlayStep.stepLabel}
+                    stepIndex={buildOverlayStep.stepIndex}
+                    stepCount={buildOverlayStep.stepCount}
+                    progress={buildProgress}
+                />
             )}
             {modelDimensions && (
                 <div

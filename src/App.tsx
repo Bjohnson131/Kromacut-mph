@@ -24,11 +24,12 @@ import { exportObjectTo3MFBlob } from './lib/export3mf';
 import { useAppHandlers } from './hooks/useAppHandlers';
 import { useProcessingState } from './hooks/useProcessingState';
 import { useBuildWarning } from './hooks/useBuildWarning';
-import { clampProgress, progressBarIndicatorClass } from './lib/progress';
+import { clampProgress } from './lib/progress';
 import ResizableSplitter from './components/ResizableSplitter';
 import { ControlsPanel } from './components/ControlsPanel';
 import { usePaletteManager } from './hooks/usePaletteManager';
 import { UpdateChecker } from './components/UpdateChecker';
+import ProgressOverlay from './components/ProgressOverlay';
 import {
     AlertDialog,
     AlertDialogContent,
@@ -42,6 +43,23 @@ import {
 // ...existing imports
 
 const AUTOPAINT_STORAGE_KEY = 'kromacut.autopaint.v1';
+
+function progressStepName(label: string) {
+    const stepName = label.replace(/\.+$/, '').trim();
+    if (/dedither/i.test(stepName)) return 'Dedithering';
+    if (/quantiz/i.test(stepName)) return 'Quantizing colors';
+    return stepName || 'Processing';
+}
+
+function progressOperationTitle() {
+    return 'Processing image';
+}
+
+interface ProcessingStepState {
+    stepIndex: number;
+    stepCount: number;
+    label?: string;
+}
 
 type AutoPaintPersisted = Pick<
     ThreeDControlsStateShape,
@@ -139,6 +157,10 @@ function App(): React.ReactElement | null {
         processingIndeterminate,
         setProcessingIndeterminate,
     } = useProcessingState();
+    const [processingStep, setProcessingStep] = useState<ProcessingStepState>({
+        stepIndex: 1,
+        stepCount: 1,
+    });
     const { applyQuantize } = useQuantize({
         algorithm,
         weight,
@@ -154,6 +176,7 @@ function App(): React.ReactElement | null {
         onProgress: (value) => {
             setProcessingProgress(clampProgress(value));
         },
+        onStepChange: setProcessingStep,
         onStage: (stage) => {
             if (stage === 'final') {
                 setProcessingIndeterminate(false);
@@ -359,10 +382,16 @@ function App(): React.ReactElement | null {
                                                 setIsDedithering(working);
                                                 if (working) {
                                                     setProcessingLabel('Dedithering...');
+                                                    setProcessingStep({
+                                                        stepIndex: 1,
+                                                        stepCount: 1,
+                                                        label: 'Dedithering pass 1',
+                                                    });
                                                     setProcessingProgress(0);
                                                     setProcessingIndeterminate(false);
                                                 }
                                             }}
+                                            onStepChange={setProcessingStep}
                                             onProgress={(value) => {
                                                 setProcessingProgress(clampProgress(value));
                                             }}
@@ -386,6 +415,11 @@ function App(): React.ReactElement | null {
                                                 if (isQuantizing) return;
                                                 setIsQuantizing(true);
                                                 setProcessingLabel('Quantizing...');
+                                                setProcessingStep({
+                                                    stepIndex: 1,
+                                                    stepCount: 5,
+                                                    label: 'Loading image data',
+                                                });
                                                 setProcessingProgress(0);
                                                 setProcessingIndeterminate(false);
                                                 await new Promise((r) => requestAnimationFrame(r));
@@ -461,41 +495,19 @@ function App(): React.ReactElement | null {
                                         adjustments={adjustments}
                                         onCropSelectionChange={setHasValidCropSelection}
                                     />
-                                    {processingActive &&
-                                        (() => {
-                                            const progressPct = Math.max(
-                                                0,
-                                                Math.min(100, Math.round(processingProgress * 100))
-                                            );
-                                            const showPercent = !processingIndeterminate;
-                                            const barWidth = showPercent
-                                                ? `${progressPct}%`
-                                                : '100%';
-                                            return (
-                                                <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm cursor-wait">
-                                                    <div className="w-[260px] rounded-xl border border-border/60 bg-background/90 shadow-lg px-4 py-3">
-                                                        <div className="text-sm font-semibold text-foreground">
-                                                            {processingLabel || 'Processing...'}
-                                                        </div>
-                                                        <div className="mt-1 text-xs text-muted-foreground">
-                                                            {showPercent
-                                                                ? `${progressPct}%`
-                                                                : 'Working...'}
-                                                        </div>
-                                                        <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                                                            <div
-                                                                className={progressBarIndicatorClass(
-                                                                    !showPercent
-                                                                )}
-                                                                style={{
-                                                                    width: barWidth,
-                                                                }}
-                                                            />
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })()}
+                                    {processingActive && (
+                                        <ProgressOverlay
+                                            title={progressOperationTitle()}
+                                            stepLabel={
+                                                processingStep.label ??
+                                                progressStepName(processingLabel)
+                                            }
+                                            stepIndex={processingStep.stepIndex}
+                                            stepCount={processingStep.stepCount}
+                                            progress={processingProgress}
+                                            indeterminate={processingIndeterminate}
+                                        />
+                                    )}
                                 </>
                             ) : (
                                 <>
@@ -521,38 +533,20 @@ function App(): React.ReactElement | null {
                                         ditherLineWidth={threeDState.ditherLineWidth}
                                         smoothMeshing={threeDState.smoothMeshing}
                                     />
-                                    {exportingSTL &&
-                                        (() => {
-                                            const pct = Math.max(
-                                                0,
-                                                Math.min(100, Math.round(exportProgress * 100))
-                                            );
-                                            const hasProgress = exportProgress > 0;
-                                            return (
-                                                <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm cursor-wait">
-                                                    <div className="w-[260px] rounded-xl border border-border/60 bg-background/90 shadow-lg px-4 py-3">
-                                                        <div className="text-sm font-semibold text-foreground">
-                                                            Exporting model...
-                                                        </div>
-                                                        <div className="mt-1 text-xs text-muted-foreground">
-                                                            {hasProgress ? `${pct}%` : 'Working...'}
-                                                        </div>
-                                                        <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                                                            <div
-                                                                className={progressBarIndicatorClass(
-                                                                    !hasProgress
-                                                                )}
-                                                                style={{
-                                                                    width: hasProgress
-                                                                        ? `${pct}%`
-                                                                        : '100%',
-                                                                }}
-                                                            />
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })()}
+                                    {exportingSTL && (
+                                        <ProgressOverlay
+                                            title="Exporting model"
+                                            stepLabel={
+                                                exportProgress > 0.8
+                                                    ? 'Finalizing export package'
+                                                    : 'Writing model geometry'
+                                            }
+                                            stepIndex={1}
+                                            stepCount={1}
+                                            progress={exportProgress}
+                                            indeterminate={exportProgress <= 0}
+                                        />
+                                    )}
                                 </>
                             )}
                             <PreviewActions

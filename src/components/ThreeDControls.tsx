@@ -109,6 +109,12 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         persisted?.regionWeightingMode ?? 'uniform'
     );
 
+    useEffect(() => {
+        if (optimizerAlgorithm === 'exhaustive' && filaments.length > 8) {
+            setOptimizerAlgorithm('auto');
+        }
+    }, [filaments.length, optimizerAlgorithm]);
+
     const handleEnhancedColorMatchChange = useCallback((v: boolean) => {
         setEnhancedColorMatch(v);
         if (!v) {
@@ -167,7 +173,11 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
     }, [resetHeightsToValues]);
 
     // --- Auto-paint (runs in Web Worker to avoid blocking the UI) ---
-    const { autoPaintResult, isComputing: isAutoPaintComputing } = useAutoPaintWorker({
+    const {
+        autoPaintResult,
+        isComputing: isAutoPaintComputing,
+        error: autoPaintError,
+    } = useAutoPaintWorker({
         paintMode,
         filaments,
         filtered,
@@ -354,6 +364,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                     autoPaintResult={autoPaintResult}
                     autoPaintSliceData={autoPaintSliceData}
                     isComputing={isAutoPaintComputing}
+                    error={autoPaintError}
                     calibrationLayerHeight={calibrationLayerHeight}
                     setCalibrationLayerHeight={setCalibrationLayerHeight}
                     filteredCount={filtered.length}

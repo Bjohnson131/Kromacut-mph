@@ -36,6 +36,37 @@ interface Params {
     ) => void;
     onProgress?: (value: number) => void;
     onStage?: (stage: 'load' | 'algorithm' | 'post' | 'swatches' | 'final') => void;
+    onStepChange?: (step: { stepIndex: number; stepCount: number; label: string }) => void;
+}
+
+const QUANTIZE_STEP_COUNT = 5;
+
+function quantizeAlgorithmLabel(algorithm: string) {
+    if (algorithm === 'median-cut') return 'Running median cut quantizer';
+    if (algorithm === 'kmeans') return 'Running k-means quantizer';
+    if (algorithm === 'octree') return 'Running octree quantizer';
+    if (algorithm === 'wu') return 'Running Wu quantizer';
+    if (algorithm === 'none') return 'Preparing source colors';
+    return 'Posterizing colors';
+}
+
+function quantizePostLabel(
+    selectedPalette: string,
+    finalColors: number,
+    options?: {
+        overridePalette?: string[];
+        overrideFinalColors?: number;
+    }
+) {
+    if (options?.overridePalette && options.overridePalette.length > 0) {
+        return 'Mapping to override palette';
+    }
+
+    if (selectedPalette && selectedPalette !== 'auto') {
+        return 'Mapping to selected palette';
+    }
+
+    return `Reducing palette to ${options?.overrideFinalColors ?? finalColors} colors`;
 }
 
 export function useQuantize({
@@ -49,6 +80,7 @@ export function useQuantize({
     onImmediateSwatches,
     onProgress,
     onStage,
+    onStepChange,
 }: Params) {
     const applyQuantize = async (
         canvasPreviewRef: React.RefObject<CanvasPreviewHandle | null>,
@@ -61,12 +93,20 @@ export function useQuantize({
         const bump = (value: number) => {
             onProgress?.(clampProgress(value));
         };
+        const reportStep = (stepIndex: number, label: string) => {
+            onStepChange?.({
+                stepIndex,
+                stepCount: QUANTIZE_STEP_COUNT,
+                label,
+            });
+        };
         // Yield to the event loop so the browser can paint the progress bar.
         // setTimeout(0) schedules on the macrotask queue, guaranteeing a render
         // opportunity between heavy synchronous blocks.
         const yieldFrame = () => new Promise<void>((r) => setTimeout(r, 0));
         bump(0.01);
         onStage?.('load');
+        reportStep(1, 'Loading image data');
         const blob = await canvasPreviewRef.current.exportImageBlob();
         if (!blob) return;
         bump(0.02);
@@ -113,6 +153,7 @@ export function useQuantize({
         const algoEnd = quantizeAlgorithmProgress(1);
         const algoProgress = (f: number) => bump(quantizeAlgorithmProgress(f));
         onStage?.('algorithm');
+        reportStep(2, quantizeAlgorithmLabel(algorithm));
         if (algorithm === 'median-cut')
             await medianCutImageData(data, weight, { onProgress: algoProgress });
         else if (algorithm === 'kmeans')
@@ -137,6 +178,7 @@ export function useQuantize({
         const overrideFinal = options?.overrideFinalColors;
         const postEnd = quantizePostProgress(1);
         const postProgress = (f: number) => bump(quantizePostProgress(f));
+        reportStep(3, quantizePostLabel(selectedPalette, finalColors, options));
         if (overridePalette && overridePalette.length > 0) {
             await mapImageToPalette(data, overridePalette, { onProgress: postProgress });
             ctx.putImageData(data, 0, 0);
@@ -166,6 +208,7 @@ export function useQuantize({
         // immediate swatches
         try {
             onStage?.('swatches');
+            reportStep(4, 'Collecting final swatches');
             const cmap = new Map<number, number>();
             let transparentCount = 0;
             const dd = data.data;
@@ -217,12 +260,13 @@ export function useQuantize({
             console.warn('immediate swatches failed', err);
         }
         bump(0.98);
+        onStage?.('final');
+        reportStep(5, 'Encoding processed image');
         const outBlob = await new Promise<Blob | null>((res) =>
             c.toBlob((b) => res(b), 'image/png')
         );
         if (!outBlob) return;
         bump(1);
-        onStage?.('final');
         const url = URL.createObjectURL(outBlob);
         setImage(url, true);
     };

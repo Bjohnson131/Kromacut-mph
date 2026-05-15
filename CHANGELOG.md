@@ -20,6 +20,7 @@ All notable changes to Kromacut are documented in this file.
 - **Export memory shape** - STL export now writes chunked binary parts instead of one huge contiguous buffer, and 3MF export now uses flat coordinate storage, typed triangle chunks, and chunked XML joins to reduce peak browser memory during large exports
 - **STL export size** - Browser-generated STL exports now reuse Kromacut layer-mask metadata to write an exact fused heightfield surface where possible, avoiding internal layer faces while preserving a manifold printable shell
 - **3MF package size** - 3MF exports now use DEFLATE compression to reduce generated archive size
+- **Progress overlays** - Long-running progress cards now show elapsed time, estimated time remaining, current step labels, and step counts in a more polished layout
 - **Agent guidance** - Refocused `AGENTS.md` on Kromacut-specific domain rules, topology/export caveats, persistence boundaries, testing guidance, and when agents should update the changelog
 
 ### Fixed
@@ -31,6 +32,7 @@ All notable changes to Kromacut are documented in this file.
 - **Smooth mesh build progress** - 3D build progress now stays monotonic while smooth layers are generated
 - **3MF export progress** - 3MF export progress now reports explicit geometry collection, vertex writing, triangle writing, and zip compression phases instead of reusing an earlier percentage range
 - **2D processing progress** - Quantize and dedither progress bars now display their staged producer progress directly instead of masking backwards updates in the app shell
+- **Auto-paint worker cancellation** - Auto-paint now cancels stale worker requests, surfaces worker errors, and prevents accidental exhaustive optimization above its safe filament count instead of leaving the 3D build button stuck on `Computing...`
 - **Progress bar fill accuracy** - Determinate progress bars now update without width-transition lag, keeping the blue fill aligned with the displayed percentage during dedither, export, and mesh generation
 
 ## v2.5.0 - 2026-05-03
