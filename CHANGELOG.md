@@ -34,6 +34,7 @@ All notable changes to Kromacut are documented in this file.
 - **2D processing progress** - Quantize and dedither progress bars now display their staged producer progress directly instead of masking backwards updates in the app shell
 - **Auto-paint worker cancellation** - Auto-paint now cancels stale worker requests, surfaces worker errors, and prevents accidental exhaustive optimization above its safe filament count instead of leaving the 3D build button stuck on `Computing...`
 - **Progress bar fill accuracy** - Determinate progress bars now update without width-transition lag, keeping the blue fill aligned with the displayed percentage during dedither, export, and mesh generation
+- **Print setting decimal inputs** - Pixel size, layer height, and first-layer height fields now allow partial decimal edits like `0` and `0.` before committing or clamping to valid print settings
 
 ## v2.5.0 - 2026-05-03
 
