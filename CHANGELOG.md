@@ -12,15 +12,11 @@ All notable changes to Kromacut are documented in this file.
 - **3MF filament color export tests** - Added regression coverage that verifies exported base materials, project filament settings, mesh material indices, and slicer extruder metadata match the physical filament colors without missing colors or color-count explosions
 - **Final export manifold tests** - Added 3MF and STL topology checks across both image fixtures, all saved filament profiles, and both greedy and smooth meshers to catch boundary edges, non-manifold edges, and inverted normals after export serialization
 - **Progress regression tests** - Added coverage for quantize, dedither, 3D model build, large-mesh 3MF/STL export, and image algorithm progress callbacks so progress percentages advance through their real work stages without going backwards
-- **Browser export flow tests** - Added Playwright coverage for the normal image-to-print flow across quantization, dedither, auto-paint profiles, 3D mesh builds, STL downloads, 3MF downloads, export timing, and browser memory samples
+- **Browser export flow tests** - Added Playwright coverage for the normal image-to-print flow across quantization, dedither, auto-paint profiles, 3D mesh builds, STL downloads, 3MF downloads, export timing, browser memory samples, STL triangle counts, compact heightfield quad breakdowns, strict preview port handling, and auto-paint worker settling
 
 ### Changed
 
 - **3D preview lighting** - Reworked the 3D view shading to use flat face normals with balanced directional lighting, reducing fake shadow bands on flat meshed surfaces while keeping more model depth than the unlit preview
-- **Browser export test commands** - Split Playwright flows into smoke, small matrix, stress, and full commands, and persist export metrics during long runs so interrupted stress tests still leave timing, memory, and browser-error data
-- **Browser export metrics** - Playwright flow reports now summarize STL/3MF file sizes, total exported size, and peak browser-reported JS heap usage per export and per flow
-- **Browser export diagnostics** - Playwright flow reports now include STL triangle counts and compact heightfield quad breakdowns, and strict preview ports prevent stale dev servers from skewing measurements
-- **Browser export test runtime** - Playwright now exercises the production preview build, keeping the smoke export flow closer to packaged-app behavior while reporting the full auto-paint/export timing
 - **Export memory shape** - STL export now writes chunked binary parts instead of one huge contiguous buffer, and 3MF export now uses flat coordinate storage, typed triangle chunks, and chunked XML joins to reduce peak browser memory during large exports
 - **STL export size** - Browser-generated STL exports now reuse Kromacut layer-mask metadata to write an exact fused heightfield surface where possible, avoiding internal layer faces while preserving a manifold printable shell
 - **3MF package size** - 3MF exports now use DEFLATE compression to reduce generated archive size
@@ -34,7 +30,6 @@ All notable changes to Kromacut are documented in this file.
 - **3MF smooth layer packaging** - Smooth layers now export as one manifold mesh object per non-empty color layer, and auto-paint exports use the intended physical filament colors instead of the preview's virtual blend colors
 - **Smooth mesh build progress** - 3D build progress now stays monotonic while smooth layers are generated
 - **3MF export progress** - 3MF export progress now reports explicit geometry collection, vertex writing, triangle writing, and zip compression phases instead of reusing an earlier percentage range
-- **Auto-paint browser flow race** - Playwright flow tests now wait for the debounced auto-paint worker to settle before building, avoiding stale auto-paint results in export metrics
 - **2D processing progress** - Quantize and dedither progress bars now display their staged producer progress directly instead of masking backwards updates in the app shell
 - **Progress bar fill accuracy** - Determinate progress bars now update without width-transition lag, keeping the blue fill aligned with the displayed percentage during dedither, export, and mesh generation
 

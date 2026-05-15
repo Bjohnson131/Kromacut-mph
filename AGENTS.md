@@ -80,6 +80,11 @@ persistence or data-format changes, performance work, release/build changes, and
 coverage or fixtures. Skip changelog entries for purely internal cleanup, typo-only edits, temporary
 debugging, or mechanical refactors that do not change behavior or coverage.
 
+Classify changelog entries relative to the last released version, not relative to earlier commits in
+the same unreleased section. If a feature, test suite, or workflow was added during the current
+unreleased version, later refinements to that same new work should usually stay under `Added` or be
+folded into the original bullet, not listed as `Changed` or `Fixed`.
+
 ## Editing Heuristics
 
 - Preserve printability over cosmetic simplification. If mesh/export code gets shorter but loses
