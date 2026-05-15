@@ -256,6 +256,28 @@ function createMeshDataLayer(mesh: MeshData, color: number) {
     return createLayerMesh(geometry, color);
 }
 
+function createCompactExportLayer(
+    mesh: MeshData,
+    mask: RasterMask,
+    pixelSize: number,
+    topZ: number,
+    color: number
+) {
+    const layer = createMeshDataLayer(mesh, color);
+
+    layer.geometry.userData.kromacutExportGeometry = {
+        positions: mesh.positions,
+        indices: mesh.indices,
+        activePixels: mask.activePixels,
+        width: mask.width,
+        height: mask.height,
+        pixelSize,
+        topZ,
+    };
+
+    return layer;
+}
+
 function createLargeIndexedProgressGeometry() {
     return new THREE.PlaneGeometry(40, 40, 128, 128);
 }
@@ -441,6 +463,13 @@ async function exportStlLayerMeshes(root: THREE.Object3D) {
     const blob = await exportObjectToStlBlob(root);
 
     return parseBinaryStlLayers(await blob.arrayBuffer(), triangleCounts);
+}
+
+async function parseSingleBinaryStlMesh(blob: Blob) {
+    const buffer = await blob.arrayBuffer();
+    const totalTriangles = new DataView(buffer).getUint32(80, true);
+    const [mesh] = parseBinaryStlLayers(buffer, [totalTriangles]);
+    return { mesh, triangleCount: totalTriangles };
 }
 
 function assertRawExportObjectIsManifold(object: ExportedMeshObject, label: string) {
@@ -891,6 +920,27 @@ test('STL export progress stays monotonic for large indexed meshes', async () =>
     await exportObjectToStlBlob(root, (value) => progressSamples.push(value));
 
     assertMonotonicProgress(progressSamples, 'STL large indexed export progress');
+});
+
+test('STL export compacts Kromacut layer metadata into a manifold heightfield', async () => {
+    const root = new THREE.Group();
+    const mask = maskFromRows(['####', '####', '####', '####']);
+    const pixelSize = 0.1;
+    const firstLayer = await buildLayer(mask, 0.16, 0, pixelSize, generateGreedyMesh);
+    const secondLayer = await buildLayer(mask, 0.08, 0.16, pixelSize, generateGreedyMesh);
+
+    root.add(createCompactExportLayer(firstLayer, mask, pixelSize, 0.16, 0x111111));
+    root.add(createCompactExportLayer(secondLayer, mask, pixelSize, 0.24, 0xffffff));
+
+    const sourceTriangles = collectVisibleMeshTriangleCounts(root).reduce(
+        (sum, count) => sum + count,
+        0
+    );
+    const exported = await parseSingleBinaryStlMesh(await exportObjectToStlBlob(root));
+
+    assert.equal(sourceTriangles, 24);
+    assert.equal(exported.triangleCount, 12);
+    assertStlLayerIsManifold(exported.mesh, 'compact STL heightfield');
 });
 
 test('3MF export preserves raw edge topology for indexed geometry', async () => {

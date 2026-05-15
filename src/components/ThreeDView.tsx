@@ -75,16 +75,24 @@ function buildNearestSwatchFinder(swatches: { hex: string; a: number }[]) {
     };
 }
 
-function createFlatShadedGeometry(positions: Float32Array, indices: number[]) {
+interface KromacutExportLayerData {
+    activePixels: Uint8Array;
+    width: number;
+    height: number;
+    pixelSize: number;
+    topZ: number;
+}
+
+function createFlatShadedGeometry(
+    positions: Float32Array,
+    indices: number[],
+    exportLayer?: KromacutExportLayerData
+) {
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geom.setIndex(indices);
-
-    const flatGeom = geom.toNonIndexed();
-    flatGeom.computeVertexNormals();
-    flatGeom.userData.kromacutExportGeometry = { positions, indices };
-    geom.dispose();
-    return flatGeom;
+    geom.userData.kromacutExportGeometry = { positions, indices, ...exportLayer };
+    return geom;
 }
 
 interface E2EBuildMetrics {
@@ -935,7 +943,14 @@ export default function ThreeDView({
 
                         const geom = createFlatShadedGeometry(
                             generatedMesh.positions,
-                            generatedMesh.indices
+                            generatedMesh.indices,
+                            {
+                                activePixels,
+                                width: boxW,
+                                height: boxH,
+                                pixelSize,
+                                topZ: (baseZ + thickness) * heightScale,
+                            }
                         );
                         const mat = new THREE.MeshStandardMaterial({
                             color: colorHex,
@@ -1090,7 +1105,14 @@ export default function ThreeDView({
 
                         const geom = createFlatShadedGeometry(
                             generatedMesh.positions,
-                            generatedMesh.indices
+                            generatedMesh.indices,
+                            {
+                                activePixels,
+                                width: boxW,
+                                height: boxH,
+                                pixelSize,
+                                topZ: (baseZ + thickness) * heightScale,
+                            }
                         );
                         const mat = new THREE.MeshStandardMaterial({
                             color: colorHex,

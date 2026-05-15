@@ -53,6 +53,16 @@ type ExportMetrics = {
     elapsedMs?: number;
     bytes?: number;
     sizeMiB?: number;
+    triangleCount?: number;
+    stlStats?: {
+        mode: 'heightfield';
+        topQuads: number;
+        bottomQuads: number;
+        horizontalWallQuads: number;
+        verticalWallQuads: number;
+        totalQuads: number;
+        triangleCount: number;
+    };
     suggestedFilename?: string;
     memorySamples: MemorySample[];
     peakMemory?: MemorySummary;
@@ -167,6 +177,7 @@ test.describe('Kromacut browser export flow', () => {
                         await attachJson(testInfo, 'flow-metrics.json', metrics);
                         await attachJson(testInfo, 'flow-summary.json', summarizeFlow(metrics));
                         await attachJson(testInfo, 'browser-errors.json', browserErrors);
+                        console.log(formatFlowSummary(metrics));
                     }
 
                     expect(browserErrors).toEqual([]);
@@ -271,9 +282,10 @@ async function runFlow(
             await setSwitch(page, 'autopaint-allow-repeated-swaps', true);
             await setSwitch(page, 'autopaint-height-dithering', true);
 
-            await expect(page.getByTestId('build-3d-model')).toBeEnabled({
-                timeout: profile.colorCount >= 8 ? 3 * 60 * 1000 : 90 * 1000,
-            });
+            await waitForAutoPaintIdle(
+                page,
+                profile.colorCount >= 8 ? 3 * 60 * 1000 : 90 * 1000
+            );
         },
         persistMetrics
     );
@@ -377,6 +389,18 @@ async function setSwitch(page: Page, testId: string, checked: boolean) {
     await expect(control).toHaveAttribute('data-state', checked ? 'checked' : 'unchecked');
 }
 
+async function waitForAutoPaintIdle(page: Page, timeout: number) {
+    const buildButton = page.getByTestId('build-3d-model');
+
+    await delay(350);
+    await expect(buildButton)
+        .toBeDisabled({ timeout: 5000 })
+        .catch(() => {
+            // Small auto-paint computations may finish before Playwright observes the busy state.
+        });
+    await expect(buildButton).toBeEnabled({ timeout });
+}
+
 async function setSliderValue(page: Page, testId: string, value: number) {
     const thumb = page.getByTestId(testId).locator('[role="slider"]');
     await expect(thumb).toBeVisible();
@@ -445,7 +469,15 @@ async function exportModel(
         if (kind === '3mf') {
             await validate3MF(downloadPath);
         } else {
-            await validateSTL(downloadPath);
+            exportMetrics.triangleCount = await validateSTL(downloadPath);
+            exportMetrics.stlStats = await page.evaluate(() => {
+                const hook = (
+                    window as Window & {
+                        __KROMACUT_E2E?: { lastStlExport?: ExportMetrics['stlStats'] };
+                    }
+                ).__KROMACUT_E2E;
+                return hook?.lastStlExport;
+            });
         }
 
         exportMetrics.status = 'complete';
@@ -499,7 +531,9 @@ async function openDownloadMenu(page: Page, expectedItemTestId: string) {
 async function validateSTL(filePath: string) {
     const bytes = await readFilePrefix(filePath, 84);
     expect(bytes.byteLength).toBe(84);
-    expect(bytes.readUInt32LE(80)).toBeGreaterThan(0);
+    const triangleCount = bytes.readUInt32LE(80);
+    expect(triangleCount).toBeGreaterThan(0);
+    return triangleCount;
 }
 
 async function validate3MF(filePath: string) {
@@ -702,6 +736,8 @@ function summarizeFlow(metrics: FlowMetrics) {
         elapsedMs: exportMetric.elapsedMs,
         bytes: exportMetric.bytes,
         sizeMiB: exportMetric.sizeMiB,
+        triangleCount: exportMetric.triangleCount,
+        stlStats: exportMetric.stlStats,
         suggestedFilename: exportMetric.suggestedFilename,
         peakMemory: exportMetric.peakMemory ?? summarizeMemory(exportMetric.memorySamples),
     }));
@@ -728,6 +764,83 @@ function summarizeFlow(metrics: FlowMetrics) {
             exportSummaries.reduce((sum, exportSummary) => sum + (exportSummary.bytes ?? 0), 0)
         ),
     };
+}
+
+function formatFlowSummary(metrics: FlowMetrics) {
+    const summary = summarizeFlow(metrics);
+    const phases = summary.phaseElapsedMs;
+    const build = metrics.build;
+    const lines = [
+        `[Kromacut e2e metrics] ${metrics.caseName}`,
+        `  phases: load ${formatMs(phases['load-image'])}, quantize ${formatMs(
+            phases['quantize-defaults']
+        )}, dedither ${formatMs(phases['dedither-weight-4-passes-5'])}, configure ${formatMs(
+            phases['configure-autopaint-3d']
+        )}, build ${formatMs(phases['build-3d-model'])}`,
+    ];
+
+    if (build) {
+        lines.push(
+            `  model: ${formatCount(build.vertexCount)} vertices, ${formatCount(
+                build.triangleCount
+            )} triangles, build worker ${formatMs(build.elapsedMs)}`
+        );
+    }
+
+    for (const exportSummary of summary.exports) {
+        const triangleText =
+            exportSummary.kind === 'stl'
+                ? `, ${formatCount(exportSummary.triangleCount)} file triangles`
+                : '';
+        const stlStatsText = exportSummary.stlStats
+            ? ` (${formatCount(exportSummary.stlStats.topQuads)} top, ${formatCount(
+                  exportSummary.stlStats.bottomQuads
+              )} bottom, ${formatCount(
+                  exportSummary.stlStats.horizontalWallQuads +
+                      exportSummary.stlStats.verticalWallQuads
+              )} wall quads)`
+            : '';
+        lines.push(
+            `  ${exportSummary.kind.toUpperCase()}: ${exportSummary.status}, ${formatMs(
+                exportSummary.elapsedMs
+            )}, ${formatMiB(exportSummary.sizeMiB)}${triangleText}${stlStatsText}, peak JS heap ${formatMemory(
+                exportSummary.peakMemory
+            )}`
+        );
+    }
+
+    lines.push(
+        `  total files: ${formatMiB(summary.totalExportSizeMiB)}, peak JS heap ${formatMemory(
+            summary.peakMemory
+        )}`
+    );
+
+    if (summary.metricsFile) {
+        lines.push(`  metrics file: ${summary.metricsFile}`);
+    }
+
+    return lines.join('\n');
+}
+
+function formatMs(ms?: number) {
+    if (ms === undefined) return 'n/a';
+    return `${Math.round((ms / 1000) * 10) / 10}s`;
+}
+
+function formatMiB(sizeMiB?: number) {
+    if (sizeMiB === undefined) return 'n/a';
+    return `${sizeMiB.toLocaleString('en-US')} MiB`;
+}
+
+function formatCount(value?: number) {
+    if (value === undefined) return 'n/a';
+    return value.toLocaleString('en-US');
+}
+
+function formatMemory(memory?: MemorySummary) {
+    if (!memory) return 'n/a';
+    const heapMiB = memory.jsHeapUsedSizeMiB ?? memory.performanceUsedJSHeapSizeMiB;
+    return formatMiB(heapMiB);
 }
 
 function summarizeMemory(samples: MemorySample[]): MemorySummary {

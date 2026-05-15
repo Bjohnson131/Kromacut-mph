@@ -645,7 +645,13 @@ export async function exportObjectTo3MFBlob(
     reportProgress(exportZipProgress(0));
 
     const blob = await zip.generateAsync(
-        { type: 'blob' },
+        {
+            type: 'blob',
+            compression: 'DEFLATE',
+            compressionOptions: {
+                level: 1,
+            },
+        },
         onProgress
             ? (meta) => {
                   // zip progress goes from 80% to 100%
