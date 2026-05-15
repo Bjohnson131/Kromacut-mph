@@ -36,7 +36,12 @@ interface Params {
     ) => void;
     onProgress?: (value: number) => void;
     onStage?: (stage: 'load' | 'algorithm' | 'post' | 'swatches' | 'final') => void;
-    onStepChange?: (step: { stepIndex: number; stepCount: number; label: string }) => void;
+    onStepChange?: (step: {
+        stepIndex: number;
+        stepCount: number;
+        label: string;
+        stepProgress?: number;
+    }) => void;
 }
 
 const QUANTIZE_STEP_COUNT = 5;
@@ -93,11 +98,12 @@ export function useQuantize({
         const bump = (value: number) => {
             onProgress?.(clampProgress(value));
         };
-        const reportStep = (stepIndex: number, label: string) => {
+        const reportStep = (stepIndex: number, label: string, stepProgress = 0) => {
             onStepChange?.({
                 stepIndex,
                 stepCount: QUANTIZE_STEP_COUNT,
                 label,
+                stepProgress: clampProgress(stepProgress),
             });
         };
         // Yield to the event loop so the browser can paint the progress bar.
@@ -106,9 +112,10 @@ export function useQuantize({
         const yieldFrame = () => new Promise<void>((r) => setTimeout(r, 0));
         bump(0.01);
         onStage?.('load');
-        reportStep(1, 'Loading image data');
+        reportStep(1, 'Loading image data', 0);
         const blob = await canvasPreviewRef.current.exportImageBlob();
         if (!blob) return;
+        reportStep(1, 'Loading image data', 0.2);
         bump(0.02);
         const img = await new Promise<HTMLImageElement | null>((resolve) => {
             const i = new Image();
@@ -117,6 +124,7 @@ export function useQuantize({
             i.src = URL.createObjectURL(blob);
         });
         if (!img) return;
+        reportStep(1, 'Loading image data', 0.4);
         bump(0.04);
         try {
             if (typeof img.decode === 'function') {
@@ -125,6 +133,7 @@ export function useQuantize({
         } catch {
             // ignore decode errors; onload already fired
         }
+        reportStep(1, 'Loading image data', 0.6);
         bump(0.06);
         await yieldFrame();
 
@@ -137,6 +146,7 @@ export function useQuantize({
         if (!ctx) return;
         ctx.drawImage(img, 0, 0, w, h);
         const data = ctx.getImageData(0, 0, w, h);
+        reportStep(1, 'Loading image data', 1);
         bump(0.1);
         await yieldFrame();
         // helper to finalize alpha after postprocessing
@@ -150,10 +160,14 @@ export function useQuantize({
         };
         // Algorithm progress maps from 0.10 to 0.65.
         // The algorithm functions now accept { onProgress } and yield internally.
+        const algorithmLabel = quantizeAlgorithmLabel(algorithm);
         const algoEnd = quantizeAlgorithmProgress(1);
-        const algoProgress = (f: number) => bump(quantizeAlgorithmProgress(f));
+        const algoProgress = (f: number) => {
+            reportStep(2, algorithmLabel, f);
+            bump(quantizeAlgorithmProgress(f));
+        };
         onStage?.('algorithm');
-        reportStep(2, quantizeAlgorithmLabel(algorithm));
+        reportStep(2, algorithmLabel, 0);
         if (algorithm === 'median-cut')
             await medianCutImageData(data, weight, { onProgress: algoProgress });
         else if (algorithm === 'kmeans')
@@ -164,6 +178,7 @@ export function useQuantize({
         else if (algorithm === 'none') {
             // no algorithm pass, leave data as-is for postprocessing
         } else await posterizeImageData(data, weight, { onProgress: algoProgress });
+        reportStep(2, algorithmLabel, 1);
         bump(algoEnd);
         await yieldFrame();
 
@@ -176,9 +191,13 @@ export function useQuantize({
         // fall back to selectedPalette (named palettes) or auto (enforce finalColors)
         const overridePalette = options?.overridePalette;
         const overrideFinal = options?.overrideFinalColors;
+        const postLabel = quantizePostLabel(selectedPalette, finalColors, options);
         const postEnd = quantizePostProgress(1);
-        const postProgress = (f: number) => bump(quantizePostProgress(f));
-        reportStep(3, quantizePostLabel(selectedPalette, finalColors, options));
+        const postProgress = (f: number) => {
+            reportStep(3, postLabel, f);
+            bump(quantizePostProgress(f));
+        };
+        reportStep(3, postLabel, 0);
         if (overridePalette && overridePalette.length > 0) {
             await mapImageToPalette(data, overridePalette, { onProgress: postProgress });
             ctx.putImageData(data, 0, 0);
@@ -196,6 +215,7 @@ export function useQuantize({
             await enforcePaletteSizeAsync(data, overrideFinal ?? finalColors, postProgress);
             ctx.putImageData(data, 0, 0);
         }
+        reportStep(3, postLabel, 1);
         bump(postEnd);
         await yieldFrame();
         // Normalize any partial alpha AFTER post processing so uniqueness isn't skewed
@@ -208,22 +228,25 @@ export function useQuantize({
         // immediate swatches
         try {
             onStage?.('swatches');
-            reportStep(4, 'Collecting final swatches');
+            const swatchLabel = 'Collecting final swatches';
+            reportStep(4, swatchLabel, 0);
             const cmap = new Map<number, number>();
             let transparentCount = 0;
             const dd = data.data;
             const SWATCH_CAP = 2 ** 14;
             const total = dd.length / 4;
             for (let i = 0; i < dd.length; i += 4) {
+                if ((i / 4) % 10000 === 0) {
+                    const fraction = (i / 4) / total;
+                    reportStep(4, swatchLabel, fraction);
+                    bump(quantizeSwatchProgress(i / 4, total));
+                }
                 if (dd[i + 3] === 0) {
                     transparentCount++;
                     continue;
                 } // track transparent separately
                 const k = (dd[i] << 16) | (dd[i + 1] << 8) | dd[i + 2];
                 cmap.set(k, (cmap.get(k) || 0) + 1);
-                if ((i / 4) % 10000 === 0) {
-                    bump(quantizeSwatchProgress(i / 4, total));
-                }
             }
             const topLocal = Array.from(cmap.entries())
                 .sort((a, b) => b[1] - a[1])
@@ -256,16 +279,18 @@ export function useQuantize({
                 });
             }
             onImmediateSwatches(structured);
+            reportStep(4, swatchLabel, 1);
         } catch (err) {
             console.warn('immediate swatches failed', err);
         }
         bump(0.98);
         onStage?.('final');
-        reportStep(5, 'Encoding processed image');
+        reportStep(5, 'Encoding processed image', 0);
         const outBlob = await new Promise<Blob | null>((res) =>
             c.toBlob((b) => res(b), 'image/png')
         );
         if (!outBlob) return;
+        reportStep(5, 'Encoding processed image', 1);
         bump(1);
         const url = URL.createObjectURL(outBlob);
         setImage(url, true);

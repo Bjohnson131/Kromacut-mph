@@ -12,7 +12,12 @@ interface Props {
     onApplyResult: (blobUrl: string) => void;
     onWorkingChange?: (working: boolean) => void;
     onProgress?: (value: number) => void;
-    onStepChange?: (step: { stepIndex: number; stepCount: number; label: string }) => void;
+    onStepChange?: (step: {
+        stepIndex: number;
+        stepCount: number;
+        label: string;
+        stepProgress?: number;
+    }) => void;
 }
 
 export const DeditherPanel: React.FC<Props> = ({
@@ -37,6 +42,7 @@ export const DeditherPanel: React.FC<Props> = ({
             stepIndex: 1,
             stepCount: totalPasses,
             label: 'Dedithering pass 1',
+            stepProgress: 0,
         });
         onProgress?.(0.01);
         await new Promise((r) => requestAnimationFrame(r));
@@ -87,6 +93,7 @@ export const DeditherPanel: React.FC<Props> = ({
                     stepIndex: pass + 1,
                     stepCount: totalPasses,
                     label: `Dedithering pass ${pass + 1}`,
+                    stepProgress: 0,
                 });
                 const out = new Uint8ClampedArray(current);
                 // iterate pixels
@@ -162,6 +169,12 @@ export const DeditherPanel: React.FC<Props> = ({
                     }
                     processedRows++;
                     if (y % 16 === 0) {
+                        onStepChange?.({
+                            stepIndex: pass + 1,
+                            stepCount: totalPasses,
+                            label: `Dedithering pass ${pass + 1}`,
+                            stepProgress: (y + 1) / Math.max(1, h),
+                        });
                         onProgress?.(deditherRowProgress(processedRows, totalRows));
                     }
                 }
@@ -170,6 +183,12 @@ export const DeditherPanel: React.FC<Props> = ({
                     await new Promise((r) => requestAnimationFrame(r));
                     lastYield = performance.now();
                 }
+                onStepChange?.({
+                    stepIndex: pass + 1,
+                    stepCount: totalPasses,
+                    label: `Dedithering pass ${pass + 1}`,
+                    stepProgress: 1,
+                });
                 onProgress?.(deditherRowProgress(processedRows, totalRows));
             }
 

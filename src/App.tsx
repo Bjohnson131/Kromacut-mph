@@ -21,7 +21,7 @@ import PreviewActions from './components/PreviewActions';
 import { useDropzone } from './hooks/useDropzone';
 import { exportObjectToStlBlob } from './lib/exportStl';
 import { exportObjectTo3MFBlob } from './lib/export3mf';
-import { useAppHandlers } from './hooks/useAppHandlers';
+import { useAppHandlers, type ExportProgressStep } from './hooks/useAppHandlers';
 import { useProcessingState } from './hooks/useProcessingState';
 import { useBuildWarning } from './hooks/useBuildWarning';
 import { clampProgress } from './lib/progress';
@@ -59,6 +59,7 @@ interface ProcessingStepState {
     stepIndex: number;
     stepCount: number;
     label?: string;
+    stepProgress?: number;
 }
 
 type AutoPaintPersisted = Pick<
@@ -192,6 +193,12 @@ function App(): React.ReactElement | null {
     const [mode, setMode] = useState<'2d' | '3d'>('2d');
     const [exportingSTL, setExportingSTL] = useState(false);
     const [exportProgress, setExportProgress] = useState(0); // 0..1
+    const [exportStep, setExportStep] = useState<ExportProgressStep>({
+        title: 'Exporting model',
+        stepLabel: 'Preparing export',
+        stepIndex: 1,
+        stepCount: 1,
+    });
     // 3D printing shared state
     const {
         threeDState,
@@ -298,9 +305,10 @@ function App(): React.ReactElement | null {
             setImage,
             setExportingSTL,
             setExportProgress,
+            setExportStep,
             exportingSTL,
             exportObjectToStlBlob,
-            exportObjectTo3MFBlob: (obj, onProgress) =>
+            exportObjectTo3MFBlob: (obj, onProgress, onZipProgress) =>
                 exportObjectTo3MFBlob(obj, {
                     layerHeight: threeDState.layerHeight,
                     firstLayerHeight: threeDState.slicerFirstLayerHeight,
@@ -309,6 +317,7 @@ function App(): React.ReactElement | null {
                             ? threeDState.autoPaintFilamentSwatches?.map((s) => s.hex)
                             : undefined,
                     onProgress,
+                    onZipProgress,
                 }),
             applyQuantize,
             swatches,
@@ -386,6 +395,7 @@ function App(): React.ReactElement | null {
                                                         stepIndex: 1,
                                                         stepCount: 1,
                                                         label: 'Dedithering pass 1',
+                                                        stepProgress: 0,
                                                     });
                                                     setProcessingProgress(0);
                                                     setProcessingIndeterminate(false);
@@ -419,6 +429,7 @@ function App(): React.ReactElement | null {
                                                     stepIndex: 1,
                                                     stepCount: 5,
                                                     label: 'Loading image data',
+                                                    stepProgress: 0,
                                                 });
                                                 setProcessingProgress(0);
                                                 setProcessingIndeterminate(false);
@@ -504,6 +515,7 @@ function App(): React.ReactElement | null {
                                             }
                                             stepIndex={processingStep.stepIndex}
                                             stepCount={processingStep.stepCount}
+                                            stepProgress={processingStep.stepProgress}
                                             progress={processingProgress}
                                             indeterminate={processingIndeterminate}
                                         />
@@ -535,14 +547,11 @@ function App(): React.ReactElement | null {
                                     />
                                     {exportingSTL && (
                                         <ProgressOverlay
-                                            title="Exporting model"
-                                            stepLabel={
-                                                exportProgress > 0.8
-                                                    ? 'Finalizing export package'
-                                                    : 'Writing model geometry'
-                                            }
-                                            stepIndex={1}
-                                            stepCount={1}
+                                            title={exportStep.title}
+                                            stepLabel={exportStep.stepLabel}
+                                            stepIndex={exportStep.stepIndex}
+                                            stepCount={exportStep.stepCount}
+                                            stepProgress={exportStep.stepProgress}
                                             progress={exportProgress}
                                             indeterminate={exportProgress <= 0}
                                         />

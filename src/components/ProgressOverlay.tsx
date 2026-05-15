@@ -6,6 +6,7 @@ interface ProgressOverlayProps {
     stepLabel: string;
     stepIndex?: number;
     stepCount?: number;
+    stepProgress?: number;
     progress: number;
     indeterminate?: boolean;
 }
@@ -53,6 +54,14 @@ function estimateFromRate(progress: number, ratePerMs: number) {
     }
 
     return (1 - progress) / ratePerMs;
+}
+
+function estimateFromAverage(elapsedMs: number, progress: number) {
+    if (progress < MIN_PROGRESS_FOR_ETA || progress >= 0.995 || elapsedMs <= 0) {
+        return undefined;
+    }
+
+    return (elapsedMs / progress) * (1 - progress);
 }
 
 function blendEta(rawEtaMs: number, state: EtaState, timestamp: number) {
@@ -109,6 +118,7 @@ export default function ProgressOverlay({
     stepLabel,
     stepIndex = 1,
     stepCount = 1,
+    stepProgress,
     progress,
     indeterminate = false,
 }: ProgressOverlayProps) {
@@ -122,18 +132,29 @@ export default function ProgressOverlay({
     const clampedProgress = clampProgress(progress);
     const progressPct = Math.round(clampedProgress * 100);
     const showPercent = !indeterminate;
+    const clampedStepProgress =
+        stepProgress === undefined ? undefined : clampProgress(stepProgress);
+    const showStepProgress = showPercent && clampedStepProgress !== undefined;
+    const stepProgressPct =
+        clampedStepProgress === undefined ? 0 : Math.round(clampedStepProgress * 100);
     const elapsedMs = Math.max(0, now - startedAtRef.current);
     const safeStepCount = Math.max(1, Math.floor(stepCount));
     const safeStepIndex = Math.max(1, Math.min(safeStepCount, Math.floor(stepIndex)));
     const stepValue = `${safeStepIndex} of ${safeStepCount}`;
     const etaMs = useMemo(() => {
-        const state = etaStateRef.current;
-        if (!showPercent || state.etaBaseMs === undefined || state.etaBaseAt === undefined) {
+        if (!showPercent) {
             return undefined;
         }
 
-        return Math.max(0, state.etaBaseMs - (now - state.etaBaseAt));
-    }, [now, showPercent]);
+        const averageEta = estimateFromAverage(elapsedMs, clampedProgress);
+        const state = etaStateRef.current;
+        if (state.etaBaseMs === undefined || state.etaBaseAt === undefined) {
+            return averageEta;
+        }
+
+        const countdownEta = Math.max(0, state.etaBaseMs - (now - state.etaBaseAt));
+        return countdownEta >= 1000 ? countdownEta : averageEta;
+    }, [clampedProgress, elapsedMs, now, showPercent]);
     const etaLabel = showPercent ? etaLabelFor(clampedProgress, etaMs) : 'estimating';
 
     useEffect(() => {
@@ -184,7 +205,7 @@ export default function ProgressOverlay({
                     <div
                         className="mt-2.5 h-2 w-full overflow-hidden rounded-full bg-muted/80"
                         role="progressbar"
-                        aria-label={`${title}: ${stepLabel}`}
+                        aria-label={`${title}: overall progress`}
                         aria-valuemin={0}
                         aria-valuemax={100}
                         aria-valuenow={showPercent ? progressPct : undefined}
@@ -196,6 +217,22 @@ export default function ProgressOverlay({
                             }}
                         />
                     </div>
+
+                    {showStepProgress && (
+                        <div
+                            className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted/50"
+                            role="progressbar"
+                            aria-label={`${title}: ${stepLabel}`}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-valuenow={stepProgressPct}
+                        >
+                            <div
+                                className="h-full rounded-full bg-primary/55"
+                                style={{ width: `${stepProgressPct}%` }}
+                            />
+                        </div>
+                    )}
                 </div>
 
                 <div className="grid grid-cols-3 border-t border-border/45 bg-muted/15 px-4 py-3">

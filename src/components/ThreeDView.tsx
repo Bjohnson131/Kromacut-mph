@@ -85,16 +85,21 @@ interface KromacutExportLayerData {
 
 function getBuildOverlayStep(progress: number, layerCount: number, autoPaintEnabled: boolean) {
     const stepCount = Math.max(1, Math.floor(layerCount) + 1);
+    const clampedProgress = clampProgress(progress);
+    const rawStepProgress = clampedProgress * stepCount;
     const stepIndex =
         progress >= 1
             ? stepCount
-            : Math.max(1, Math.min(stepCount, Math.floor(clampProgress(progress) * stepCount) + 1));
+            : Math.max(1, Math.min(stepCount, Math.floor(rawStepProgress) + 1));
+    const stepProgress =
+        progress >= 1 ? 1 : clampProgress(rawStepProgress - (stepIndex - 1));
 
     if (stepCount === 1) {
         return {
             stepLabel: 'Preparing mesh inputs',
             stepIndex,
             stepCount,
+            stepProgress,
         };
     }
 
@@ -105,6 +110,7 @@ function getBuildOverlayStep(progress: number, layerCount: number, autoPaintEnab
                 : 'Reading image color layers',
             stepIndex,
             stepCount,
+            stepProgress,
         };
     }
 
@@ -112,6 +118,7 @@ function getBuildOverlayStep(progress: number, layerCount: number, autoPaintEnab
         stepLabel: `Building color layer ${stepIndex - 1} of ${stepCount - 1}`,
         stepIndex,
         stepCount,
+        stepProgress,
     };
 }
 
@@ -1356,6 +1363,7 @@ export default function ThreeDView({
                     stepLabel={buildOverlayStep.stepLabel}
                     stepIndex={buildOverlayStep.stepIndex}
                     stepCount={buildOverlayStep.stepCount}
+                    stepProgress={buildOverlayStep.stepProgress}
                     progress={buildProgress}
                 />
             )}

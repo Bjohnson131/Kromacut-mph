@@ -8,6 +8,7 @@ export interface Export3MFOptions {
     firstLayerHeight?: number;
     layerFilamentColors?: string[]; // Optional per-layer filament colors (hex) for export
     onProgress?: (progress: number) => void;
+    onZipProgress?: (progress: { percent: number; currentFile?: string | null }) => void;
 }
 
 type TriangleIndexChunk = {
@@ -654,6 +655,10 @@ export async function exportObjectTo3MFBlob(
         },
         onProgress
             ? (meta) => {
+                  options?.onZipProgress?.({
+                      percent: meta.percent,
+                      currentFile: meta.currentFile ?? null,
+                  });
                   // zip progress goes from 80% to 100%
                   reportProgress(exportZipProgress(meta.percent / 100));
               }
