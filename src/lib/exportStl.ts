@@ -25,7 +25,7 @@ type CompactStlStats = {
 };
 
 type CompactHeightfieldResult = {
-    quads: number[];
+    triangles: number[];
     stats: CompactStlStats;
 };
 
@@ -76,6 +76,69 @@ function toHeightUnits(value: number) {
 
 function fromHeightUnits(value: number) {
     return value / HEIGHT_UNIT_SCALE;
+}
+
+function repairHeightfieldCornerContacts(heightUnits: Int32Array, width: number, height: number) {
+    // Diagonal-only column contact creates four wall faces on one vertical edge.
+    // Bridge the nearest lower corner up to the shared diagonal height so the STL remains manifold.
+    const raiseBridgeCell = (firstIndex: number, secondIndex: number, targetHeight: number) => {
+        const firstHeight = heightUnits[firstIndex];
+        const secondHeight = heightUnits[secondIndex];
+        const bridgeIndex = firstHeight >= secondHeight ? firstIndex : secondIndex;
+
+        if (heightUnits[bridgeIndex] < targetHeight) {
+            heightUnits[bridgeIndex] = targetHeight;
+            return true;
+        }
+
+        return false;
+    };
+
+    let changed = true;
+    let pass = 0;
+    const maxPasses = 8;
+
+    while (changed && pass < maxPasses) {
+        changed = false;
+        pass++;
+
+        for (let y = 0; y < height - 1; y++) {
+            const row = y * width;
+            const nextRow = row + width;
+
+            for (let x = 0; x < width - 1; x++) {
+                const topLeftIndex = row + x;
+                const topRightIndex = topLeftIndex + 1;
+                const bottomLeftIndex = nextRow + x;
+                const bottomRightIndex = bottomLeftIndex + 1;
+                const topLeft = heightUnits[topLeftIndex];
+                const topRight = heightUnits[topRightIndex];
+                const bottomLeft = heightUnits[bottomLeftIndex];
+                const bottomRight = heightUnits[bottomRightIndex];
+                const downDiagonalHeight = Math.min(topLeft, bottomRight);
+                const downBridgeHeight = Math.max(topRight, bottomLeft);
+
+                if (
+                    downDiagonalHeight > 0 &&
+                    downDiagonalHeight > downBridgeHeight &&
+                    raiseBridgeCell(topRightIndex, bottomLeftIndex, downDiagonalHeight)
+                ) {
+                    changed = true;
+                }
+
+                const upDiagonalHeight = Math.min(topRight, bottomLeft);
+                const upBridgeHeight = Math.max(topLeft, bottomRight);
+
+                if (
+                    upDiagonalHeight > 0 &&
+                    upDiagonalHeight > upBridgeHeight &&
+                    raiseBridgeCell(topLeftIndex, bottomRightIndex, upDiagonalHeight)
+                ) {
+                    changed = true;
+                }
+            }
+        }
+    }
 }
 
 function matrixIsIdentity(matrix: THREE.Matrix4) {
@@ -163,6 +226,8 @@ function buildKromacutHeightfieldQuads(meshes: THREE.Mesh[]): CompactHeightfield
         }
     }
 
+    repairHeightfieldCornerContacts(heightUnits, width, height);
+
     for (const heightUnit of heightUnits) {
         if (heightUnit > 0) uniqueHeights.add(heightUnit);
     }
@@ -171,7 +236,7 @@ function buildKromacutHeightfieldQuads(meshes: THREE.Mesh[]): CompactHeightfield
         return null;
     }
 
-    const quads: number[] = [];
+    const triangles: number[] = [];
     const stats: CompactStlStats = {
         mode: 'heightfield',
         topQuads: 0,
@@ -181,7 +246,32 @@ function buildKromacutHeightfieldQuads(meshes: THREE.Mesh[]): CompactHeightfield
         totalQuads: 0,
         triangleCount: 0,
     };
-    const pushQuad = (
+
+    type Point3D = {
+        u: number;
+        v: number;
+        x: number;
+        y: number;
+        z: number;
+    };
+
+    const samePoint2D = (a: Point3D, b: Point3D) => a.u === b.u && a.v === b.v;
+
+    const pushBoundaryPoint = (points: Point3D[], point: Point3D) => {
+        const previous = points[points.length - 1];
+        if (!previous || !samePoint2D(previous, point)) {
+            points.push(point);
+        }
+    };
+
+    const cleanBoundary = (points: Point3D[]) => {
+        while (points.length > 1 && samePoint2D(points[0], points[points.length - 1])) {
+            points.pop();
+        }
+        return points;
+    };
+
+    const pushTriangle = (
         ax: number,
         ay: number,
         az: number,
@@ -190,30 +280,33 @@ function buildKromacutHeightfieldQuads(meshes: THREE.Mesh[]): CompactHeightfield
         bz: number,
         cx: number,
         cy: number,
-        cz: number,
-        dx: number,
-        dy: number,
-        dz: number
+        cz: number
     ) => {
-        quads.push(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz);
+        triangles.push(ax, ay, az, bx, by, bz, cx, cy, cz);
     };
 
-    const addTopRect = (x: number, y: number, w: number, h: number, z: number) => {
-        const x0 = x * pixelSize;
-        const x1 = (x + w) * pixelSize;
-        const y0 = y * pixelSize;
-        const y1 = (y + h) * pixelSize;
-        pushQuad(x0, y0, z, x1, y0, z, x1, y1, z, x0, y1, z);
-        stats.topQuads++;
-    };
+    const emitTriangulatedPolygon = (points: Point3D[], reverseWinding = false) => {
+        cleanBoundary(points);
+        if (points.length < 3) return 0;
 
-    const addBottomRect = (x: number, y: number, w: number, h: number) => {
-        const x0 = x * pixelSize;
-        const x1 = (x + w) * pixelSize;
-        const y0 = y * pixelSize;
-        const y1 = (y + h) * pixelSize;
-        pushQuad(x0, y0, 0, x0, y1, 0, x1, y1, 0, x1, y0, 0);
-        stats.bottomQuads++;
+        const faces = THREE.ShapeUtils.triangulateShape(
+            points.map((point) => new THREE.Vector2(point.u, point.v)),
+            []
+        );
+
+        for (const [aIndex, bIndex, cIndex] of faces) {
+            const a = points[aIndex];
+            const b = points[bIndex];
+            const c = points[cIndex];
+
+            if (reverseWinding) {
+                pushTriangle(a.x, a.y, a.z, c.x, c.y, c.z, b.x, b.y, b.z);
+            } else {
+                pushTriangle(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+            }
+        }
+
+        return faces.length;
     };
 
     type Rect = {
@@ -221,6 +314,170 @@ function buildKromacutHeightfieldQuads(meshes: THREE.Mesh[]): CompactHeightfield
         y: number;
         w: number;
         h: number;
+    };
+
+    type HorizontalSurface = Rect & {
+        zUnits: number;
+        side: 'top' | 'bottom';
+    };
+
+    type HorizontalWall = {
+        y: number;
+        x0: number;
+        x1: number;
+        lowerUnits: number;
+        upperUnits: number;
+        solidSouth: boolean;
+    };
+
+    type VerticalWall = {
+        x: number;
+        y0: number;
+        y1: number;
+        lowerUnits: number;
+        upperUnits: number;
+        solidEast: boolean;
+    };
+
+    const horizontalSurfaces: HorizontalSurface[] = [];
+    const horizontalWalls: HorizontalWall[] = [];
+    const verticalWalls: VerticalWall[] = [];
+    const xSplitsByZAndY = new Map<string, Set<number>>();
+    const ySplitsByZAndX = new Map<string, Set<number>>();
+    const zSplitsByPoint = new Map<string, Set<number>>();
+    const horizontalWallAxisSplitsByY = new Map<number, Set<number>>();
+    const verticalWallAxisSplitsByX = new Map<number, Set<number>>();
+
+    const splitKey = (a: number, b: number) => `${a}:${b}`;
+    const pointKey = (x: number, y: number) => `${x}:${y}`;
+
+    const addSplit = (map: Map<string | number, Set<number>>, key: string | number, value: number) => {
+        let splits = map.get(key);
+        if (!splits) {
+            splits = new Set();
+            map.set(key, splits);
+        }
+        splits.add(value);
+    };
+
+    const addXSplitAtY = (zUnits: number, y: number, x: number) => {
+        addSplit(xSplitsByZAndY, splitKey(zUnits, y), x);
+    };
+
+    const addYSplitAtX = (zUnits: number, x: number, y: number) => {
+        addSplit(ySplitsByZAndX, splitKey(zUnits, x), y);
+    };
+
+    const addZSplitAtPoint = (x: number, y: number, zUnits: number) => {
+        addSplit(zSplitsByPoint, pointKey(x, y), zUnits);
+    };
+
+    const addHorizontalSurface = (
+        side: 'top' | 'bottom',
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+        zUnits: number
+    ) => {
+        const x1 = x + w;
+        const y1 = y + h;
+        horizontalSurfaces.push({ side, x, y, w, h, zUnits });
+        addXSplitAtY(zUnits, y, x);
+        addXSplitAtY(zUnits, y, x1);
+        addXSplitAtY(zUnits, y1, x);
+        addXSplitAtY(zUnits, y1, x1);
+        addYSplitAtX(zUnits, x, y);
+        addYSplitAtX(zUnits, x, y1);
+        addYSplitAtX(zUnits, x1, y);
+        addYSplitAtX(zUnits, x1, y1);
+
+        if (side === 'top') {
+            stats.topQuads++;
+        } else {
+            stats.bottomQuads++;
+        }
+    };
+
+    const addHorizontalWallSurface = (
+        y: number,
+        x0: number,
+        x1: number,
+        lowerUnits: number,
+        upperUnits: number,
+        solidSouth: boolean
+    ) => {
+        horizontalWalls.push({ y, x0, x1, lowerUnits, upperUnits, solidSouth });
+        addSplit(horizontalWallAxisSplitsByY, y, x0);
+        addSplit(horizontalWallAxisSplitsByY, y, x1);
+        addXSplitAtY(lowerUnits, y, x0);
+        addXSplitAtY(lowerUnits, y, x1);
+        addXSplitAtY(upperUnits, y, x0);
+        addXSplitAtY(upperUnits, y, x1);
+        addZSplitAtPoint(x0, y, lowerUnits);
+        addZSplitAtPoint(x0, y, upperUnits);
+        addZSplitAtPoint(x1, y, lowerUnits);
+        addZSplitAtPoint(x1, y, upperUnits);
+        stats.horizontalWallQuads++;
+    };
+
+    const addVerticalWallSurface = (
+        x: number,
+        y0: number,
+        y1: number,
+        lowerUnits: number,
+        upperUnits: number,
+        solidEast: boolean
+    ) => {
+        verticalWalls.push({ x, y0, y1, lowerUnits, upperUnits, solidEast });
+        addSplit(verticalWallAxisSplitsByX, x, y0);
+        addSplit(verticalWallAxisSplitsByX, x, y1);
+        addYSplitAtX(lowerUnits, x, y0);
+        addYSplitAtX(lowerUnits, x, y1);
+        addYSplitAtX(upperUnits, x, y0);
+        addYSplitAtX(upperUnits, x, y1);
+        addZSplitAtPoint(x, y0, lowerUnits);
+        addZSplitAtPoint(x, y0, upperUnits);
+        addZSplitAtPoint(x, y1, lowerUnits);
+        addZSplitAtPoint(x, y1, upperUnits);
+        stats.verticalWallQuads++;
+    };
+
+    const sortedSplitsInRange = (
+        splits: Set<number> | undefined,
+        start: number,
+        end: number
+    ) => {
+        const values = [start, end];
+        if (splits) {
+            for (const value of splits) {
+                if (value > start && value < end) {
+                    values.push(value);
+                }
+            }
+        }
+
+        values.sort((a, b) => a - b);
+
+        let write = 1;
+        for (let read = 1; read < values.length; read++) {
+            if (values[read] !== values[write - 1]) {
+                values[write++] = values[read];
+            }
+        }
+        values.length = write;
+        return values;
+    };
+
+    const mergeSplitSets = (...sets: Array<Set<number> | undefined>) => {
+        const merged = new Set<number>();
+        for (const set of sets) {
+            if (!set) continue;
+            for (const value of set) {
+                merged.add(value);
+            }
+        }
+        return merged;
     };
 
     const visited = new Uint8Array(width * height);
@@ -368,58 +625,14 @@ function buildKromacutHeightfieldQuads(meshes: THREE.Mesh[]): CompactHeightfield
     for (const heightUnit of uniqueHeights) {
         emitGreedyRects(
             (index) => heightUnits[index] === heightUnit,
-            (x, y, w, h) => addTopRect(x, y, w, h, fromHeightUnits(heightUnit))
+            (x, y, w, h) => addHorizontalSurface('top', x, y, w, h, heightUnit)
         );
     }
 
     emitGreedyRects(
         (index) => heightUnits[index] > 0,
-        (x, y, w, h) => addBottomRect(x, y, w, h)
+        (x, y, w, h) => addHorizontalSurface('bottom', x, y, w, h, 0)
     );
-
-    const addHorizontalWall = (
-        y: number,
-        x0: number,
-        x1: number,
-        lowerUnits: number,
-        upperUnits: number,
-        solidSouth: boolean
-    ) => {
-        const left = x0 * pixelSize;
-        const right = x1 * pixelSize;
-        const yCoord = y * pixelSize;
-        const lower = fromHeightUnits(lowerUnits);
-        const upper = fromHeightUnits(upperUnits);
-
-        if (solidSouth) {
-            pushQuad(right, yCoord, lower, right, yCoord, upper, left, yCoord, upper, left, yCoord, lower);
-        } else {
-            pushQuad(left, yCoord, lower, left, yCoord, upper, right, yCoord, upper, right, yCoord, lower);
-        }
-        stats.horizontalWallQuads++;
-    };
-
-    const addVerticalWall = (
-        x: number,
-        y0: number,
-        y1: number,
-        lowerUnits: number,
-        upperUnits: number,
-        solidEast: boolean
-    ) => {
-        const xCoord = x * pixelSize;
-        const top = y0 * pixelSize;
-        const bottom = y1 * pixelSize;
-        const lower = fromHeightUnits(lowerUnits);
-        const upper = fromHeightUnits(upperUnits);
-
-        if (solidEast) {
-            pushQuad(xCoord, top, lower, xCoord, top, upper, xCoord, bottom, upper, xCoord, bottom, lower);
-        } else {
-            pushQuad(xCoord, bottom, lower, xCoord, bottom, upper, xCoord, top, upper, xCoord, top, lower);
-        }
-        stats.verticalWallQuads++;
-    };
 
     for (let y = 0; y <= height; y++) {
         let runStart = 0;
@@ -443,7 +656,7 @@ function buildKromacutHeightfieldQuads(meshes: THREE.Mesh[]): CompactHeightfield
                 solidSouth === runSolidSouth;
 
             if (!continues && inRun) {
-                addHorizontalWall(y, runStart, x, runLower, runUpper, runSolidSouth);
+                addHorizontalWallSurface(y, runStart, x, runLower, runUpper, runSolidSouth);
                 inRun = false;
             }
 
@@ -479,7 +692,7 @@ function buildKromacutHeightfieldQuads(meshes: THREE.Mesh[]): CompactHeightfield
                 solidEast === runSolidEast;
 
             if (!continues && inRun) {
-                addVerticalWall(x, runStart, y, runLower, runUpper, runSolidEast);
+                addVerticalWallSurface(x, runStart, y, runLower, runUpper, runSolidEast);
                 inRun = false;
             }
 
@@ -493,46 +706,266 @@ function buildKromacutHeightfieldQuads(meshes: THREE.Mesh[]): CompactHeightfield
         }
     }
 
-    if (quads.length === 0) {
+    for (const wall of horizontalWalls) {
+        const axisSplits = mergeSplitSets(
+            horizontalWallAxisSplitsByY.get(wall.y),
+            xSplitsByZAndY.get(splitKey(wall.lowerUnits, wall.y)),
+            xSplitsByZAndY.get(splitKey(wall.upperUnits, wall.y))
+        );
+        for (const x of sortedSplitsInRange(axisSplits, wall.x0, wall.x1)) {
+            addXSplitAtY(wall.lowerUnits, wall.y, x);
+            addXSplitAtY(wall.upperUnits, wall.y, x);
+        }
+    }
+
+    for (const wall of verticalWalls) {
+        const axisSplits = mergeSplitSets(
+            verticalWallAxisSplitsByX.get(wall.x),
+            ySplitsByZAndX.get(splitKey(wall.lowerUnits, wall.x)),
+            ySplitsByZAndX.get(splitKey(wall.upperUnits, wall.x))
+        );
+        for (const y of sortedSplitsInRange(axisSplits, wall.y0, wall.y1)) {
+            addYSplitAtX(wall.lowerUnits, wall.x, y);
+            addYSplitAtX(wall.upperUnits, wall.x, y);
+        }
+    }
+
+    const emitHorizontalSurface = (surface: HorizontalSurface) => {
+        const x0 = surface.x;
+        const x1 = surface.x + surface.w;
+        const y0 = surface.y;
+        const y1 = surface.y + surface.h;
+        const z = fromHeightUnits(surface.zUnits);
+        const topLine = sortedSplitsInRange(
+            xSplitsByZAndY.get(splitKey(surface.zUnits, y0)),
+            x0,
+            x1
+        );
+        const rightLine = sortedSplitsInRange(
+            ySplitsByZAndX.get(splitKey(surface.zUnits, x1)),
+            y0,
+            y1
+        );
+        const bottomLine = sortedSplitsInRange(
+            xSplitsByZAndY.get(splitKey(surface.zUnits, y1)),
+            x0,
+            x1
+        );
+        const leftLine = sortedSplitsInRange(
+            ySplitsByZAndX.get(splitKey(surface.zUnits, x0)),
+            y0,
+            y1
+        );
+        const points: Point3D[] = [];
+
+        for (let i = 0; i < topLine.length - 1; i++) {
+            const x = topLine[i];
+            pushBoundaryPoint(points, { u: x, v: y0, x: x * pixelSize, y: y0 * pixelSize, z });
+        }
+        for (let i = 0; i < rightLine.length - 1; i++) {
+            const y = rightLine[i];
+            pushBoundaryPoint(points, { u: x1, v: y, x: x1 * pixelSize, y: y * pixelSize, z });
+        }
+        for (let i = bottomLine.length - 1; i > 0; i--) {
+            const x = bottomLine[i];
+            pushBoundaryPoint(points, { u: x, v: y1, x: x * pixelSize, y: y1 * pixelSize, z });
+        }
+        for (let i = leftLine.length - 1; i > 0; i--) {
+            const y = leftLine[i];
+            pushBoundaryPoint(points, { u: x0, v: y, x: x0 * pixelSize, y: y * pixelSize, z });
+        }
+
+        emitTriangulatedPolygon(points, surface.side === 'bottom');
+    };
+
+    const emitHorizontalWall = (wall: HorizontalWall) => {
+        const axisSplits = mergeSplitSets(
+            horizontalWallAxisSplitsByY.get(wall.y),
+            xSplitsByZAndY.get(splitKey(wall.lowerUnits, wall.y)),
+            xSplitsByZAndY.get(splitKey(wall.upperUnits, wall.y))
+        );
+        const xCoords = sortedSplitsInRange(axisSplits, wall.x0, wall.x1);
+        const yCoord = wall.y * pixelSize;
+
+        for (let i = 0; i < xCoords.length - 1; i++) {
+            const left = xCoords[i];
+            const right = xCoords[i + 1];
+            const leftZ = sortedSplitsInRange(
+                zSplitsByPoint.get(pointKey(left, wall.y)),
+                wall.lowerUnits,
+                wall.upperUnits
+            );
+            const rightZ = sortedSplitsInRange(
+                zSplitsByPoint.get(pointKey(right, wall.y)),
+                wall.lowerUnits,
+                wall.upperUnits
+            );
+            const points: Point3D[] = [];
+
+            if (wall.solidSouth) {
+                for (const zUnits of rightZ) {
+                    const z = fromHeightUnits(zUnits);
+                    pushBoundaryPoint(points, {
+                        u: right,
+                        v: zUnits,
+                        x: right * pixelSize,
+                        y: yCoord,
+                        z,
+                    });
+                }
+                for (let zi = leftZ.length - 1; zi >= 0; zi--) {
+                    const zUnits = leftZ[zi];
+                    const z = fromHeightUnits(zUnits);
+                    pushBoundaryPoint(points, {
+                        u: left,
+                        v: zUnits,
+                        x: left * pixelSize,
+                        y: yCoord,
+                        z,
+                    });
+                }
+            } else {
+                for (const zUnits of leftZ) {
+                    const z = fromHeightUnits(zUnits);
+                    pushBoundaryPoint(points, {
+                        u: left,
+                        v: zUnits,
+                        x: left * pixelSize,
+                        y: yCoord,
+                        z,
+                    });
+                }
+                for (let zi = rightZ.length - 1; zi >= 0; zi--) {
+                    const zUnits = rightZ[zi];
+                    const z = fromHeightUnits(zUnits);
+                    pushBoundaryPoint(points, {
+                        u: right,
+                        v: zUnits,
+                        x: right * pixelSize,
+                        y: yCoord,
+                        z,
+                    });
+                }
+            }
+
+            emitTriangulatedPolygon(points, !wall.solidSouth);
+        }
+    };
+
+    const emitVerticalWall = (wall: VerticalWall) => {
+        const axisSplits = mergeSplitSets(
+            verticalWallAxisSplitsByX.get(wall.x),
+            ySplitsByZAndX.get(splitKey(wall.lowerUnits, wall.x)),
+            ySplitsByZAndX.get(splitKey(wall.upperUnits, wall.x))
+        );
+        const yCoords = sortedSplitsInRange(axisSplits, wall.y0, wall.y1);
+        const xCoord = wall.x * pixelSize;
+
+        for (let i = 0; i < yCoords.length - 1; i++) {
+            const top = yCoords[i];
+            const bottom = yCoords[i + 1];
+            const topZ = sortedSplitsInRange(
+                zSplitsByPoint.get(pointKey(wall.x, top)),
+                wall.lowerUnits,
+                wall.upperUnits
+            );
+            const bottomZ = sortedSplitsInRange(
+                zSplitsByPoint.get(pointKey(wall.x, bottom)),
+                wall.lowerUnits,
+                wall.upperUnits
+            );
+            const points: Point3D[] = [];
+
+            if (wall.solidEast) {
+                for (const zUnits of topZ) {
+                    const z = fromHeightUnits(zUnits);
+                    pushBoundaryPoint(points, {
+                        u: top,
+                        v: zUnits,
+                        x: xCoord,
+                        y: top * pixelSize,
+                        z,
+                    });
+                }
+                for (let zi = bottomZ.length - 1; zi >= 0; zi--) {
+                    const zUnits = bottomZ[zi];
+                    const z = fromHeightUnits(zUnits);
+                    pushBoundaryPoint(points, {
+                        u: bottom,
+                        v: zUnits,
+                        x: xCoord,
+                        y: bottom * pixelSize,
+                        z,
+                    });
+                }
+            } else {
+                for (const zUnits of bottomZ) {
+                    const z = fromHeightUnits(zUnits);
+                    pushBoundaryPoint(points, {
+                        u: bottom,
+                        v: zUnits,
+                        x: xCoord,
+                        y: bottom * pixelSize,
+                        z,
+                    });
+                }
+                for (let zi = topZ.length - 1; zi >= 0; zi--) {
+                    const zUnits = topZ[zi];
+                    const z = fromHeightUnits(zUnits);
+                    pushBoundaryPoint(points, {
+                        u: top,
+                        v: zUnits,
+                        x: xCoord,
+                        y: top * pixelSize,
+                        z,
+                    });
+                }
+            }
+
+            emitTriangulatedPolygon(points, wall.solidEast);
+        }
+    };
+
+    for (const surface of horizontalSurfaces) {
+        emitHorizontalSurface(surface);
+    }
+    for (const wall of horizontalWalls) {
+        emitHorizontalWall(wall);
+    }
+    for (const wall of verticalWalls) {
+        emitVerticalWall(wall);
+    }
+
+    if (triangles.length === 0) {
         return null;
     }
 
-    stats.totalQuads = quads.length / 12;
-    stats.triangleCount = stats.totalQuads * 2;
-    return { quads, stats };
+    stats.totalQuads =
+        stats.topQuads + stats.bottomQuads + stats.horizontalWallQuads + stats.verticalWallQuads;
+    stats.triangleCount = triangles.length / 9;
+    return { triangles, stats };
 }
 
-async function exportQuadsToStlBlob(
-    quads: number[],
+async function exportCompactTrianglesToStlBlob(
+    triangles: number[],
     onProgress?: (p: number) => void
 ): Promise<Blob> {
-    const totalTris = (quads.length / 12) * 2;
+    const totalTris = triangles.length / 9;
     return exportTrianglesToStlBlob(totalTris, onProgress, async (writeTriangle) => {
-        for (let i = 0; i < quads.length; i += 12) {
-            const shouldYieldA = writeTriangle(
-                quads[i],
-                quads[i + 1],
-                quads[i + 2],
-                quads[i + 3],
-                quads[i + 4],
-                quads[i + 5],
-                quads[i + 6],
-                quads[i + 7],
-                quads[i + 8]
-            );
-            const shouldYieldB = writeTriangle(
-                quads[i],
-                quads[i + 1],
-                quads[i + 2],
-                quads[i + 6],
-                quads[i + 7],
-                quads[i + 8],
-                quads[i + 9],
-                quads[i + 10],
-                quads[i + 11]
+        for (let i = 0; i < triangles.length; i += 9) {
+            const shouldYield = writeTriangle(
+                triangles[i],
+                triangles[i + 1],
+                triangles[i + 2],
+                triangles[i + 3],
+                triangles[i + 4],
+                triangles[i + 5],
+                triangles[i + 6],
+                triangles[i + 7],
+                triangles[i + 8]
             );
 
-            if (shouldYieldA || shouldYieldB) {
+            if (shouldYield) {
                 await new Promise((resolve) => setTimeout(resolve, 0));
             }
         }
@@ -679,7 +1112,7 @@ export async function exportObjectToStlBlob(
     const compactHeightfield = buildKromacutHeightfieldQuads(meshes);
     if (compactHeightfield) {
         publishStlStats(compactHeightfield.stats);
-        return exportQuadsToStlBlob(compactHeightfield.quads, onProgress);
+        return exportCompactTrianglesToStlBlob(compactHeightfield.triangles, onProgress);
     }
 
     // 2. Count triangles for the STL header.

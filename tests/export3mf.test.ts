@@ -943,6 +943,57 @@ test('STL export compacts Kromacut layer metadata into a manifold heightfield', 
     assertStlLayerIsManifold(exported.mesh, 'compact STL heightfield');
 });
 
+test('STL compact heightfield avoids T-junctions in stepped top surfaces', async () => {
+    const root = new THREE.Group();
+    const lowerMask = maskFromRows(['###', '#..']);
+    const upperMask = maskFromRows(['#..', '#..']);
+    const pixelSize = 0.1;
+    const firstLayer = await buildLayer(lowerMask, 0.16, 0, pixelSize, generateGreedyMesh);
+    const secondLayer = await buildLayer(upperMask, 0.08, 0.16, pixelSize, generateGreedyMesh);
+
+    root.add(createCompactExportLayer(firstLayer, lowerMask, pixelSize, 0.16, 0x111111));
+    root.add(createCompactExportLayer(secondLayer, upperMask, pixelSize, 0.24, 0xffffff));
+
+    const exported = await parseSingleBinaryStlMesh(await exportObjectToStlBlob(root));
+
+    assertStlLayerIsManifold(exported.mesh, 'stepped compact STL heightfield');
+});
+
+test('STL compact heightfield stays manifold for the large JPG 4-color stack', async () => {
+    const root = new THREE.Group();
+    const pixelSize = 0.1;
+    const thresholds = [180, 168, 156, 144];
+    const filamentColors = profileColors(gh27Profile);
+    let topZ = 0;
+
+    for (let layer = 0; layer < thresholds.length; layer++) {
+        const mask = maskFromJpegLuminance(largeIssueFixturePath, 256, thresholds[layer]);
+        const thickness = layer === 0 ? 0.16 : 0.08;
+
+        assert.ok(mask.activeCount > 0, `threshold ${thresholds[layer]} should generate pixels`);
+        assert.ok(
+            mask.activeCount < mask.width * mask.height,
+            `threshold ${thresholds[layer]} should not cover the whole fixture`
+        );
+
+        topZ += thickness;
+        const mesh = await buildLayer(mask, thickness, topZ - thickness, pixelSize, generateGreedyMesh);
+        root.add(
+            createCompactExportLayer(
+                mesh,
+                mask,
+                pixelSize,
+                topZ,
+                hexToMaterialColor(filamentColors[layer])
+            )
+        );
+    }
+
+    const exported = await parseSingleBinaryStlMesh(await exportObjectToStlBlob(root));
+
+    assertStlLayerIsManifold(exported.mesh, 'large JPG 4-color compact STL heightfield');
+});
+
 test('3MF export preserves raw edge topology for indexed geometry', async () => {
     const root = new THREE.Group();
     root.add(createLayerMesh(createSharedCubeGeometry(), 0xff0000));
