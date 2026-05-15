@@ -36,13 +36,26 @@ type MemorySample = {
     error?: string;
 };
 
+type MemorySummary = {
+    sampleCount: number;
+    peakJsHeapUsedSize?: number;
+    peakJsHeapTotalSize?: number;
+    peakDomNodes?: number;
+    peakPerformanceUsedJSHeapSize?: number;
+    peakPerformanceTotalJSHeapSize?: number;
+    jsHeapUsedSizeMiB?: number;
+    performanceUsedJSHeapSizeMiB?: number;
+};
+
 type ExportMetrics = {
     kind: 'stl' | '3mf';
     status: 'running' | 'complete' | 'failed';
     elapsedMs?: number;
     bytes?: number;
+    sizeMiB?: number;
     suggestedFilename?: string;
     memorySamples: MemorySample[];
+    peakMemory?: MemorySummary;
     error?: string;
 };
 
@@ -152,6 +165,7 @@ test.describe('Kromacut browser export flow', () => {
                             // The raw metrics file is best-effort during forced interruption.
                         });
                         await attachJson(testInfo, 'flow-metrics.json', metrics);
+                        await attachJson(testInfo, 'flow-summary.json', summarizeFlow(metrics));
                         await attachJson(testInfo, 'browser-errors.json', browserErrors);
                     }
 
@@ -437,13 +451,16 @@ async function exportModel(
         exportMetrics.status = 'complete';
         exportMetrics.elapsedMs = elapsedMs;
         exportMetrics.bytes = fileStats.size;
+        exportMetrics.sizeMiB = bytesToMiB(fileStats.size);
         exportMetrics.suggestedFilename = download.suggestedFilename();
+        exportMetrics.peakMemory = summarizeMemory(memorySamples);
 
         await attachJson(testInfo, `${kind}-export-metrics.json`, exportMetrics);
     } catch (error) {
         exportMetrics.status = 'failed';
         exportMetrics.elapsedMs = Date.now() - startedAt;
         exportMetrics.error = error instanceof Error ? error.message : String(error);
+        exportMetrics.peakMemory = summarizeMemory(memorySamples);
         throw error;
     } finally {
         stopped = true;
@@ -451,6 +468,7 @@ async function exportModel(
             await sampler;
         }
         metrics.memory.push(await memory.sample(`export-${kind}:after`));
+        exportMetrics.peakMemory = summarizeMemory(memorySamples);
         await persistMetrics(true);
     }
 }
@@ -647,6 +665,7 @@ function createMetricsWriter(
                         expectedStatus: testInfo.expectedStatus,
                         duration: testInfo.duration,
                     },
+                    summary: summarizeFlow(metrics),
                     metrics,
                     browserErrors,
                 },
@@ -674,6 +693,88 @@ function slugify(value: string) {
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-+|-+$/g, '')
         .slice(0, 140);
+}
+
+function summarizeFlow(metrics: FlowMetrics) {
+    const exportSummaries = metrics.exports.map((exportMetric) => ({
+        kind: exportMetric.kind,
+        status: exportMetric.status,
+        elapsedMs: exportMetric.elapsedMs,
+        bytes: exportMetric.bytes,
+        sizeMiB: exportMetric.sizeMiB,
+        suggestedFilename: exportMetric.suggestedFilename,
+        peakMemory: exportMetric.peakMemory ?? summarizeMemory(exportMetric.memorySamples),
+    }));
+
+    return {
+        caseName: metrics.caseName,
+        startedAt: metrics.startedAt,
+        updatedAt: metrics.updatedAt,
+        metricsFile: metrics.metricsFile,
+        build: metrics.build,
+        phaseElapsedMs: Object.fromEntries(
+            metrics.phases.map((phase) => [phase.label, phase.elapsedMs])
+        ),
+        peakMemory: summarizeMemory([
+            ...metrics.memory,
+            ...metrics.exports.flatMap((exportMetric) => exportMetric.memorySamples),
+        ]),
+        exports: exportSummaries,
+        totalExportBytes: exportSummaries.reduce(
+            (sum, exportSummary) => sum + (exportSummary.bytes ?? 0),
+            0
+        ),
+        totalExportSizeMiB: bytesToMiB(
+            exportSummaries.reduce((sum, exportSummary) => sum + (exportSummary.bytes ?? 0), 0)
+        ),
+    };
+}
+
+function summarizeMemory(samples: MemorySample[]): MemorySummary {
+    const summary: MemorySummary = {
+        sampleCount: samples.length,
+    };
+
+    for (const sample of samples) {
+        summary.peakJsHeapUsedSize = maxDefined(
+            summary.peakJsHeapUsedSize,
+            sample.jsHeapUsedSize
+        );
+        summary.peakJsHeapTotalSize = maxDefined(
+            summary.peakJsHeapTotalSize,
+            sample.jsHeapTotalSize
+        );
+        summary.peakDomNodes = maxDefined(summary.peakDomNodes, sample.domNodes);
+        summary.peakPerformanceUsedJSHeapSize = maxDefined(
+            summary.peakPerformanceUsedJSHeapSize,
+            sample.performanceMemory?.usedJSHeapSize
+        );
+        summary.peakPerformanceTotalJSHeapSize = maxDefined(
+            summary.peakPerformanceTotalJSHeapSize,
+            sample.performanceMemory?.totalJSHeapSize
+        );
+    }
+
+    if (summary.peakJsHeapUsedSize !== undefined) {
+        summary.jsHeapUsedSizeMiB = bytesToMiB(summary.peakJsHeapUsedSize);
+    }
+    if (summary.peakPerformanceUsedJSHeapSize !== undefined) {
+        summary.performanceUsedJSHeapSizeMiB = bytesToMiB(
+            summary.peakPerformanceUsedJSHeapSize
+        );
+    }
+
+    return summary;
+}
+
+function maxDefined(a: number | undefined, b: number | undefined) {
+    if (a === undefined) return b;
+    if (b === undefined) return a;
+    return Math.max(a, b);
+}
+
+function bytesToMiB(bytes: number) {
+    return Math.round((bytes / 1024 / 1024) * 10) / 10;
 }
 
 function isIgnorableBrowserConsoleMessage(message: string) {

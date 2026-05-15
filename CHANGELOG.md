@@ -18,6 +18,7 @@ All notable changes to Kromacut are documented in this file.
 
 - **3D preview lighting** - Reworked the 3D view shading to use flat face normals with balanced directional lighting, reducing fake shadow bands on flat meshed surfaces while keeping more model depth than the unlit preview
 - **Browser export test commands** - Split Playwright flows into smoke, small matrix, stress, and full commands, and persist export metrics during long runs so interrupted stress tests still leave timing, memory, and browser-error data
+- **Browser export metrics** - Playwright flow reports now summarize STL/3MF file sizes, total exported size, and peak browser-reported JS heap usage per export and per flow
 - **Browser export test runtime** - Playwright now exercises the production preview build, keeping the smoke export flow closer to packaged-app behavior and under the initial 30-second target
 - **Export memory shape** - STL export now writes chunked binary parts instead of one huge contiguous buffer, and 3MF export now uses flat coordinate storage, typed triangle chunks, and chunked XML joins to reduce peak browser memory during large exports
 - **Agent guidance** - Refocused `AGENTS.md` on Kromacut-specific domain rules, topology/export caveats, persistence boundaries, testing guidance, and when agents should update the changelog
