@@ -277,18 +277,40 @@ export async function exportObjectTo3MFBlob(
                 const matrixElements = matrix.elements;
                 const sourceVertexCount = Math.floor(positions.length / itemSize);
                 const sourceTriangleCount = Math.floor(indices.length / 3);
-                const exportVertexCoords = new Int32Array(sourceVertexCount * 3);
+                const sourceToExportVertex = new Int32Array(sourceVertexCount);
+                sourceToExportVertex.fill(-1);
+                const exportVertexMap = new Map<string, number>();
+                const exportVertexCoords: number[] = [];
+                const triangleChunks: TriangleIndexChunk[] = [];
+                const TRIANGLE_CHUNK_INDICES = 300000;
+                let currentTriangleChunk = new Uint32Array(TRIANGLE_CHUNK_INDICES);
+                let currentTriangleChunkLength = 0;
+                let exportTriangleCount = 0;
 
-                reportMeshProgress(i, COLLECT_END);
-                write(`  <vertices>
-`);
+                const getSourceExportVertex = (sourceIndex: number) => {
+                    if (
+                        !Number.isInteger(sourceIndex) ||
+                        sourceIndex < 0 ||
+                        sourceIndex >= sourceVertexCount
+                    ) {
+                        return -1;
+                    }
 
-                for (let j = 0; j < sourceVertexCount; j++) {
-                    const sourceOffset = j * itemSize;
+                    const cached = sourceToExportVertex[sourceIndex];
+                    if (cached !== -1) {
+                        return cached >= 0 ? cached : -1;
+                    }
+
+                    const sourceOffset = sourceIndex * itemSize;
                     const x = positions[sourceOffset];
                     const y = positions[sourceOffset + 1];
                     const z = positions[sourceOffset + 2];
-                    const outOffset = j * 3;
+
+                    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+                        sourceToExportVertex[sourceIndex] = -2;
+                        return -1;
+                    }
+
                     const transformedX =
                         matrixElements[0] * x +
                         matrixElements[4] * y +
@@ -305,11 +327,99 @@ export async function exportObjectTo3MFBlob(
                         matrixElements[10] * z +
                         matrixElements[14];
 
-                    exportVertexCoords[outOffset] = toCoordUnits(transformedX);
-                    exportVertexCoords[outOffset + 1] = toCoordUnits(transformedY);
-                    exportVertexCoords[outOffset + 2] = toCoordUnits(transformedZ);
+                    const coordX = toCoordUnits(transformedX);
+                    const coordY = toCoordUnits(transformedY);
+                    const coordZ = toCoordUnits(transformedZ);
+                    const key = `${coordX},${coordY},${coordZ}`;
+                    let exportIndex = exportVertexMap.get(key);
 
-                    write(`   <vertex x="${formatCoord(exportVertexCoords[outOffset])}" y="${formatCoord(exportVertexCoords[outOffset + 1])}" z="${formatCoord(exportVertexCoords[outOffset + 2])}" />
+                    if (exportIndex === undefined) {
+                        exportIndex = exportVertexCoords.length / 3;
+                        exportVertexMap.set(key, exportIndex);
+                        exportVertexCoords.push(coordX, coordY, coordZ);
+                    }
+
+                    sourceToExportVertex[sourceIndex] = exportIndex;
+                    return exportIndex;
+                };
+
+                const flushTriangleChunk = () => {
+                    if (currentTriangleChunkLength === 0) return;
+                    triangleChunks.push({
+                        data: currentTriangleChunk,
+                        length: currentTriangleChunkLength,
+                    });
+                    currentTriangleChunk = new Uint32Array(TRIANGLE_CHUNK_INDICES);
+                    currentTriangleChunkLength = 0;
+                };
+
+                const pushExportTriangle = (v1: number, v2: number, v3: number) => {
+                    if (currentTriangleChunkLength + 3 > currentTriangleChunk.length) {
+                        flushTriangleChunk();
+                    }
+
+                    currentTriangleChunk[currentTriangleChunkLength++] = v1;
+                    currentTriangleChunk[currentTriangleChunkLength++] = v2;
+                    currentTriangleChunk[currentTriangleChunkLength++] = v3;
+                    exportTriangleCount++;
+                };
+
+                const addExportTriangle = (sourceA: number, sourceB: number, sourceC: number) => {
+                    const v1 = getSourceExportVertex(sourceA);
+                    const v2 = getSourceExportVertex(sourceB);
+                    const v3 = getSourceExportVertex(sourceC);
+
+                    if (v1 < 0 || v2 < 0 || v3 < 0 || v1 === v2 || v2 === v3 || v1 === v3) {
+                        return;
+                    }
+
+                    const p1 = v1 * 3;
+                    const p2 = v2 * 3;
+                    const p3 = v3 * 3;
+                    const abx = exportVertexCoords[p2] - exportVertexCoords[p1];
+                    const aby = exportVertexCoords[p2 + 1] - exportVertexCoords[p1 + 1];
+                    const abz = exportVertexCoords[p2 + 2] - exportVertexCoords[p1 + 2];
+                    const acx = exportVertexCoords[p3] - exportVertexCoords[p1];
+                    const acy = exportVertexCoords[p3 + 1] - exportVertexCoords[p1 + 1];
+                    const acz = exportVertexCoords[p3 + 2] - exportVertexCoords[p1 + 2];
+                    const crossX = aby * acz - abz * acy;
+                    const crossY = abz * acx - abx * acz;
+                    const crossZ = abx * acy - aby * acx;
+
+                    if (crossX === 0 && crossY === 0 && crossZ === 0) {
+                        return;
+                    }
+
+                    pushExportTriangle(v1, v2, v3);
+                };
+
+                for (let j = 0; j < sourceTriangleCount; j++) {
+                    addExportTriangle(indices[j * 3], indices[j * 3 + 1], indices[j * 3 + 2]);
+
+                    opsSinceYield++;
+                    if (opsSinceYield > YIELD_EVERY) {
+                        opsSinceYield = 0;
+                        reportMeshProgress(
+                            i,
+                            progressInSpan(
+                                COLLECT_START,
+                                COLLECT_END - COLLECT_START,
+                                sourceTriangleCount > 0 ? (j + 1) / sourceTriangleCount : 1
+                            )
+                        );
+                        await new Promise((resolve) => setTimeout(resolve, 0));
+                    }
+                }
+                flushTriangleChunk();
+                reportMeshProgress(i, COLLECT_END);
+
+                write(`  <vertices>
+`);
+
+                const exportVertexCount = exportVertexCoords.length / 3;
+                for (let j = 0; j < exportVertexCoords.length; j += 3) {
+                    const vertexIndex = j / 3;
+                    write(`   <vertex x="${formatCoord(exportVertexCoords[j])}" y="${formatCoord(exportVertexCoords[j + 1])}" z="${formatCoord(exportVertexCoords[j + 2])}" />
 `);
 
                     opsSinceYield++;
@@ -320,7 +430,7 @@ export async function exportObjectTo3MFBlob(
                             progressInSpan(
                                 COLLECT_END,
                                 VERTEX_WRITE_END - COLLECT_END,
-                                sourceVertexCount > 0 ? (j + 1) / sourceVertexCount : 1
+                                exportVertexCount > 0 ? (vertexIndex + 1) / exportVertexCount : 1
                             )
                         );
                         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -332,43 +442,27 @@ export async function exportObjectTo3MFBlob(
                 write(`  <triangles>
 `);
 
-                for (let j = 0; j < sourceTriangleCount; j++) {
-                    const v1 = indices[j * 3];
-                    const v2 = indices[j * 3 + 1];
-                    const v3 = indices[j * 3 + 2];
-
-                    if (v1 !== v2 && v2 !== v3 && v1 !== v3) {
-                        const p1 = v1 * 3;
-                        const p2 = v2 * 3;
-                        const p3 = v3 * 3;
-                        const abx = exportVertexCoords[p2] - exportVertexCoords[p1];
-                        const aby = exportVertexCoords[p2 + 1] - exportVertexCoords[p1 + 1];
-                        const abz = exportVertexCoords[p2 + 2] - exportVertexCoords[p1 + 2];
-                        const acx = exportVertexCoords[p3] - exportVertexCoords[p1];
-                        const acy = exportVertexCoords[p3 + 1] - exportVertexCoords[p1 + 1];
-                        const acz = exportVertexCoords[p3 + 2] - exportVertexCoords[p1 + 2];
-                        const crossX = aby * acz - abz * acy;
-                        const crossY = abz * acx - abx * acz;
-                        const crossZ = abx * acy - aby * acx;
-
-                        if (crossX !== 0 || crossY !== 0 || crossZ !== 0) {
-                            write(`   <triangle v1="${v1}" v2="${v2}" v3="${v3}" />
+                let trianglesWritten = 0;
+                for (const chunk of triangleChunks) {
+                    for (let j = 0; j < chunk.length; j += 3) {
+                        write(`   <triangle v1="${chunk.data[j]}" v2="${chunk.data[j + 1]}" v3="${chunk.data[j + 2]}" />
 `);
+                        trianglesWritten++;
+                        opsSinceYield++;
+                        if (opsSinceYield > YIELD_EVERY) {
+                            opsSinceYield = 0;
+                            reportMeshProgress(
+                                i,
+                                progressInSpan(
+                                    VERTEX_WRITE_END,
+                                    TRIANGLE_WRITE_END - VERTEX_WRITE_END,
+                                    exportTriangleCount > 0
+                                        ? trianglesWritten / exportTriangleCount
+                                        : 1
+                                )
+                            );
+                            await new Promise((resolve) => setTimeout(resolve, 0));
                         }
-                    }
-
-                    opsSinceYield++;
-                    if (opsSinceYield > YIELD_EVERY) {
-                        opsSinceYield = 0;
-                        reportMeshProgress(
-                            i,
-                            progressInSpan(
-                                VERTEX_WRITE_END,
-                                TRIANGLE_WRITE_END - VERTEX_WRITE_END,
-                                sourceTriangleCount > 0 ? (j + 1) / sourceTriangleCount : 1
-                            )
-                        );
-                        await new Promise((resolve) => setTimeout(resolve, 0));
                     }
                 }
                 reportMeshProgress(i, TRIANGLE_WRITE_END);
@@ -379,6 +473,8 @@ export async function exportObjectTo3MFBlob(
 `);
                 write(`</object>
 `);
+                exportVertexMap.clear();
+                exportVertexCoords.length = 0;
                 return;
             }
 

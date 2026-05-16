@@ -12,7 +12,7 @@ export interface RasterMask {
     activeCount: number;
 }
 
-interface PngImage {
+export interface PngImage {
     width: number;
     height: number;
     rgba: Uint8Array;
@@ -179,6 +179,10 @@ function readPng(filePath: string): PngImage {
     }
 
     return { width, height, rgba };
+}
+
+export function readPngFixture(filePath: string): PngImage {
+    return readPng(filePath);
 }
 
 function buildHuffmanTable(lengthCounts: Uint8Array, symbols: Uint8Array): HuffmanTable {

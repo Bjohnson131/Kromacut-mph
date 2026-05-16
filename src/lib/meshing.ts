@@ -370,25 +370,165 @@ function triangulateLoops(loops: Vector2[][]) {
 
 function hasDegenerateCapFaces(loops: Vector2[][], faces: number[][], pixelSize: number) {
     const vertices = loops.flat();
+    const exportCoordScale = 100000;
 
     for (const [a, b, c] of faces) {
         const pointA = vertices[a];
         const pointB = vertices[b];
         const pointC = vertices[c];
-        const ax = Math.fround(pointA.x * pixelSize);
-        const ay = Math.fround(pointA.y * pixelSize);
-        const bx = Math.fround(pointB.x * pixelSize);
-        const by = Math.fround(pointB.y * pixelSize);
-        const cx = Math.fround(pointC.x * pixelSize);
-        const cy = Math.fround(pointC.y * pixelSize);
+        const ax = Math.round(pointA.x * pixelSize * exportCoordScale);
+        const ay = Math.round(pointA.y * pixelSize * exportCoordScale);
+        const bx = Math.round(pointB.x * pixelSize * exportCoordScale);
+        const by = Math.round(pointB.y * pixelSize * exportCoordScale);
+        const cx = Math.round(pointC.x * pixelSize * exportCoordScale);
+        const cy = Math.round(pointC.y * pixelSize * exportCoordScale);
         const area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
 
-        if (Math.abs(area2) <= 1e-12) {
+        if (area2 === 0) {
             return true;
         }
     }
 
     return false;
+}
+
+function isTopologySafeAfterCoordinateWeld(
+    positions: ArrayLike<number>,
+    indices: ArrayLike<number>,
+    coordScale = 100000
+) {
+    const vertexCount = Math.floor(positions.length / 3);
+    const vertexKeys = new Array<string>(vertexCount);
+
+    for (let vertex = 0; vertex < vertexCount; vertex++) {
+        const offset = vertex * 3;
+        const x = positions[offset];
+        const y = positions[offset + 1];
+        const z = positions[offset + 2];
+
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+            return false;
+        }
+
+        vertexKeys[vertex] = [
+            Math.round(x * coordScale),
+            Math.round(y * coordScale),
+            Math.round(z * coordScale),
+        ].join(',');
+    }
+
+    const edges = new Map<string, number>();
+    const triangles = new Set<string>();
+
+    const addEdge = (a: string, b: string) => {
+        const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+        edges.set(key, (edges.get(key) ?? 0) + 1);
+    };
+
+    for (let i = 0; i + 2 < indices.length; i += 3) {
+        const a = indices[i];
+        const b = indices[i + 1];
+        const c = indices[i + 2];
+
+        if (
+            !Number.isInteger(a) ||
+            !Number.isInteger(b) ||
+            !Number.isInteger(c) ||
+            a < 0 ||
+            b < 0 ||
+            c < 0 ||
+            a >= vertexCount ||
+            b >= vertexCount ||
+            c >= vertexCount
+        ) {
+            return false;
+        }
+
+        const keyA = vertexKeys[a];
+        const keyB = vertexKeys[b];
+        const keyC = vertexKeys[c];
+
+        if (keyA === keyB || keyB === keyC || keyC === keyA) {
+            return false;
+        }
+
+        const triangleKey = [keyA, keyB, keyC].sort().join('|');
+        if (triangles.has(triangleKey)) {
+            return false;
+        }
+        triangles.add(triangleKey);
+
+        addEdge(keyA, keyB);
+        addEdge(keyB, keyC);
+        addEdge(keyC, keyA);
+    }
+
+    for (const count of edges.values()) {
+        if (count !== 2) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function repairBinaryCornerContacts(
+    activePixels: Uint8Array | Uint8ClampedArray | boolean[],
+    width: number,
+    height: number
+) {
+    let repaired: Uint8Array | null = null;
+    const get = (index: number) => ((repaired ? repaired[index] : activePixels[index]) ? 1 : 0);
+    const set = (index: number) => {
+        if (!repaired) {
+            repaired = new Uint8Array(activePixels.length);
+            for (let i = 0; i < activePixels.length; i++) {
+                repaired[i] = activePixels[i] ? 1 : 0;
+            }
+        }
+
+        if (!repaired[index]) {
+            repaired[index] = 1;
+            return true;
+        }
+
+        return false;
+    };
+
+    let changed = true;
+    let pass = 0;
+    const maxPasses = 8;
+
+    while (changed && pass < maxPasses) {
+        changed = false;
+        pass++;
+
+        for (let y = 0; y < height - 1; y++) {
+            const row = y * width;
+            const nextRow = row + width;
+
+            for (let x = 0; x < width - 1; x++) {
+                const topLeftIndex = row + x;
+                const topRightIndex = topLeftIndex + 1;
+                const bottomLeftIndex = nextRow + x;
+                const bottomRightIndex = bottomLeftIndex + 1;
+                const topLeft = get(topLeftIndex);
+                const topRight = get(topRightIndex);
+                const bottomLeft = get(bottomLeftIndex);
+                const bottomRight = get(bottomRightIndex);
+
+                if (topLeft && bottomRight && !topRight && !bottomLeft) {
+                    changed = set(topRightIndex) || changed;
+                }
+
+                if (topRight && bottomLeft && !topLeft && !bottomRight) {
+                    changed = set(topLeftIndex) || changed;
+                }
+            }
+        }
+    }
+
+    return repaired ?? activePixels;
 }
 
 /**
@@ -629,8 +769,26 @@ export async function generateSmoothMesh(
         await maybeYield();
     }
 
+    const outputPositions = new Float32Array(positions);
+
+    if (
+        outputPositions.length > 0 &&
+        !isTopologySafeAfterCoordinateWeld(outputPositions, indices)
+    ) {
+        return generateGreedyMesh(
+            activePixels,
+            width,
+            height,
+            thickness,
+            zOffset,
+            pixelSize,
+            heightScale,
+            options
+        );
+    }
+
     return {
-        positions: new Float32Array(positions),
+        positions: outputPositions,
         indices,
     };
 }
@@ -668,6 +826,7 @@ export async function generateGreedyMesh(
     heightScale: number,
     options?: MeshYieldOptions
 ): Promise<MeshData> {
+    const meshingPixels = repairBinaryCornerContacts(activePixels, width, height);
     const positions: number[] = [];
     const indices: number[] = [];
     let vertCount = 0;
@@ -731,12 +890,12 @@ export async function generateGreedyMesh(
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
             const idx = y * width + x;
-            if (activePixels[idx] && !visited[idx]) {
+            if (meshingPixels[idx] && !visited[idx]) {
                 // 1. Find max width
                 let w = 1;
                 while (
                     x + w < width &&
-                    activePixels[y * width + (x + w)] &&
+                    meshingPixels[y * width + (x + w)] &&
                     !visited[y * width + (x + w)]
                 ) {
                     w++;
@@ -748,7 +907,7 @@ export async function generateGreedyMesh(
                 while (y + h < height && canExpand) {
                     for (let k = 0; k < w; k++) {
                         const nextIdx = (y + h) * width + (x + k);
-                        if (!activePixels[nextIdx] || visited[nextIdx]) {
+                        if (!meshingPixels[nextIdx] || visited[nextIdx]) {
                             canExpand = false;
                             break;
                         }
@@ -916,29 +1075,29 @@ export async function generateGreedyMesh(
     // Scan for all wall edges
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
-            if (!activePixels[y * width + x]) continue;
+            if (!meshingPixels[y * width + x]) continue;
 
             // North wall needed if no neighbor above
-            if (y === 0 || !activePixels[(y - 1) * width + x]) {
+            if (y === 0 || !meshingPixels[(y - 1) * width + x]) {
                 if (!northWalls.has(y)) northWalls.set(y, []);
                 northWalls.get(y)!.push(x);
             }
 
             // South wall needed if no neighbor below
-            if (y === height - 1 || !activePixels[(y + 1) * width + x]) {
+            if (y === height - 1 || !meshingPixels[(y + 1) * width + x]) {
                 const wallY = y + 1;
                 if (!southWalls.has(wallY)) southWalls.set(wallY, []);
                 southWalls.get(wallY)!.push(x);
             }
 
             // West wall needed if no neighbor to the left
-            if (x === 0 || !activePixels[y * width + (x - 1)]) {
+            if (x === 0 || !meshingPixels[y * width + (x - 1)]) {
                 if (!westWalls.has(x)) westWalls.set(x, []);
                 westWalls.get(x)!.push(y);
             }
 
             // East wall needed if no neighbor to the right
-            if (x === width - 1 || !activePixels[y * width + (x + 1)]) {
+            if (x === width - 1 || !meshingPixels[y * width + (x + 1)]) {
                 const wallX = x + 1;
                 if (!eastWalls.has(wallX)) eastWalls.set(wallX, []);
                 eastWalls.get(wallX)!.push(y);

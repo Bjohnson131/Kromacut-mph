@@ -1,0 +1,49 @@
+{
+  "id": "6e94795f-a4bb-49a6-a995-930169fef448",
+  "name": "Current 8 Colors Nonmanifold Regression",
+  "version": 1,
+  "filaments": [
+    {
+      "id": "p9c63ms",
+      "color": "#ffffff",
+      "td": 7.1
+    },
+    {
+      "id": "plvjtmc",
+      "color": "#000000",
+      "td": 0.8
+    },
+    {
+      "id": "98z555k",
+      "color": "#ff00a1",
+      "td": 2.3
+    },
+    {
+      "id": "w8cncoa",
+      "color": "#f7d000",
+      "td": 6
+    },
+    {
+      "id": "vsn9q6u",
+      "color": "#d83400",
+      "td": 2.7
+    },
+    {
+      "id": "azwg1yp",
+      "color": "#6300c5",
+      "td": 1.2
+    },
+    {
+      "id": "xyyxysq",
+      "color": "#00b8c4",
+      "td": 4.5
+    },
+    {
+      "id": "upcjpfe",
+      "color": "#04bb00",
+      "td": 4.1
+    }
+  ],
+  "createdAt": 1778925590830,
+  "updatedAt": 1778925590830
+}

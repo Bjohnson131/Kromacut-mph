@@ -12,7 +12,9 @@ import {
     logoFixturePath,
     maskFromJpegLuminance,
     maskFromPngAlpha,
+    readPngFixture,
     testAssetsRoot,
+    type PngImage,
     type RasterMask,
 } from './imageFixtures.ts';
 import { inspectMeshIntegrity, type MeshIntegrityReport } from './meshDiagnostics.ts';
@@ -20,6 +22,34 @@ import { inspectMeshIntegrity, type MeshIntegrityReport } from './meshDiagnostic
 type Export3mfModule = typeof import('../src/lib/export3mf.ts');
 type Export3MFOptions = Parameters<Export3mfModule['exportObjectTo3MFBlob']>[1];
 type MeshGenerator = typeof generateSmoothMesh;
+type OptimizerAlgorithm = 'exhaustive' | 'simulated-annealing' | 'genetic' | 'auto';
+
+interface AutoPaintSliceData {
+    colorSliceHeights: number[];
+    colorOrder: number[];
+    virtualSwatches: Array<{ hex: string; a: number }>;
+    filamentSwatches: Array<{ hex: string; a: number }>;
+}
+
+interface AutoPaintModule {
+    generateAutoLayers(
+        filaments: FilamentProfileFixture['filaments'],
+        imageSwatches: Array<{ hex: string; count?: number }>,
+        layerHeight: number,
+        firstLayerHeight: number,
+        maxHeight?: number,
+        enhancedColorMatch?: boolean,
+        allowRepeatedSwaps?: boolean,
+        optimizerOptions?: { algorithm: OptimizerAlgorithm; seed?: number },
+        regionWeightingMode?: 'uniform' | 'center' | 'edge',
+        imageDimensions?: { width: number; height: number } | null
+    ): unknown;
+    autoPaintToSliceHeights(
+        result: unknown,
+        layerHeight: number,
+        firstLayerHeight: number
+    ): AutoPaintSliceData;
+}
 
 interface ExportedMeshObject {
     id: string;
@@ -73,6 +103,7 @@ interface FilamentProfileFixture {
 }
 
 let export3mfModule: Promise<Export3mfModule> | null = null;
+let autoPaintModule: Promise<AutoPaintModule> | null = null;
 const filamentProfilesRoot = resolve(testAssetsRoot, 'filament-profiles');
 
 function normalizeFixtureHex(value: string, label: string) {
@@ -121,6 +152,7 @@ function loadFilamentProfileFixture(
 const bwProfile = loadFilamentProfileFixture('2_Colors.kapp', 2);
 const gh27Profile = loadFilamentProfileFixture('4_Colors.kapp', 4);
 const current8Profile = loadFilamentProfileFixture('8_Colors.kapp', 8);
+const current8NonmanifoldProfile = loadFilamentProfileFixture('8_Colors_nonmanifold.kapp', 8);
 const filamentProfileFixtures = [bwProfile, gh27Profile, current8Profile];
 const exportTopologyMeshers: Array<{ name: string; generate: MeshGenerator }> = [
     { name: 'greedy', generate: generateGreedyMesh },
@@ -199,30 +231,43 @@ function installFileReaderPolyfill() {
 }
 
 async function loadExport3mfModule(): Promise<Export3mfModule> {
-    export3mfModule ??= (async () => {
-        const server = await createServer({
-            appType: 'custom',
-            cacheDir: 'dist/.vite-test-cache',
-            configFile: false,
-            logLevel: 'error',
-            optimizeDeps: {
-                noDiscovery: true,
-            },
-            root: process.cwd(),
-            server: {
-                hmr: false,
-                middlewareMode: true,
-            },
-        });
-
-        try {
-            return (await server.ssrLoadModule('/src/lib/export3mf.ts')) as Export3mfModule;
-        } finally {
-            await server.close();
-        }
-    })();
+    export3mfModule ??= loadViteModule<Export3mfModule>('/src/lib/export3mf.ts');
 
     return export3mfModule;
+}
+
+async function loadAutoPaintModule(): Promise<AutoPaintModule> {
+    autoPaintModule ??= loadViteModule<AutoPaintModule>('/src/lib/autoPaint.ts');
+
+    return autoPaintModule;
+}
+
+async function loadViteModule<T>(modulePath: string): Promise<T> {
+    const server = await createServer({
+        appType: 'custom',
+        cacheDir: 'dist/.vite-test-cache',
+        configFile: false,
+        logLevel: 'error',
+        optimizeDeps: {
+            noDiscovery: true,
+        },
+        resolve: {
+            alias: {
+                '@': resolve(process.cwd(), 'src'),
+            },
+        },
+        root: process.cwd(),
+        server: {
+            hmr: false,
+            middlewareMode: true,
+        },
+    });
+
+    try {
+        return (await server.ssrLoadModule(modulePath)) as T;
+    } finally {
+        await server.close();
+    }
 }
 
 function createSharedCubeGeometry() {
@@ -273,6 +318,16 @@ function createCompactExportLayer(
         height: mask.height,
         pixelSize,
         topZ,
+    };
+
+    return layer;
+}
+
+function createRawExportLayer(mesh: MeshData, color: number) {
+    const layer = createMeshDataLayer(mesh, color);
+    layer.geometry.userData.kromacutExportGeometry = {
+        positions: mesh.positions,
+        indices: mesh.indices,
     };
 
     return layer;
@@ -375,6 +430,451 @@ async function buildFixtureLayerStack(
     return { root, generatedLayerCount, filamentColors };
 }
 
+function rgbToFixtureHex(r: number, g: number, b: number) {
+    return `#${[r, g, b]
+        .map((value) => Math.round(value).toString(16).padStart(2, '0'))
+        .join('')}`.toUpperCase();
+}
+
+function cropPngToOpaqueBounds(image: PngImage, maxSide: number): PngImage {
+    let minX = image.width;
+    let minY = image.height;
+    let maxX = 0;
+    let maxY = 0;
+
+    for (let y = 0; y < image.height; y++) {
+        for (let x = 0; x < image.width; x++) {
+            if (image.rgba[(y * image.width + x) * 4 + 3] > 0) {
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x);
+                maxY = Math.max(maxY, y);
+            }
+        }
+    }
+
+    if (maxX < minX || maxY < minY) {
+        minX = 0;
+        minY = 0;
+        maxX = image.width - 1;
+        maxY = image.height - 1;
+    }
+
+    const cropWidth = maxX - minX + 1;
+    const cropHeight = maxY - minY + 1;
+    const sampleSize = Math.max(1, Math.ceil(Math.max(cropWidth, cropHeight) / maxSide));
+    const width = Math.ceil(cropWidth / sampleSize);
+    const height = Math.ceil(cropHeight / sampleSize);
+    const rgba = new Uint8Array(width * height * 4);
+
+    for (let y = 0; y < height; y++) {
+        const sourceY = Math.min(maxY, minY + y * sampleSize);
+
+        for (let x = 0; x < width; x++) {
+            const sourceX = Math.min(maxX, minX + x * sampleSize);
+            const sourceOffset = (sourceY * image.width + sourceX) * 4;
+            const targetOffset = (y * width + x) * 4;
+
+            rgba[targetOffset] = image.rgba[sourceOffset];
+            rgba[targetOffset + 1] = image.rgba[sourceOffset + 1];
+            rgba[targetOffset + 2] = image.rgba[sourceOffset + 2];
+            rgba[targetOffset + 3] = image.rgba[sourceOffset + 3];
+        }
+    }
+
+    return { width, height, rgba };
+}
+
+function imageSwatchesFromRgba(image: PngImage) {
+    const counts = new Map<string, number>();
+
+    for (let i = 0; i < image.rgba.length; i += 4) {
+        if (image.rgba[i + 3] === 0) continue;
+
+        const hex = rgbToFixtureHex(image.rgba[i], image.rgba[i + 1], image.rgba[i + 2]);
+        counts.set(hex, (counts.get(hex) ?? 0) + 1);
+    }
+
+    return Array.from(counts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([hex, count]) => ({ hex, count }));
+}
+
+function fixtureHexToRgb(hex: string): [number, number, number] {
+    const h = hex.replace(/^#/, '');
+    return [
+        Number.parseInt(h.slice(0, 2), 16) || 0,
+        Number.parseInt(h.slice(2, 4), 16) || 0,
+        Number.parseInt(h.slice(4, 6), 16) || 0,
+    ];
+}
+
+function rgbToLabFixture(r: number, g: number, b: number) {
+    let rr = r / 255;
+    let gg = g / 255;
+    let bb = b / 255;
+
+    rr = rr > 0.04045 ? Math.pow((rr + 0.055) / 1.055, 2.4) : rr / 12.92;
+    gg = gg > 0.04045 ? Math.pow((gg + 0.055) / 1.055, 2.4) : gg / 12.92;
+    bb = bb > 0.04045 ? Math.pow((bb + 0.055) / 1.055, 2.4) : bb / 12.92;
+
+    let x = (rr * 0.4124564 + gg * 0.3575761 + bb * 0.1804375) * 100;
+    let y = (rr * 0.2126729 + gg * 0.7151522 + bb * 0.072175) * 100;
+    let z = (rr * 0.0193339 + gg * 0.119192 + bb * 0.9503041) * 100;
+
+    x /= 95.047;
+    y /= 100.0;
+    z /= 108.883;
+
+    x = x > 0.008856 ? Math.cbrt(x) : (903.3 * x + 16) / 116;
+    y = y > 0.008856 ? Math.cbrt(y) : (903.3 * y + 16) / 116;
+    z = z > 0.008856 ? Math.cbrt(z) : (903.3 * z + 16) / 116;
+
+    return {
+        L: 116 * y - 16,
+        a: 500 * (x - y),
+        b: 200 * (y - z),
+    };
+}
+
+function fixtureLuminance(r: number, g: number, b: number) {
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+function buildCumulativeHeights(
+    colorSliceHeights: number[],
+    colorOrder: number[],
+    firstLayerHeight: number
+) {
+    const cumulativeHeights: number[] = [];
+    let running = 0;
+
+    colorOrder.forEach((swatchIndex, position) => {
+        const height = colorSliceHeights[swatchIndex] || 0;
+        const effectiveHeight = position === 0 ? Math.max(height, firstLayerHeight) : height;
+        running += effectiveHeight;
+        cumulativeHeights[position] = running;
+    });
+
+    return cumulativeHeights;
+}
+
+function buildEnhancedHeightMap(
+    image: PngImage,
+    swatches: Array<{ hex: string; a: number }>,
+    cumulativeHeights: number[],
+    layerHeight: number,
+    firstLayerHeight: number
+) {
+    const pixelHeightMap = new Float32Array(image.width * image.height);
+    const swatchEntries = swatches.map((swatch, index) => {
+        const [r, g, b] = fixtureHexToRgb(swatch.hex);
+        return {
+            lab: rgbToLabFixture(r, g, b),
+            height: cumulativeHeights[index] || 0,
+        };
+    });
+    const polyNodes: Array<{
+        lab: { L: number; a: number; b: number };
+        minHeight: number;
+        maxHeight: number;
+    }> = [];
+    const collapseDeltaESq = 0.25;
+
+    if (swatchEntries.length > 0) {
+        let runStart = 0;
+
+        for (let index = 1; index <= swatchEntries.length; index++) {
+            let split = index === swatchEntries.length;
+
+            if (!split) {
+                const ref = swatchEntries[runStart].lab;
+                const cur = swatchEntries[index].lab;
+                const deSq = (cur.L - ref.L) ** 2 + (cur.a - ref.a) ** 2 + (cur.b - ref.b) ** 2;
+                split = deSq >= collapseDeltaESq;
+            }
+
+            if (split) {
+                let sumL = 0;
+                let sumA = 0;
+                let sumB = 0;
+                const count = index - runStart;
+
+                for (let j = runStart; j < index; j++) {
+                    sumL += swatchEntries[j].lab.L;
+                    sumA += swatchEntries[j].lab.a;
+                    sumB += swatchEntries[j].lab.b;
+                }
+
+                polyNodes.push({
+                    lab: { L: sumL / count, a: sumA / count, b: sumB / count },
+                    minHeight: swatchEntries[runStart].height,
+                    maxHeight: swatchEntries[index - 1].height,
+                });
+                runStart = index;
+            }
+        }
+    }
+
+    const polySegments: Array<{
+        aL: number;
+        aa: number;
+        ab: number;
+        dL: number;
+        da: number;
+        db: number;
+        lenSq: number;
+        hStart: number;
+        hEnd: number;
+    }> = [];
+
+    for (let index = 0; index < polyNodes.length - 1; index++) {
+        const from = polyNodes[index];
+        const to = polyNodes[index + 1];
+        const dL = to.lab.L - from.lab.L;
+        const da = to.lab.a - from.lab.a;
+        const db = to.lab.b - from.lab.b;
+
+        polySegments.push({
+            aL: from.lab.L,
+            aa: from.lab.a,
+            ab: from.lab.b,
+            dL,
+            da,
+            db,
+            lenSq: dL * dL + da * da + db * db,
+            hStart: from.maxHeight,
+            hEnd: to.minHeight,
+        });
+    }
+
+    let minLuminance = 1;
+    let maxLuminance = 0;
+
+    for (let index = 0; index < image.rgba.length; index += 4) {
+        if (image.rgba[index + 3] === 0) continue;
+
+        const luminance = fixtureLuminance(
+            image.rgba[index],
+            image.rgba[index + 1],
+            image.rgba[index + 2]
+        );
+        minLuminance = Math.min(minLuminance, luminance);
+        maxLuminance = Math.max(maxLuminance, luminance);
+    }
+
+    if (maxLuminance <= minLuminance) {
+        maxLuminance = minLuminance + 0.001;
+    }
+
+    const luminanceRange = maxLuminance - minLuminance;
+    const maxModelHeight = cumulativeHeights[cumulativeHeights.length - 1] || 1;
+    const minModelHeight = cumulativeHeights[0] || 0;
+    const colorHeightCache = new Map<number, number>();
+
+    for (let y = 0; y < image.height; y++) {
+        for (let x = 0; x < image.width; x++) {
+            const pixelIndex = y * image.width + x;
+            const rgbaIndex = pixelIndex * 4;
+            const alpha = image.rgba[rgbaIndex + 3];
+
+            if (alpha === 0) {
+                pixelHeightMap[pixelIndex] = 0;
+                continue;
+            }
+
+            const r = image.rgba[rgbaIndex];
+            const g = image.rgba[rgbaIndex + 1];
+            const b = image.rgba[rgbaIndex + 2];
+            const cacheKey = ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff);
+            const cachedHeight = colorHeightCache.get(cacheKey);
+
+            if (cachedHeight !== undefined) {
+                pixelHeightMap[pixelIndex] = cachedHeight;
+                continue;
+            }
+
+            const pixelLab = rgbToLabFixture(r, g, b);
+            let bestDistance = Infinity;
+            let targetHeight = 0;
+
+            for (const node of polyNodes) {
+                const distance = Math.sqrt(
+                    (pixelLab.L - node.lab.L) ** 2 +
+                        (pixelLab.a - node.lab.a) ** 2 +
+                        (pixelLab.b - node.lab.b) ** 2
+                );
+
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    const range = node.maxHeight - node.minHeight;
+
+                    if (range > 1e-6) {
+                        const luminance = fixtureLuminance(r, g, b);
+                        const lumT = (luminance - minLuminance) / luminanceRange;
+                        targetHeight = node.minHeight + lumT * range;
+                    } else {
+                        targetHeight = (node.minHeight + node.maxHeight) * 0.5;
+                    }
+                }
+            }
+
+            for (const segment of polySegments) {
+                if (segment.lenSq < 0.01) continue;
+
+                const pL = pixelLab.L - segment.aL;
+                const pa = pixelLab.a - segment.aa;
+                const pb = pixelLab.b - segment.ab;
+                let t = (pL * segment.dL + pa * segment.da + pb * segment.db) / segment.lenSq;
+                t = Math.max(0, Math.min(1, t));
+
+                const projectedL = segment.aL + t * segment.dL;
+                const projectedA = segment.aa + t * segment.da;
+                const projectedB = segment.ab + t * segment.db;
+                const distance = Math.sqrt(
+                    (pixelLab.L - projectedL) ** 2 +
+                        (pixelLab.a - projectedA) ** 2 +
+                        (pixelLab.b - projectedB) ** 2
+                );
+
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    targetHeight = segment.hStart + t * (segment.hEnd - segment.hStart);
+                }
+            }
+
+            targetHeight = Math.max(minModelHeight, Math.min(maxModelHeight, targetHeight));
+            pixelHeightMap[pixelIndex] = targetHeight;
+            colorHeightCache.set(cacheKey, targetHeight);
+        }
+    }
+
+    if (layerHeight > 0) {
+        for (let index = 0; index < pixelHeightMap.length; index++) {
+            const height = pixelHeightMap[index];
+
+            if (height <= 0) continue;
+
+            const delta = Math.max(0, height - firstLayerHeight);
+            let snapped = firstLayerHeight + Math.round(delta / layerHeight) * layerHeight;
+            snapped = Math.max(firstLayerHeight, Math.min(maxModelHeight, snapped));
+            pixelHeightMap[index] = snapped;
+        }
+    }
+
+    return pixelHeightMap;
+}
+
+async function buildAutoPaintLogoRegressionStack(
+    profile: FilamentProfileFixture,
+    maxSide: number,
+    seed: number
+) {
+    const layerHeight = 0.08;
+    const firstLayerHeight = 0.16;
+    const pixelSize = 0.1;
+    const image = cropPngToOpaqueBounds(readPngFixture(logoFixturePath), maxSide);
+    const imageSwatches = imageSwatchesFromRgba(image);
+    const { generateAutoLayers, autoPaintToSliceHeights } = await loadAutoPaintModule();
+    const autoPaintResult = generateAutoLayers(
+        profile.filaments,
+        imageSwatches,
+        layerHeight,
+        firstLayerHeight,
+        undefined,
+        true,
+        true,
+        {
+            algorithm: 'auto',
+            seed,
+        },
+        'uniform',
+        { width: image.width, height: image.height }
+    );
+    const sliceData = autoPaintToSliceHeights(autoPaintResult, layerHeight, firstLayerHeight);
+    const cumulativeHeights = buildCumulativeHeights(
+        sliceData.colorSliceHeights,
+        sliceData.colorOrder,
+        firstLayerHeight
+    );
+    const pixelHeightMap = buildEnhancedHeightMap(
+        image,
+        sliceData.virtualSwatches,
+        cumulativeHeights,
+        layerHeight,
+        firstLayerHeight
+    );
+    const root = new THREE.Group();
+    const filamentColors: string[] = [];
+    let generatedLayerCount = 0;
+
+    assert.ok(imageSwatches.length > 0, 'auto-paint regression image should contain swatches');
+    assert.ok(sliceData.colorOrder.length > 0, 'auto-paint should generate layer slices');
+
+    for (let layer = 0; layer < sliceData.colorOrder.length; layer++) {
+        const swatchIndex = sliceData.colorOrder[layer];
+        const thickness =
+            layer === 0
+                ? Math.max(sliceData.colorSliceHeights[swatchIndex] || 0, firstLayerHeight)
+                : sliceData.colorSliceHeights[swatchIndex] || 0;
+
+        if (thickness <= 0.0001) continue;
+
+        const topZ = cumulativeHeights[layer];
+        const baseZ = layer === 0 ? 0 : cumulativeHeights[layer - 1];
+        const activePixels = new Uint8Array(image.width * image.height);
+        let activeCount = 0;
+
+        for (let y = 0; y < image.height; y++) {
+            for (let x = 0; x < image.width; x++) {
+                const mapIndex = y * image.width + x;
+
+                if (pixelHeightMap[mapIndex] > 0 && pixelHeightMap[mapIndex] >= topZ - 0.001) {
+                    activePixels[(image.height - 1 - y) * image.width + x] = 1;
+                    activeCount++;
+                }
+            }
+        }
+
+        if (activeCount === 0) continue;
+
+        const mask = {
+            activePixels,
+            width: image.width,
+            height: image.height,
+            activeCount,
+        };
+        const mesh = await buildSmoothLayer(mask, thickness, baseZ, pixelSize);
+        const filamentColor = normalizeFixtureHex(
+            sliceData.filamentSwatches[swatchIndex].hex,
+            `auto-paint layer ${layer + 1} filament`
+        );
+
+        assertStlLayerIsManifold(mesh, `8-color auto-paint source mesh layer ${layer + 1}`);
+        assertExportLayerHasOutwardNormals(
+            mesh,
+            `8-color auto-paint source mesh layer ${layer + 1}`
+        );
+
+        root.add(
+            createRawExportLayer(
+                mesh,
+                hexToMaterialColor(sliceData.virtualSwatches[swatchIndex].hex)
+            )
+        );
+        filamentColors.push(filamentColor);
+        generatedLayerCount++;
+    }
+
+    return {
+        root,
+        generatedLayerCount,
+        filamentColors,
+        imageSwatchCount: imageSwatches.length,
+        autoPaintLayerCount: sliceData.colorOrder.length,
+    };
+}
+
 function reportForMessage(report: MeshIntegrityReport) {
     return JSON.stringify(
         {
@@ -473,11 +973,13 @@ async function parseSingleBinaryStlMesh(blob: Blob) {
 }
 
 function assertRawExportObjectIsManifold(object: ExportedMeshObject, label: string) {
+    const topologyMessage = `${label} topology: ${JSON.stringify(object.topology)}`;
+
     assert.ok(object.vertexCount > 0, `${label} should contain vertices`);
     assert.ok(object.triangleCount > 0, `${label} should contain triangles`);
-    assert.equal(object.topology.badEdgeCount, 0, `${label} should not have bad edges`);
-    assert.equal(object.topology.boundaryEdgeCount, 0, `${label} should not have boundary edges`);
-    assert.equal(object.topology.overusedEdgeCount, 0, `${label} should not have overused edges`);
+    assert.equal(object.topology.badEdgeCount, 0, topologyMessage);
+    assert.equal(object.topology.boundaryEdgeCount, 0, topologyMessage);
+    assert.equal(object.topology.overusedEdgeCount, 0, topologyMessage);
 }
 
 function assertStlLayerIsManifold(mesh: MeshData, label: string) {
@@ -648,9 +1150,7 @@ function parseAssemblyComponentIds(assemblyBody: string): string[] {
 }
 
 function parseBuildItemObjectIds(modelXml: string): string[] {
-    return Array.from(modelXml.matchAll(/<item\b[^>]*objectid="(\d+)"/g)).map(
-        (match) => match[1]
-    );
+    return Array.from(modelXml.matchAll(/<item\b[^>]*objectid="(\d+)"/g)).map((match) => match[1]);
 }
 
 function parseModelSettingsPartIds(modelSettingsXml: string): string[] {
@@ -693,7 +1193,9 @@ function assertLayerObjectCounts(
 ) {
     const resourceObjects = parseResourceObjects(archive.modelXml);
     const meshObjects = parseMeshObjects(archive.modelXml);
-    const assemblyObjects = resourceObjects.filter((object) => object.body.includes('<components>'));
+    const assemblyObjects = resourceObjects.filter((object) =>
+        object.body.includes('<components>')
+    );
     const meshObjectIds = meshObjects.map((object) => object.id);
 
     assert.equal(
@@ -701,11 +1203,7 @@ function assertLayerObjectCounts(
         expectedGeneratedLayers,
         `${label} should export one mesh object per generated layer`
     );
-    assert.equal(
-        assemblyObjects.length,
-        1,
-        `${label} should contain exactly one assembly object`
-    );
+    assert.equal(assemblyObjects.length, 1, `${label} should contain exactly one assembly object`);
     assert.equal(
         resourceObjects.length,
         expectedGeneratedLayers + 1,
@@ -977,7 +1475,13 @@ test('STL compact heightfield stays manifold for the large JPG 4-color stack', a
         );
 
         topZ += thickness;
-        const mesh = await buildLayer(mask, thickness, topZ - thickness, pixelSize, generateGreedyMesh);
+        const mesh = await buildLayer(
+            mask,
+            thickness,
+            topZ - thickness,
+            pixelSize,
+            generateGreedyMesh
+        );
         root.add(
             createCompactExportLayer(
                 mesh,
@@ -1212,6 +1716,53 @@ test('3MF export keeps image fixture smooth meshes manifold', async () => {
     }
 });
 
+test('3MF export keeps the 8-color auto-paint logo regression manifold', async () => {
+    const stack = await buildAutoPaintLogoRegressionStack(
+        current8NonmanifoldProfile,
+        1024,
+        1778927544702
+    );
+
+    assert.ok(
+        stack.generatedLayerCount >= current8NonmanifoldProfile.filaments.length,
+        'auto-paint regression should generate a repeated-swap layer stack'
+    );
+    assert.equal(
+        stack.generatedLayerCount,
+        stack.filamentColors.length,
+        'auto-paint regression should track one physical filament color per mesh'
+    );
+
+    const archive = await exportArchiveXml(stack.root, {
+        firstLayerHeight: 0.16,
+        layerHeight: 0.08,
+        layerFilamentColors: stack.filamentColors,
+    });
+    const objects = parseMeshObjects(archive.modelXml);
+
+    assertLayerObjectCounts(
+        archive,
+        stack.generatedLayerCount,
+        '8-color auto-paint logo regression'
+    );
+    assertPhysicalFilamentColorResources(
+        archive,
+        stack.filamentColors,
+        '8-color auto-paint logo regression'
+    );
+
+    for (const [index, object] of objects.entries()) {
+        assertRawExportObjectIsManifold(
+            object,
+            `8-color auto-paint logo regression 3MF layer ${index + 1}`
+        );
+        assertExportLayerHasOutwardNormals(
+            object.mesh,
+            `8-color auto-paint logo regression 3MF layer ${index + 1}`
+        );
+    }
+});
+
 test('3MF export object counts match generated fixture layers', async (t: TestContext) => {
     await t.test('8-color profile logo stack exports every generated layer', async () => {
         const logoMask = maskFromPngAlpha(logoFixturePath, 72);
@@ -1234,134 +1785,137 @@ test('3MF export object counts match generated fixture layers', async (t: TestCo
             layerFilamentColors: stack.filamentColors,
         });
 
-        assertLayerObjectCounts(
-            archive,
-            stack.generatedLayerCount,
-            '8-color profile logo stack'
-        );
-        assert.deepEqual(parseBaseMaterialColors(archive.modelXml), profileMaterialHexes(current8Profile));
-    });
-
-    await t.test('large JPG threshold stack keeps one object per generated smooth layer', async () => {
-        const thresholds = [96, 112, 128, 144];
-        const filamentColors = profileColors(gh27Profile);
-        const layerSpecs: FixtureLayerSpec[] = thresholds.map((threshold, layer) => {
-            const mask = maskFromJpegLuminance(largeIssueFixturePath, 64, threshold);
-
-            assert.ok(mask.activeCount > 0, `threshold ${threshold} should generate pixels`);
-            assert.ok(
-                mask.activeCount < mask.width * mask.height,
-                `threshold ${threshold} should not cover the whole fixture`
-            );
-
-            return {
-                mask,
-                thickness: layer === 0 ? 0.12 : 0.08,
-                color: hexToMaterialColor(filamentColors[layer]),
-                filamentColor: filamentColors[layer],
-            };
-        });
-        const stack = await buildFixtureLayerStack(layerSpecs, 0.36, generateSmoothMesh);
-
-        assert.equal(stack.generatedLayerCount, layerSpecs.length);
-
-        const archive = await exportArchiveXml(stack.root, {
-            firstLayerHeight: 0.12,
-            layerHeight: 0.08,
-            layerFilamentColors: stack.filamentColors,
-        });
-
-        assertLayerObjectCounts(archive, stack.generatedLayerCount, 'large JPG threshold stack');
+        assertLayerObjectCounts(archive, stack.generatedLayerCount, '8-color profile logo stack');
         assert.deepEqual(
             parseBaseMaterialColors(archive.modelXml),
-            profileMaterialHexes(gh27Profile)
+            profileMaterialHexes(current8Profile)
         );
     });
+
+    await t.test(
+        'large JPG threshold stack keeps one object per generated smooth layer',
+        async () => {
+            const thresholds = [96, 112, 128, 144];
+            const filamentColors = profileColors(gh27Profile);
+            const layerSpecs: FixtureLayerSpec[] = thresholds.map((threshold, layer) => {
+                const mask = maskFromJpegLuminance(largeIssueFixturePath, 64, threshold);
+
+                assert.ok(mask.activeCount > 0, `threshold ${threshold} should generate pixels`);
+                assert.ok(
+                    mask.activeCount < mask.width * mask.height,
+                    `threshold ${threshold} should not cover the whole fixture`
+                );
+
+                return {
+                    mask,
+                    thickness: layer === 0 ? 0.12 : 0.08,
+                    color: hexToMaterialColor(filamentColors[layer]),
+                    filamentColor: filamentColors[layer],
+                };
+            });
+            const stack = await buildFixtureLayerStack(layerSpecs, 0.36, generateSmoothMesh);
+
+            assert.equal(stack.generatedLayerCount, layerSpecs.length);
+
+            const archive = await exportArchiveXml(stack.root, {
+                firstLayerHeight: 0.12,
+                layerHeight: 0.08,
+                layerFilamentColors: stack.filamentColors,
+            });
+
+            assertLayerObjectCounts(
+                archive,
+                stack.generatedLayerCount,
+                'large JPG threshold stack'
+            );
+            assert.deepEqual(
+                parseBaseMaterialColors(archive.modelXml),
+                profileMaterialHexes(gh27Profile)
+            );
+        }
+    );
 });
 
-test(
-    '3MF and STL exports stay manifold across image fixtures and filament profiles',
-    async (t: TestContext) => {
-        for (const imageFixture of exportTopologyImageFixtures) {
-            for (const profile of filamentProfileFixtures) {
-                for (const mesher of exportTopologyMeshers) {
-                    await t.test(
-                        `${imageFixture.name} / ${profile.name} / ${mesher.name}`,
-                        async () => {
-                            const layerSpecs = buildProfileImageLayerSpecs(imageFixture, profile);
-                            const stack = await buildFixtureLayerStack(
-                                layerSpecs,
-                                imageFixture.pixelSize,
-                                mesher.generate
+test('3MF and STL exports stay manifold across image fixtures and filament profiles', async (t: TestContext) => {
+    for (const imageFixture of exportTopologyImageFixtures) {
+        for (const profile of filamentProfileFixtures) {
+            for (const mesher of exportTopologyMeshers) {
+                await t.test(
+                    `${imageFixture.name} / ${profile.name} / ${mesher.name}`,
+                    async () => {
+                        const layerSpecs = buildProfileImageLayerSpecs(imageFixture, profile);
+                        const stack = await buildFixtureLayerStack(
+                            layerSpecs,
+                            imageFixture.pixelSize,
+                            mesher.generate
+                        );
+
+                        assert.equal(
+                            stack.generatedLayerCount,
+                            profile.filaments.length,
+                            `${imageFixture.name} ${profile.name} should generate one layer per filament`
+                        );
+
+                        const archive = await exportArchiveXml(stack.root, {
+                            firstLayerHeight: 0.16,
+                            layerHeight: 0.08,
+                            layerFilamentColors: stack.filamentColors,
+                        });
+                        const objects = parseMeshObjects(archive.modelXml);
+
+                        assertLayerObjectCounts(
+                            archive,
+                            stack.generatedLayerCount,
+                            `${imageFixture.name} ${profile.name} ${mesher.name} 3MF`
+                        );
+                        assertPhysicalFilamentColorResources(
+                            archive,
+                            stack.filamentColors,
+                            `${imageFixture.name} ${profile.name} ${mesher.name} 3MF`
+                        );
+
+                        for (const [index, object] of objects.entries()) {
+                            assertRawExportObjectIsManifold(
+                                object,
+                                `${imageFixture.name} ${profile.name} ${mesher.name} 3MF layer ${
+                                    index + 1
+                                }`
                             );
-
-                            assert.equal(
-                                stack.generatedLayerCount,
-                                profile.filaments.length,
-                                `${imageFixture.name} ${profile.name} should generate one layer per filament`
+                            assertExportLayerHasOutwardNormals(
+                                object.mesh,
+                                `${imageFixture.name} ${profile.name} ${mesher.name} 3MF layer ${
+                                    index + 1
+                                }`
                             );
-
-                            const archive = await exportArchiveXml(stack.root, {
-                                firstLayerHeight: 0.16,
-                                layerHeight: 0.08,
-                                layerFilamentColors: stack.filamentColors,
-                            });
-                            const objects = parseMeshObjects(archive.modelXml);
-
-                            assertLayerObjectCounts(
-                                archive,
-                                stack.generatedLayerCount,
-                                `${imageFixture.name} ${profile.name} ${mesher.name} 3MF`
-                            );
-                            assertPhysicalFilamentColorResources(
-                                archive,
-                                stack.filamentColors,
-                                `${imageFixture.name} ${profile.name} ${mesher.name} 3MF`
-                            );
-
-                            for (const [index, object] of objects.entries()) {
-                                assertRawExportObjectIsManifold(
-                                    object,
-                                    `${imageFixture.name} ${profile.name} ${mesher.name} 3MF layer ${
-                                        index + 1
-                                    }`
-                                );
-                                assertExportLayerHasOutwardNormals(
-                                    object.mesh,
-                                    `${imageFixture.name} ${profile.name} ${mesher.name} 3MF layer ${
-                                        index + 1
-                                    }`
-                                );
-                            }
-
-                            const stlLayerMeshes = await exportStlLayerMeshes(stack.root);
-                            assert.equal(
-                                stlLayerMeshes.length,
-                                stack.generatedLayerCount,
-                                `${imageFixture.name} ${profile.name} ${mesher.name} STL should include every generated layer`
-                            );
-
-                            for (const [index, mesh] of stlLayerMeshes.entries()) {
-                                assertStlLayerIsManifold(
-                                    mesh,
-                                    `${imageFixture.name} ${profile.name} ${mesher.name} STL layer ${
-                                        index + 1
-                                    }`
-                                );
-                                assertExportLayerHasOutwardNormals(
-                                    mesh,
-                                    `${imageFixture.name} ${profile.name} ${mesher.name} STL layer ${
-                                        index + 1
-                                    }`
-                                );
-                            }
                         }
-                    );
-                }
+
+                        const stlLayerMeshes = await exportStlLayerMeshes(stack.root);
+                        assert.equal(
+                            stlLayerMeshes.length,
+                            stack.generatedLayerCount,
+                            `${imageFixture.name} ${profile.name} ${mesher.name} STL should include every generated layer`
+                        );
+
+                        for (const [index, mesh] of stlLayerMeshes.entries()) {
+                            assertStlLayerIsManifold(
+                                mesh,
+                                `${imageFixture.name} ${profile.name} ${mesher.name} STL layer ${
+                                    index + 1
+                                }`
+                            );
+                            assertExportLayerHasOutwardNormals(
+                                mesh,
+                                `${imageFixture.name} ${profile.name} ${mesher.name} STL layer ${
+                                    index + 1
+                                }`
+                            );
+                        }
+                    }
+                );
             }
         }
     }
-);
+});
 
 test('3MF export keeps many smooth layers bounded to layer count', async () => {
     const layerCount = 16;
