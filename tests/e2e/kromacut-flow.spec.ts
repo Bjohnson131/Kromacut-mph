@@ -454,7 +454,7 @@ async function exportModel(
 
         const [download] = await Promise.all([
             page.waitForEvent('download', { timeout }),
-            page.getByTestId(buttonTestId).click(),
+            page.getByTestId(buttonTestId).click({ noWaitAfter: true }),
         ]);
 
         const downloadPath = await download.path();
@@ -513,7 +513,16 @@ async function openDownloadMenu(page: Page, expectedItemTestId: string) {
     await expect(trigger).toBeEnabled();
 
     for (let attempt = 0; attempt < 3; attempt++) {
-        await trigger.click({ force: attempt > 0 });
+        await trigger.evaluate((element: HTMLElement) => {
+            element.scrollIntoView({ block: 'center', inline: 'center' });
+        });
+        try {
+            await trigger.click({ force: attempt > 0, noWaitAfter: true, timeout: 10_000 });
+        } catch {
+            // Large stress scenes can keep Chromium busy enough that Playwright's
+            // auto-scroll click times out after the trigger is already visible.
+            await trigger.evaluate((element: HTMLElement) => element.click());
+        }
 
         if (await expectedItem.isVisible({ timeout: 2000 }).catch(() => false)) {
             return;
