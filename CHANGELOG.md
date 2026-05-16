@@ -17,7 +17,7 @@ All notable changes to Kromacut are documented in this file.
 
 ### Changed
 
-- **3D preview lighting** - Reworked the 3D view shading to use flat face normals with balanced directional lighting, reducing fake shadow bands on flat meshed surfaces while keeping more model depth than the unlit preview
+- **3D preview lighting** - Reworked the 3D view shading to use flat face normals with balanced directional fill lighting, reducing fake shadow bands on flat meshed surfaces while keeping model depth and saturated filament colors readable
 - **Export memory shape** - STL export now writes chunked binary parts instead of one huge contiguous buffer, and 3MF export now uses flat coordinate storage, typed triangle chunks, and chunked XML joins to reduce peak browser memory during large exports
 - **STL export size** - Browser-generated STL exports now reuse Kromacut layer-mask metadata to write an exact fused heightfield surface where possible, avoiding internal layer faces while preserving a manifold printable shell
 - **3MF package size** - 3MF exports now use DEFLATE compression to reduce generated archive size

@@ -23,7 +23,7 @@ export function useThreeScene(
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         renderer.setSize(el.clientWidth, el.clientHeight);
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        renderer.toneMappingExposure = 1.35;
+        renderer.toneMappingExposure = 1.28;
         renderer.outputColorSpace = THREE.SRGBColorSpace;
         el.appendChild(renderer.domElement);
         rendererRef.current = renderer;
@@ -43,14 +43,25 @@ export function useThreeScene(
         controls.dampingFactor = 0.08;
         controlsRef.current = controls;
 
-        // Balanced preview lights. Materials use flat shading so flat surfaces stay flat,
-        // while side faces still get enough light direction to show model depth.
-        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x7d8490, 0.9);
+        // Balanced preview lights. Mesh geometry/export data is untouched; directional
+        // fill keeps dark faces readable without bleaching saturated filament colors.
+        const ambient = new THREE.AmbientLight(0xffffff, 0.18);
+        scene.add(ambient);
+
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x657080, 0.85);
         scene.add(hemiLight);
 
-        const key = new THREE.DirectionalLight(0xffffff, 1.8);
-        key.position.set(2, 3, 1);
+        const key = new THREE.DirectionalLight(0xffffff, 1.55);
+        key.position.set(2, 3, 2);
         scene.add(key);
+
+        const fill = new THREE.DirectionalLight(0xe6efff, 0.75);
+        fill.position.set(-3, 2.2, 2.5);
+        scene.add(fill);
+
+        const rim = new THREE.DirectionalLight(0xffffff, 0.25);
+        rim.position.set(0, 3, -4);
+        scene.add(rim);
 
         // Container for the model parts
         const modelGroup = new THREE.Group();
