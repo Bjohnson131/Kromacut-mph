@@ -13,6 +13,7 @@ All notable changes to Kromacut are documented in this file.
 - **Final export manifold tests** - Added 3MF and STL topology checks across both image fixtures, all saved filament profiles, and both greedy and smooth meshers to catch boundary edges, non-manifold edges, and inverted normals after export serialization
 - **Progress regression tests** - Added coverage for quantize, dedither, 3D model build, large-mesh 3MF/STL export, and image algorithm progress callbacks so progress percentages advance through their real work stages without going backwards
 - **Browser export flow tests** - Added Playwright coverage for the normal image-to-print flow across quantization, dedither, auto-paint profiles, 3D mesh builds, STL downloads, 3MF downloads, export timing, browser memory samples, STL triangle counts, compact heightfield quad breakdowns, strict preview port handling, and auto-paint worker settling
+- **Layer preview filament bar** - Added physical filament color segments, swap hover details, and a lower trim handle to the 3D layer preview bar
 
 ### Changed
 

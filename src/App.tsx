@@ -531,6 +531,11 @@ function App(): React.ReactElement | null {
                                         colorSliceHeights={threeDState.colorSliceHeights}
                                         colorOrder={threeDState.colorOrder}
                                         swatches={threeDState.filteredSwatches}
+                                        filamentSwatches={
+                                            threeDState.paintMode === 'autopaint'
+                                                ? threeDState.autoPaintFilamentSwatches
+                                                : undefined
+                                        }
                                         pixelSize={threeDState.pixelSize}
                                         rebuildSignal={threeDBuildSignal}
                                         autoPaintEnabled={threeDState.paintMode === 'autopaint'}
