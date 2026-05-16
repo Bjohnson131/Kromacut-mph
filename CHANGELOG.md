@@ -39,6 +39,7 @@ All notable changes to Kromacut are documented in this file.
 - **Print setting decimal inputs** - Pixel size, layer height, and first-layer height fields now allow partial decimal edits like `0` and `0.` before committing or clamping to valid print settings
 - **Progress step feedback** - Long-running overlays now show separate overall and current-step progress bars across quantization, dedither passes, mesh generation, STL export, and 3MF export; exports also give the browser a frame to render the overlay before heavy work starts and keep very fast exports visible briefly
 - **Compact STL topology** - Fused heightfield STL exports now triangulate conforming surface boundaries and repair diagonal corner contacts, preventing non-manifold edges in large 4-color image stacks
+- **Layer preview exports** - STL and 3MF exports now include every generated physical layer regardless of the 3D preview trim range, preserving complete models and correct filament color mapping
 
 ## v2.5.0 - 2026-05-03
 
