@@ -64,14 +64,14 @@ export async function exportObjectTo3MFBlob(
 </Relationships>`;
     zip.folder('_rels')?.file('.rels', rels);
 
-    // Collect visible meshes. Each preview layer should already be one manifold mesh,
-    // so each visible mesh maps directly to one 3MF object.
+    // Collect generated meshes. Preview range controls may hide layers in the scene,
+    // but exports must still include every generated physical layer.
     const meshes: THREE.Mesh[] = [];
     root.updateMatrixWorld(true);
     root.traverse((obj) => {
         if ((obj as THREE.Mesh).isMesh) {
             const m = obj as THREE.Mesh;
-            if (m.geometry && m.visible) {
+            if (m.geometry) {
                 meshes.push(m);
             }
         }

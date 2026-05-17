@@ -1095,13 +1095,14 @@ export async function exportObjectToStlBlob(
     root: THREE.Object3D,
     onProgress?: (p: number) => void
 ): Promise<Blob> {
-    // 1. Collect all meshes
+    // 1. Collect all generated meshes. Preview range controls may hide layers in the scene,
+    // but exports must still include every generated physical layer.
     const meshes: THREE.Mesh[] = [];
     root.updateMatrixWorld(true);
     root.traverse((obj) => {
         if ((obj as THREE.Mesh).isMesh) {
             const m = obj as THREE.Mesh;
-            if (m.geometry && m.visible) {
+            if (m.geometry) {
                 meshes.push(m);
             }
         }

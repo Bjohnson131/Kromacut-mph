@@ -1382,7 +1382,7 @@ function buildProfileImageLayerSpecs(
     }));
 }
 
-test('3MF export keeps visible meshes as separate layer objects', async () => {
+test('3MF export keeps generated meshes as separate layer objects', async () => {
     const root = new THREE.Group();
     root.add(createLayerMesh(createSharedCubeGeometry().toNonIndexed(), 0xff0000));
     root.add(createLayerMesh(createSharedCubeGeometry().toNonIndexed(), 0x00ff00));
@@ -1392,6 +1392,37 @@ test('3MF export keeps visible meshes as separate layer objects', async () => {
     assert.deepEqual(
         objects.map((object) => object.name),
         ['Layer 1 (#FF0000)', 'Layer 2 (#00FF00)']
+    );
+});
+
+test('exports include preview-hidden layers with their original filament colors', async () => {
+    const root = new THREE.Group();
+    const first = createLayerMesh(createSharedCubeGeometry(), 0xff0000);
+    const hiddenMiddle = createLayerMesh(createSharedCubeGeometry(), 0x00ff00);
+    const last = createLayerMesh(createSharedCubeGeometry(), 0x0000ff);
+    const filamentColors = ['#111111', '#222222', '#333333'];
+
+    hiddenMiddle.visible = false;
+    root.add(first, hiddenMiddle, last);
+
+    const archive = await exportArchiveXml(root, {
+        layerFilamentColors: filamentColors,
+    });
+    const objects = parseMeshObjects(archive.modelXml);
+
+    assert.equal(objects.length, 3, '3MF should include preview-hidden generated layers');
+    assert.deepEqual(parseBaseMaterialColors(archive.modelXml), ['111111', '222222', '333333']);
+    assert.deepEqual(
+        objects.map((object) => object.materialIndex),
+        [0, 1, 2],
+        '3MF layer colors should keep original layer indices when some layers are hidden'
+    );
+
+    const exportedStl = await parseSingleBinaryStlMesh(await exportObjectToStlBlob(root));
+    assert.equal(
+        exportedStl.triangleCount,
+        36,
+        'STL should include all generated cube layers, including the hidden preview layer'
     );
 });
 
