@@ -21,13 +21,15 @@ import PreviewActions from './components/PreviewActions';
 import { useDropzone } from './hooks/useDropzone';
 import { exportObjectToStlBlob } from './lib/exportStl';
 import { exportObjectTo3MFBlob } from './lib/export3mf';
-import { useAppHandlers } from './hooks/useAppHandlers';
+import { useAppHandlers, type ExportProgressStep } from './hooks/useAppHandlers';
 import { useProcessingState } from './hooks/useProcessingState';
 import { useBuildWarning } from './hooks/useBuildWarning';
+import { clampProgress } from './lib/progress';
 import ResizableSplitter from './components/ResizableSplitter';
 import { ControlsPanel } from './components/ControlsPanel';
 import { usePaletteManager } from './hooks/usePaletteManager';
 import { UpdateChecker } from './components/UpdateChecker';
+import ProgressOverlay from './components/ProgressOverlay';
 import {
     AlertDialog,
     AlertDialogContent,
@@ -41,6 +43,24 @@ import {
 // ...existing imports
 
 const AUTOPAINT_STORAGE_KEY = 'kromacut.autopaint.v1';
+
+function progressStepName(label: string) {
+    const stepName = label.replace(/\.+$/, '').trim();
+    if (/dedither/i.test(stepName)) return 'Dedithering';
+    if (/quantiz/i.test(stepName)) return 'Quantizing colors';
+    return stepName || 'Processing';
+}
+
+function progressOperationTitle() {
+    return 'Processing image';
+}
+
+interface ProcessingStepState {
+    stepIndex: number;
+    stepCount: number;
+    label?: string;
+    stepProgress?: number;
+}
 
 type AutoPaintPersisted = Pick<
     ThreeDControlsStateShape,
@@ -138,6 +158,10 @@ function App(): React.ReactElement | null {
         processingIndeterminate,
         setProcessingIndeterminate,
     } = useProcessingState();
+    const [processingStep, setProcessingStep] = useState<ProcessingStepState>({
+        stepIndex: 1,
+        stepCount: 1,
+    });
     const { applyQuantize } = useQuantize({
         algorithm,
         weight,
@@ -151,8 +175,9 @@ function App(): React.ReactElement | null {
         },
         onImmediateSwatches: (colors: SwatchEntry[]) => immediateOverride(colors),
         onProgress: (value) => {
-            setProcessingProgress((prev) => (value > prev ? value : prev));
+            setProcessingProgress(clampProgress(value));
         },
+        onStepChange: setProcessingStep,
         onStage: (stage) => {
             if (stage === 'final') {
                 setProcessingIndeterminate(false);
@@ -168,6 +193,12 @@ function App(): React.ReactElement | null {
     const [mode, setMode] = useState<'2d' | '3d'>('2d');
     const [exportingSTL, setExportingSTL] = useState(false);
     const [exportProgress, setExportProgress] = useState(0); // 0..1
+    const [exportStep, setExportStep] = useState<ExportProgressStep>({
+        title: 'Exporting model',
+        stepLabel: 'Preparing export',
+        stepIndex: 1,
+        stepCount: 1,
+    });
     // 3D printing shared state
     const {
         threeDState,
@@ -274,9 +305,10 @@ function App(): React.ReactElement | null {
             setImage,
             setExportingSTL,
             setExportProgress,
+            setExportStep,
             exportingSTL,
             exportObjectToStlBlob,
-            exportObjectTo3MFBlob: (obj, onProgress) =>
+            exportObjectTo3MFBlob: (obj, onProgress, onZipProgress) =>
                 exportObjectTo3MFBlob(obj, {
                     layerHeight: threeDState.layerHeight,
                     firstLayerHeight: threeDState.slicerFirstLayerHeight,
@@ -285,6 +317,7 @@ function App(): React.ReactElement | null {
                             ? threeDState.autoPaintFilamentSwatches?.map((s) => s.hex)
                             : undefined,
                     onProgress,
+                    onZipProgress,
                 }),
             applyQuantize,
             swatches,
@@ -311,6 +344,7 @@ function App(): React.ReactElement | null {
                                         ref={inputRef}
                                         type="file"
                                         accept="image/*"
+                                        data-testid="image-file-input"
                                         onChange={(e) => {
                                             if (e.target.files && e.target.files[0])
                                                 handleFiles(e.target.files[0]);
@@ -357,14 +391,19 @@ function App(): React.ReactElement | null {
                                                 setIsDedithering(working);
                                                 if (working) {
                                                     setProcessingLabel('Dedithering...');
+                                                    setProcessingStep({
+                                                        stepIndex: 1,
+                                                        stepCount: 1,
+                                                        label: 'Dedithering pass 1',
+                                                        stepProgress: 0,
+                                                    });
                                                     setProcessingProgress(0);
                                                     setProcessingIndeterminate(false);
                                                 }
                                             }}
+                                            onStepChange={setProcessingStep}
                                             onProgress={(value) => {
-                                                setProcessingProgress((prev) =>
-                                                    value > prev ? value : prev
-                                                );
+                                                setProcessingProgress(clampProgress(value));
                                             }}
                                         />
                                         <ControlsPanel
@@ -386,6 +425,12 @@ function App(): React.ReactElement | null {
                                                 if (isQuantizing) return;
                                                 setIsQuantizing(true);
                                                 setProcessingLabel('Quantizing...');
+                                                setProcessingStep({
+                                                    stepIndex: 1,
+                                                    stepCount: 5,
+                                                    label: 'Loading image data',
+                                                    stepProgress: 0,
+                                                });
                                                 setProcessingProgress(0);
                                                 setProcessingIndeterminate(false);
                                                 await new Promise((r) => requestAnimationFrame(r));
@@ -461,43 +506,20 @@ function App(): React.ReactElement | null {
                                         adjustments={adjustments}
                                         onCropSelectionChange={setHasValidCropSelection}
                                     />
-                                    {processingActive &&
-                                        (() => {
-                                            const progressPct = Math.max(
-                                                0,
-                                                Math.min(100, Math.round(processingProgress * 100))
-                                            );
-                                            const showPercent = !processingIndeterminate;
-                                            const barWidth = showPercent
-                                                ? `${progressPct}%`
-                                                : '100%';
-                                            return (
-                                                <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm cursor-wait">
-                                                    <div className="w-[260px] rounded-xl border border-border/60 bg-background/90 shadow-lg px-4 py-3">
-                                                        <div className="text-sm font-semibold text-foreground">
-                                                            {processingLabel || 'Processing...'}
-                                                        </div>
-                                                        <div className="mt-1 text-xs text-muted-foreground">
-                                                            {showPercent
-                                                                ? `${progressPct}%`
-                                                                : 'Working...'}
-                                                        </div>
-                                                        <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                                                            <div
-                                                                className={`h-2 rounded-full bg-primary ${
-                                                                    showPercent
-                                                                        ? 'transition-[width] duration-150'
-                                                                        : 'animate-pulse'
-                                                                }`}
-                                                                style={{
-                                                                    width: barWidth,
-                                                                }}
-                                                            />
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })()}
+                                    {processingActive && (
+                                        <ProgressOverlay
+                                            title={progressOperationTitle()}
+                                            stepLabel={
+                                                processingStep.label ??
+                                                progressStepName(processingLabel)
+                                            }
+                                            stepIndex={processingStep.stepIndex}
+                                            stepCount={processingStep.stepCount}
+                                            stepProgress={processingStep.stepProgress}
+                                            progress={processingProgress}
+                                            indeterminate={processingIndeterminate}
+                                        />
+                                    )}
                                 </>
                             ) : (
                                 <>
@@ -509,6 +531,11 @@ function App(): React.ReactElement | null {
                                         colorSliceHeights={threeDState.colorSliceHeights}
                                         colorOrder={threeDState.colorOrder}
                                         swatches={threeDState.filteredSwatches}
+                                        filamentSwatches={
+                                            threeDState.paintMode === 'autopaint'
+                                                ? threeDState.autoPaintFilamentSwatches
+                                                : undefined
+                                        }
                                         pixelSize={threeDState.pixelSize}
                                         rebuildSignal={threeDBuildSignal}
                                         autoPaintEnabled={threeDState.paintMode === 'autopaint'}
@@ -523,36 +550,17 @@ function App(): React.ReactElement | null {
                                         ditherLineWidth={threeDState.ditherLineWidth}
                                         smoothMeshing={threeDState.smoothMeshing}
                                     />
-                                    {exportingSTL &&
-                                        (() => {
-                                            const pct = Math.max(
-                                                0,
-                                                Math.min(100, Math.round(exportProgress * 100))
-                                            );
-                                            const hasProgress = exportProgress > 0;
-                                            return (
-                                                <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm cursor-wait">
-                                                    <div className="w-[260px] rounded-xl border border-border/60 bg-background/90 shadow-lg px-4 py-3">
-                                                        <div className="text-sm font-semibold text-foreground">
-                                                            Exporting model...
-                                                        </div>
-                                                        <div className="mt-1 text-xs text-muted-foreground">
-                                                            {hasProgress ? `${pct}%` : 'Working...'}
-                                                        </div>
-                                                        <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                                                            <div
-                                                                className={`h-2 rounded-full bg-primary ${hasProgress ? 'transition-[width] duration-150' : 'animate-pulse'}`}
-                                                                style={{
-                                                                    width: hasProgress
-                                                                        ? `${pct}%`
-                                                                        : '100%',
-                                                                }}
-                                                            />
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })()}
+                                    {exportingSTL && (
+                                        <ProgressOverlay
+                                            title={exportStep.title}
+                                            stepLabel={exportStep.stepLabel}
+                                            stepIndex={exportStep.stepIndex}
+                                            stepCount={exportStep.stepCount}
+                                            stepProgress={exportStep.stepProgress}
+                                            progress={exportProgress}
+                                            indeterminate={exportProgress <= 0}
+                                        />
+                                    )}
                                 </>
                             )}
                             <PreviewActions

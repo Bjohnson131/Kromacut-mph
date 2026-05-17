@@ -5,12 +5,12 @@
  * optimizer (exhaustive / SA / GA) never blocks the main thread.
  *
  * Features:
- * - Automatic cancellation: a new request obsoletes any in-flight one.
- * - Loading state for UI feedback.
- * - Lazy worker instantiation (created on first real request).
+ * - Automatic cancellation: new inputs terminate stale in-flight worker work.
+ * - Loading and error state for UI feedback.
+ * - Lazy worker instantiation.
  */
 
-import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AutoPaintResult } from '../lib/autoPaint';
 import type { Filament } from '../types';
 import type {
@@ -36,6 +36,7 @@ export interface UseAutoPaintWorkerOptions {
 export interface UseAutoPaintWorkerResult {
     autoPaintResult: AutoPaintResult | undefined;
     isComputing: boolean;
+    error?: string;
 }
 
 let nextRequestId = 1;
@@ -60,18 +61,46 @@ export function useAutoPaintWorker(
 
     const [autoPaintResult, setAutoPaintResult] = useState<AutoPaintResult | undefined>(undefined);
     const [isComputing, setIsComputing] = useState(false);
+    const [error, setError] = useState<string | undefined>(undefined);
 
     const workerRef = useRef<Worker | null>(null);
     const activeRequestIdRef = useRef<number>(0);
-    const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Stabilize filaments and filtered with content-based keys
+    const clearTimers = useCallback(() => {
+        if (debounceTimerRef.current) {
+            clearTimeout(debounceTimerRef.current);
+            debounceTimerRef.current = null;
+        }
+    }, []);
+
+    const cancelWorker = useCallback(() => {
+        workerRef.current?.terminate();
+        workerRef.current = null;
+    }, []);
+
+    const finishRequest = useCallback(
+        (id: number, nextError?: string, result?: AutoPaintResult) => {
+            if (id !== activeRequestIdRef.current) return;
+
+            activeRequestIdRef.current = 0;
+            setIsComputing(false);
+            setError(nextError);
+
+            if (nextError) {
+                console.error('[autoPaintWorker] error:', nextError);
+                setAutoPaintResult(undefined);
+            } else {
+                setAutoPaintResult(result);
+            }
+        },
+        []
+    );
+
+    // Stabilize filaments and filtered with content-based keys.
     const filamentsKey = useMemo(() => {
         return filaments
-            .map(
-                (f) =>
-                    `${f.id}:${f.color}:${f.td}:${JSON.stringify(f.calibration ?? null)}`
-            )
+            .map((f) => `${f.id}:${f.color}:${f.td}:${JSON.stringify(f.calibration ?? null)}`)
             .join(';');
     }, [filaments]);
 
@@ -91,88 +120,103 @@ export function useAutoPaintWorker(
         [filteredKey]
     );
 
-    // Create the worker lazily on first need.
     const getWorker = useCallback(() => {
         if (!workerRef.current) {
             workerRef.current = new Worker(
                 new URL('../workers/autoPaint.worker.ts', import.meta.url),
                 { type: 'module' }
             );
+
             workerRef.current.onmessage = (e: MessageEvent<AutoPaintWorkerResponse>) => {
                 const resp = e.data;
-                // Ignore stale responses from obsoleted requests.
                 if (resp.id !== activeRequestIdRef.current) return;
 
                 if (resp.error) {
-                    console.error('[autoPaintWorker] error:', resp.error);
+                    finishRequest(resp.id, resp.error);
                 } else {
-                    setAutoPaintResult(resp.result);
+                    finishRequest(resp.id, undefined, resp.result);
                 }
-                setIsComputing(false);
             };
+
             workerRef.current.onerror = (err) => {
-                console.error('[autoPaintWorker] worker error:', err);
-                setIsComputing(false);
+                const id = activeRequestIdRef.current;
+                cancelWorker();
+                finishRequest(id, err.message || 'Auto-paint worker failed');
+            };
+
+            workerRef.current.onmessageerror = () => {
+                const id = activeRequestIdRef.current;
+                cancelWorker();
+                finishRequest(id, 'Auto-paint worker returned an unreadable result');
             };
         }
-        return workerRef.current;
-    }, []);
 
-    // Terminate worker on unmount.
+        return workerRef.current;
+    }, [cancelWorker, finishRequest]);
+
     useEffect(() => {
         return () => {
-            if (debounceTimerRef.current) {
-                clearTimeout(debounceTimerRef.current);
-            }
-            workerRef.current?.terminate();
-            workerRef.current = null;
+            clearTimers();
+            cancelWorker();
         };
-    }, []);
+    }, [cancelWorker, clearTimers]);
 
-    // Dispatch computation whenever inputs change (with debouncing).
     useEffect(() => {
-        // Clear any pending computation
-        if (debounceTimerRef.current) {
-            clearTimeout(debounceTimerRef.current);
-            debounceTimerRef.current = null;
-        }
+        clearTimers();
 
-        // Not in autopaint mode — clear result.
         if (paintMode !== 'autopaint' || filaments.length === 0 || filtered.length === 0) {
+            activeRequestIdRef.current = 0;
+            cancelWorker();
             setAutoPaintResult(undefined);
             setIsComputing(false);
+            setError(undefined);
             return;
         }
 
-        // Debounce computation by 250ms to avoid hammering the worker during slider drags
+        // The worker algorithm is synchronous. Recreate the worker when inputs change so
+        // stale optimizations cannot keep the only worker busy and block the latest request.
+        cancelWorker();
+        const id = nextRequestId++;
+        activeRequestIdRef.current = id;
+        setAutoPaintResult(undefined);
+        setIsComputing(true);
+        setError(undefined);
+
         debounceTimerRef.current = setTimeout(() => {
-            const id = nextRequestId++;
-            activeRequestIdRef.current = id;
-            setIsComputing(true);
+            try {
+                const worker = getWorker();
+                const algorithm =
+                    optimizerAlgorithm === 'exhaustive' && stableFilaments.length > 8
+                        ? 'auto'
+                        : optimizerAlgorithm;
 
-            const worker = getWorker();
+                const request: AutoPaintWorkerRequest = {
+                    id,
+                    filaments: stableFilaments,
+                    imageSwatches: stableImageSwatches,
+                    layerHeight,
+                    firstLayerHeight: slicerFirstLayerHeight,
+                    maxHeight: autoPaintMaxHeight,
+                    enhancedColorMatch,
+                    allowRepeatedSwaps,
+                    optimizerOptions: {
+                        algorithm,
+                        ...(optimizerSeed !== undefined && { seed: optimizerSeed }),
+                    },
+                    regionWeightingMode,
+                    imageDimensions: imageDimensions ?? undefined,
+                };
 
-            const request: AutoPaintWorkerRequest = {
-                id,
-                filaments: stableFilaments,
-                imageSwatches: stableImageSwatches,
-                layerHeight,
-                firstLayerHeight: slicerFirstLayerHeight,
-                maxHeight: autoPaintMaxHeight,
-                enhancedColorMatch,
-                allowRepeatedSwaps,
-                optimizerOptions: {
-                    algorithm: optimizerAlgorithm,
-                    ...(optimizerSeed !== undefined && { seed: optimizerSeed }),
-                },
-                regionWeightingMode,
-                imageDimensions: imageDimensions ?? undefined,
-            };
-
-            worker.postMessage(request);
+                worker.postMessage(request);
+            } catch (postError) {
+                cancelWorker();
+                finishRequest(
+                    id,
+                    postError instanceof Error ? postError.message : String(postError)
+                );
+            }
         }, 250);
 
-        // Cleanup function clears pending timeout
         return () => {
             if (debounceTimerRef.current) {
                 clearTimeout(debounceTimerRef.current);
@@ -181,8 +225,10 @@ export function useAutoPaintWorker(
         };
     }, [
         paintMode,
-        filamentsKey, // Use stable key instead of filaments
-        filteredKey, // Use stable key instead of filtered
+        filaments.length,
+        filamentsKey,
+        filtered.length,
+        filteredKey,
         layerHeight,
         slicerFirstLayerHeight,
         autoPaintMaxHeight,
@@ -195,7 +241,10 @@ export function useAutoPaintWorker(
         getWorker,
         stableFilaments,
         stableImageSwatches,
+        clearTimers,
+        cancelWorker,
+        finishRequest,
     ]);
 
-    return { autoPaintResult, isComputing };
+    return { autoPaintResult, isComputing, error };
 }

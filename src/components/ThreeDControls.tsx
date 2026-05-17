@@ -109,6 +109,12 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         persisted?.regionWeightingMode ?? 'uniform'
     );
 
+    useEffect(() => {
+        if (optimizerAlgorithm === 'exhaustive' && filaments.length > 8) {
+            setOptimizerAlgorithm('auto');
+        }
+    }, [filaments.length, optimizerAlgorithm]);
+
     const handleEnhancedColorMatchChange = useCallback((v: boolean) => {
         setEnhancedColorMatch(v);
         if (!v) {
@@ -167,7 +173,11 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
     }, [resetHeightsToValues]);
 
     // --- Auto-paint (runs in Web Worker to avoid blocking the UI) ---
-    const { autoPaintResult, isComputing: isAutoPaintComputing } = useAutoPaintWorker({
+    const {
+        autoPaintResult,
+        isComputing: isAutoPaintComputing,
+        error: autoPaintError,
+    } = useAutoPaintWorker({
         paintMode,
         filaments,
         filtered,
@@ -278,6 +288,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
             <div className="sticky -top-4 z-20 -mx-4 -mt-4 px-4 pt-4 pb-2 bg-card border-b border-border flex justify-end">
                 <Button
                     onClick={handleApply}
+                    data-testid="build-3d-model"
                     disabled={isAutoPaintComputing}
                     className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold transition-all duration-200 shadow-md hover:shadow-lg active:scale-95 gap-1.5 disabled:opacity-60"
                 >
@@ -353,6 +364,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                     autoPaintResult={autoPaintResult}
                     autoPaintSliceData={autoPaintSliceData}
                     isComputing={isAutoPaintComputing}
+                    error={autoPaintError}
                     calibrationLayerHeight={calibrationLayerHeight}
                     setCalibrationLayerHeight={setCalibrationLayerHeight}
                     filteredCount={filtered.length}

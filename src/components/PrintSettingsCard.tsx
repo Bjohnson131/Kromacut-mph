@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react';
 import { Card } from '@/components/ui/card';
-import { NumberInput } from '@/components/ui/input';
+import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { RotateCcw } from 'lucide-react';
 
@@ -16,6 +17,79 @@ interface PrintSettingsCardProps {
     allDefault?: boolean;
 }
 
+interface DraftNumberInput {
+    value: string;
+    error: string;
+    onChange: (value: string) => void;
+    onFocus: () => void;
+    onBlur: () => void;
+}
+
+function formatDraftNumber(value: number) {
+    if (!Number.isFinite(value)) return '';
+    return Number(value.toFixed(4)).toString();
+}
+
+function parseDraftNumber(value: string) {
+    const normalized = value.trim().replace(',', '.');
+    if (normalized === '' || normalized === '.' || normalized === '-' || normalized === '-.') {
+        return undefined;
+    }
+
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function useDraftNumberInput(
+    value: number,
+    onCommit: (value: number) => void,
+    options: { min: number; max: number }
+): DraftNumberInput {
+    const [draft, setDraft] = useState(() => formatDraftNumber(value));
+    const [focused, setFocused] = useState(false);
+
+    useEffect(() => {
+        if (!focused) {
+            setDraft(formatDraftNumber(value));
+        }
+    }, [focused, value]);
+
+    const parsedDraft = parseDraftNumber(draft);
+    const error =
+        parsedDraft === undefined
+            ? ''
+            : parsedDraft < options.min
+              ? `Minimum value is ${options.min}`
+              : parsedDraft > options.max
+                ? `Maximum value is ${options.max}`
+                : '';
+
+    return {
+        value: draft,
+        error,
+        onChange: (nextDraft) => {
+            setDraft(nextDraft);
+            const parsed = parseDraftNumber(nextDraft);
+            if (parsed !== undefined && parsed >= options.min && parsed <= options.max) {
+                onCommit(parsed);
+            }
+        },
+        onFocus: () => setFocused(true),
+        onBlur: () => {
+            setFocused(false);
+            const parsed = parseDraftNumber(draft);
+            const fallback = Number.isFinite(value) ? value : options.min;
+            const committed =
+                parsed === undefined
+                    ? Math.max(options.min, Math.min(options.max, fallback))
+                    : Math.max(options.min, Math.min(options.max, parsed));
+
+            onCommit(committed);
+            setDraft(formatDraftNumber(committed));
+        },
+    };
+}
+
 export default function PrintSettingsCard({
     layerHeight,
     slicerFirstLayerHeight,
@@ -28,21 +102,22 @@ export default function PrintSettingsCard({
     onReset,
     allDefault = false,
 }: PrintSettingsCardProps) {
-    // Validation helpers
-    const pixelSizeError =
-        pixelSize < 0.01 ? 'Minimum value is 0.01' : pixelSize > 10 ? 'Maximum value is 10' : '';
-    const layerHeightError =
-        layerHeight < 0.01
-            ? 'Minimum value is 0.01'
-            : layerHeight > 10
-              ? 'Maximum value is 10'
-              : '';
-    const firstLayerHeightError =
-        slicerFirstLayerHeight < 0
-            ? 'Minimum value is 0'
-            : slicerFirstLayerHeight > 10
-              ? 'Maximum value is 10'
-              : '';
+    const pixelSizeInput = useDraftNumberInput(pixelSize, onPixelSizeChange, {
+        min: 0.01,
+        max: 10,
+    });
+    const layerHeightInput = useDraftNumberInput(layerHeight, onLayerHeightChange, {
+        min: 0.01,
+        max: 10,
+    });
+    const firstLayerHeightInput = useDraftNumberInput(
+        slicerFirstLayerHeight,
+        onSlicerFirstLayerHeightChange,
+        {
+            min: 0,
+            max: 10,
+        }
+    );
 
     return (
         <Card className="p-4 border border-border/50">
@@ -75,22 +150,18 @@ export default function PrintSettingsCard({
                                 mm/pixel
                             </span>
                         </div>
-                        <NumberInput
-                            min={0.01}
-                            max={10}
-                            step={0.01}
-                            value={Number.isNaN(pixelSize) || pixelSize === 0 ? '' : pixelSize}
-                            className={pixelSizeError ? 'border-red-500 focus-visible:ring-red-500' : ''}
-                            onChange={(e) => {
-                                const v = e.target.valueAsNumber;
-                                onPixelSizeChange(Number.isNaN(v) ? 0 : v);
-                            }}
-                            onBlur={() => {
-                                onPixelSizeChange(Math.max(0.01, Math.min(10, pixelSize || 0.01)));
-                            }}
+                        <Input
+                            data-testid="print-pixel-size"
+                            type="text"
+                            inputMode="decimal"
+                            value={pixelSizeInput.value}
+                            className={pixelSizeInput.error ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                            onChange={(e) => pixelSizeInput.onChange(e.target.value)}
+                            onFocus={pixelSizeInput.onFocus}
+                            onBlur={pixelSizeInput.onBlur}
                         />
-                        {pixelSizeError && (
-                            <span className="text-xs text-red-500">{pixelSizeError}</span>
+                        {pixelSizeInput.error && (
+                            <span className="text-xs text-red-500">{pixelSizeInput.error}</span>
                         )}
                     </label>
                 </div>
@@ -104,22 +175,18 @@ export default function PrintSettingsCard({
                                 mm
                             </span>
                         </div>
-                        <NumberInput
-                            min={0.01}
-                            max={10}
-                            step={0.01}
-                            value={Number.isNaN(layerHeight) || layerHeight === 0 ? '' : layerHeight}
-                            className={layerHeightError ? 'border-red-500 focus-visible:ring-red-500' : ''}
-                            onChange={(e) => {
-                                const v = e.target.valueAsNumber;
-                                onLayerHeightChange(Number.isNaN(v) ? 0 : v);
-                            }}
-                            onBlur={() => {
-                                onLayerHeightChange(Math.max(0.01, Math.min(10, layerHeight || 0.01)));
-                            }}
+                        <Input
+                            data-testid="print-layer-height"
+                            type="text"
+                            inputMode="decimal"
+                            value={layerHeightInput.value}
+                            className={layerHeightInput.error ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                            onChange={(e) => layerHeightInput.onChange(e.target.value)}
+                            onFocus={layerHeightInput.onFocus}
+                            onBlur={layerHeightInput.onBlur}
                         />
-                        {layerHeightError && (
-                            <span className="text-xs text-red-500">{layerHeightError}</span>
+                        {layerHeightInput.error && (
+                            <span className="text-xs text-red-500">{layerHeightInput.error}</span>
                         )}
                     </label>
                 </div>
@@ -135,22 +202,18 @@ export default function PrintSettingsCard({
                                 mm
                             </span>
                         </div>
-                        <NumberInput
-                            min={0}
-                            max={10}
-                            step={0.01}
-                            value={Number.isNaN(slicerFirstLayerHeight) ? '' : slicerFirstLayerHeight}
-                            className={firstLayerHeightError ? 'border-red-500 focus-visible:ring-red-500' : ''}
-                            onChange={(e) => {
-                                const v = e.target.valueAsNumber;
-                                onSlicerFirstLayerHeightChange(Number.isNaN(v) ? 0 : v);
-                            }}
-                            onBlur={() => {
-                                onSlicerFirstLayerHeightChange(Math.max(0, Math.min(10, slicerFirstLayerHeight || 0)));
-                            }}
+                        <Input
+                            data-testid="print-first-layer-height"
+                            type="text"
+                            inputMode="decimal"
+                            value={firstLayerHeightInput.value}
+                            className={firstLayerHeightInput.error ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                            onChange={(e) => firstLayerHeightInput.onChange(e.target.value)}
+                            onFocus={firstLayerHeightInput.onFocus}
+                            onBlur={firstLayerHeightInput.onBlur}
                         />
-                        {firstLayerHeightError && (
-                            <span className="text-xs text-red-500">{firstLayerHeightError}</span>
+                        {firstLayerHeightInput.error && (
+                            <span className="text-xs text-red-500">{firstLayerHeightInput.error}</span>
                         )}
                     </label>
                 </div>
@@ -164,6 +227,8 @@ export default function PrintSettingsCard({
                         </p>
                     </div>
                     <Switch
+                        id="smooth-meshing"
+                        data-testid="print-smooth-meshing"
                         checked={smoothMeshing}
                         onCheckedChange={onSmoothMeshingChange}
                     />

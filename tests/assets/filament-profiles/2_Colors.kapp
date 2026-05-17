@@ -1,0 +1,19 @@
+{
+  "id": "6e5b0ddc-332c-4823-b76e-0cb5e054402d",
+  "name": "B&W",
+  "version": 1,
+  "filaments": [
+    {
+      "id": "p9c63ms",
+      "color": "#ffffff",
+      "td": 6
+    },
+    {
+      "id": "plvjtmc",
+      "color": "#000000",
+      "td": 0.16
+    }
+  ],
+  "createdAt": 1778699248448,
+  "updatedAt": 1778699248448
+}

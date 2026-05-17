@@ -5,12 +5,19 @@ import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { RotateCcw, Check, Loader } from 'lucide-react';
 import type { CanvasPreviewHandle } from './CanvasPreview';
+import { deditherRowProgress } from '../lib/progress';
 
 interface Props {
     canvasRef: React.RefObject<CanvasPreviewHandle | null>;
     onApplyResult: (blobUrl: string) => void;
     onWorkingChange?: (working: boolean) => void;
     onProgress?: (value: number) => void;
+    onStepChange?: (step: {
+        stepIndex: number;
+        stepCount: number;
+        label: string;
+        stepProgress?: number;
+    }) => void;
 }
 
 export const DeditherPanel: React.FC<Props> = ({
@@ -18,6 +25,7 @@ export const DeditherPanel: React.FC<Props> = ({
     onApplyResult,
     onWorkingChange,
     onProgress,
+    onStepChange,
 }) => {
     const [weight, setWeight] = useState<number>(4);
     const [passes, setPasses] = useState<number>(1);
@@ -27,8 +35,15 @@ export const DeditherPanel: React.FC<Props> = ({
 
     const handleApply = useCallback(async () => {
         if (!canvasRef.current) return;
+        const totalPasses = Math.max(1, Math.min(10, Math.round(passes)));
         setWorking(true);
         onWorkingChange?.(true);
+        onStepChange?.({
+            stepIndex: 1,
+            stepCount: totalPasses,
+            label: 'Dedithering pass 1',
+            stepProgress: 0,
+        });
         onProgress?.(0.01);
         await new Promise((r) => requestAnimationFrame(r));
         try {
@@ -70,11 +85,16 @@ export const DeditherPanel: React.FC<Props> = ({
 
             const YIELD_MS = 12;
             let lastYield = performance.now();
-            const totalPasses = Math.max(1, Math.min(10, Math.round(passes)));
             const totalRows = Math.max(1, totalPasses * h);
             let processedRows = 0;
 
             for (let pass = 0; pass < totalPasses; pass++) {
+                onStepChange?.({
+                    stepIndex: pass + 1,
+                    stepCount: totalPasses,
+                    label: `Dedithering pass ${pass + 1}`,
+                    stepProgress: 0,
+                });
                 const out = new Uint8ClampedArray(current);
                 // iterate pixels
                 for (let y = 0; y < h; y++) {
@@ -149,7 +169,13 @@ export const DeditherPanel: React.FC<Props> = ({
                     }
                     processedRows++;
                     if (y % 16 === 0) {
-                        onProgress?.(0.1 + (processedRows / totalRows) * 0.85);
+                        onStepChange?.({
+                            stepIndex: pass + 1,
+                            stepCount: totalPasses,
+                            label: `Dedithering pass ${pass + 1}`,
+                            stepProgress: (y + 1) / Math.max(1, h),
+                        });
+                        onProgress?.(deditherRowProgress(processedRows, totalRows));
                     }
                 }
                 current = out;
@@ -157,7 +183,13 @@ export const DeditherPanel: React.FC<Props> = ({
                     await new Promise((r) => requestAnimationFrame(r));
                     lastYield = performance.now();
                 }
-                onProgress?.(0.1 + (processedRows / totalRows) * 0.85);
+                onStepChange?.({
+                    stepIndex: pass + 1,
+                    stepCount: totalPasses,
+                    label: `Dedithering pass ${pass + 1}`,
+                    stepProgress: 1,
+                });
+                onProgress?.(deditherRowProgress(processedRows, totalRows));
             }
 
             const outData = new ImageData(current, w, h);
@@ -176,7 +208,7 @@ export const DeditherPanel: React.FC<Props> = ({
             setWorking(false);
             onWorkingChange?.(false);
         }
-    }, [canvasRef, weight, passes, onApplyResult, onWorkingChange, onProgress]);
+    }, [canvasRef, weight, passes, onApplyResult, onWorkingChange, onProgress, onStepChange]);
 
     const allDefault = weight === DEFAULT_WEIGHT && passes === DEFAULT_PASSES;
 
@@ -233,6 +265,8 @@ export const DeditherPanel: React.FC<Props> = ({
                 </div>
                 <Slider
                     id="weight-slider"
+                    data-testid="dedither-weight-slider"
+                    aria-label="Dedither weight"
                     min={1}
                     max={9}
                     step={1}
@@ -269,6 +303,8 @@ export const DeditherPanel: React.FC<Props> = ({
                 </div>
                 <Slider
                     id="passes-slider"
+                    data-testid="dedither-passes-slider"
+                    aria-label="Dedither passes"
                     min={1}
                     max={10}
                     step={1}
@@ -282,6 +318,7 @@ export const DeditherPanel: React.FC<Props> = ({
 
             <Button
                 onClick={handleApply}
+                data-testid="dedither-apply"
                 disabled={working}
                 className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold disabled:bg-green-600/50 disabled:cursor-not-allowed transition-all duration-200 shadow-md hover:shadow-lg active:scale-95 gap-1.5"
             >

@@ -135,6 +135,7 @@ export const PreviewActions: React.FC<PreviewActionsProps> = ({
                     <PopoverTrigger asChild>
                         <Button
                             size="icon"
+                            data-testid="download-3d-model"
                             title={
                                 exportingSTL
                                     ? `Exporting… ${Math.round(exportProgress * 100)}%`
@@ -155,6 +156,7 @@ export const PreviewActions: React.FC<PreviewActionsProps> = ({
                         <Button
                             variant="ghost"
                             onClick={onExportStl}
+                            data-testid="download-stl"
                             disabled={exportingSTL}
                             className="justify-start gap-2 h-9 px-2 font-normal"
                         >
@@ -164,6 +166,7 @@ export const PreviewActions: React.FC<PreviewActionsProps> = ({
                         <Button
                             variant="ghost"
                             onClick={onExport3MF}
+                            data-testid="download-3mf"
                             disabled={exportingSTL}
                             className="justify-start gap-2 h-9 px-2 font-normal"
                         >

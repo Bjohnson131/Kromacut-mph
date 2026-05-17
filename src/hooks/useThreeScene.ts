@@ -23,7 +23,7 @@ export function useThreeScene(
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         renderer.setSize(el.clientWidth, el.clientHeight);
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        renderer.toneMappingExposure = 2;
+        renderer.toneMappingExposure = 1.28;
         renderer.outputColorSpace = THREE.SRGBColorSpace;
         el.appendChild(renderer.domElement);
         rendererRef.current = renderer;
@@ -43,29 +43,38 @@ export function useThreeScene(
         controls.dampingFactor = 0.08;
         controlsRef.current = controls;
 
-        // Lights - optimized for MeshStandardMaterial
-        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x888888, 1.5);
+        // Balanced preview lights. Mesh geometry/export data is untouched; directional
+        // fill keeps dark faces readable without bleaching saturated filament colors.
+        const ambient = new THREE.AmbientLight(0xffffff, 0.18);
+        scene.add(ambient);
+
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x657080, 0.85);
         scene.add(hemiLight);
 
-        // Strong directional light for definition
-        const key = new THREE.DirectionalLight(0xffffff, 1.5);
-        key.position.set(2, 3, 1);
+        const key = new THREE.DirectionalLight(0xffffff, 1.55);
+        key.position.set(2, 3, 2);
         scene.add(key);
+
+        const fill = new THREE.DirectionalLight(0xe6efff, 0.75);
+        fill.position.set(-3, 2.2, 2.5);
+        scene.add(fill);
+
+        const rim = new THREE.DirectionalLight(0xffffff, 0.25);
+        rim.position.set(0, 3, -4);
+        scene.add(rim);
 
         // Container for the model parts
         const modelGroup = new THREE.Group();
         scene.add(modelGroup);
         modelGroupRef.current = modelGroup;
 
-        // Shared material (can be cloned per part if needed, but useful base)
         const material = new THREE.MeshStandardMaterial({
             color: 0xffffff,
-            side: THREE.DoubleSide,
-            transparent: false,
-            metalness: 0.1,
-            roughness: 0.9,
+            side: THREE.FrontSide,
+            metalness: 0,
+            roughness: 0.7,
+            flatShading: true,
         });
-        material.vertexColors = false;
         materialRef.current = material;
 
         // (Optional) Add a placeholder if needed, or just leave empty group until build.

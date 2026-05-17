@@ -1,9 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { PointerEvent } from 'react';
 import * as THREE from 'three';
+import * as SliderPrimitive from '@radix-ui/react-slider';
 import useThreeScene from '../hooks/useThreeScene';
 import { generateGreedyMesh, generateSmoothMesh } from '../lib/meshing';
-import { Slider } from '@/components/ui/slider';
+import {
+    clampProgress,
+    layeredBuildLayerProgress,
+    layeredBuildScanProgress,
+} from '../lib/progress';
 import { Layers } from 'lucide-react';
+import ProgressOverlay from './ProgressOverlay';
 
 interface ThreeDViewProps {
     imageSrc?: string | null;
@@ -13,6 +20,7 @@ interface ThreeDViewProps {
     colorSliceHeights: number[]; // per color height increments (mm)
     colorOrder: number[]; // ordering (indices into swatches)
     swatches: { hex: string; a: number }[]; // filtered (non-transparent) swatches in original order
+    filamentSwatches?: { hex: string; a: number }[]; // physical filament colors for preview/export overlays
     pixelSize?: number; // mm per pixel horizontally (X & Z). Default 0.01 => 100px = 1mm
     heightScale?: number; // vertical exaggeration (1 = real scale)
     stepped?: boolean; // if true, flatten each cell to a uniform height (square plateaus instead of spikes)
@@ -69,6 +77,194 @@ function buildNearestSwatchFinder(swatches: { hex: string; a: number }[]) {
     };
 }
 
+interface KromacutExportLayerData {
+    activePixels: Uint8Array;
+    width: number;
+    height: number;
+    pixelSize: number;
+    topZ: number;
+}
+
+interface LayerPreviewSegment {
+    color: string;
+    startHeight: number;
+    endHeight: number;
+    transitionLayer: number;
+    isBase: boolean;
+}
+
+const LAYER_PREVIEW_THUMB_SIZE_PX = 14;
+
+function heightToPercent(height: number, maxHeight: number) {
+    if (maxHeight <= 0) return 0;
+    return Math.max(0, Math.min(100, (height / maxHeight) * 100));
+}
+
+function signedPx(value: number) {
+    const rounded = Math.abs(Number(value.toFixed(4)));
+    return value < 0 ? ` - ${rounded}px` : ` + ${rounded}px`;
+}
+
+function sliderCenterPercentCss(percent: number) {
+    const clamped = Math.max(0, Math.min(100, percent));
+    const thumbOffset = (0.5 - clamped / 100) * LAYER_PREVIEW_THUMB_SIZE_PX;
+    return `calc(${Number(clamped.toFixed(4))}%${signedPx(thumbOffset)})`;
+}
+
+function sliderRightInsetPercentCss(percent: number) {
+    const clamped = Math.max(0, Math.min(100, percent));
+    const thumbOffset = (clamped / 100 - 0.5) * LAYER_PREVIEW_THUMB_SIZE_PX;
+    return `calc(${Number((100 - clamped).toFixed(4))}%${signedPx(thumbOffset)})`;
+}
+
+function sliderSpanPercentCss(startPercent: number, endPercent: number) {
+    const span = Math.max(0, endPercent - startPercent);
+    return `calc(${Number(span.toFixed(4))}% - ${Number(
+        ((span / 100) * LAYER_PREVIEW_THUMB_SIZE_PX).toFixed(4)
+    )}px)`;
+}
+
+function normalizeHexColor(hex: string | undefined) {
+    const fallback = '#3b82f6';
+    if (!hex) return fallback;
+    const value = hex.startsWith('#') ? hex : `#${hex}`;
+    return /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : fallback;
+}
+
+function layerNumberForTransition(
+    height: number,
+    layerHeight: number,
+    slicerFirstLayerHeight: number
+) {
+    if (height <= 0 || layerHeight <= 0) return 1;
+    const effFirst = Math.max(0, slicerFirstLayerHeight || 0);
+    const delta = Math.max(0, height - effFirst);
+    return 2 + Math.round(delta / layerHeight);
+}
+
+function getBuildOverlayStep(progress: number, layerCount: number, autoPaintEnabled: boolean) {
+    const stepCount = Math.max(1, Math.floor(layerCount) + 1);
+    const clampedProgress = clampProgress(progress);
+    const rawStepProgress = clampedProgress * stepCount;
+    const stepIndex =
+        progress >= 1
+            ? stepCount
+            : Math.max(1, Math.min(stepCount, Math.floor(rawStepProgress) + 1));
+    const stepProgress =
+        progress >= 1 ? 1 : clampProgress(rawStepProgress - (stepIndex - 1));
+
+    if (stepCount === 1) {
+        return {
+            stepLabel: 'Preparing mesh inputs',
+            stepIndex,
+            stepCount,
+            stepProgress,
+        };
+    }
+
+    if (stepIndex === 1) {
+        return {
+            stepLabel: autoPaintEnabled
+                ? 'Mapping image colors to printable heights'
+                : 'Reading image color layers',
+            stepIndex,
+            stepCount,
+            stepProgress,
+        };
+    }
+
+    return {
+        stepLabel: `Building color layer ${stepIndex - 1} of ${stepCount - 1}`,
+        stepIndex,
+        stepCount,
+        stepProgress,
+    };
+}
+
+function createFlatShadedGeometry(
+    positions: Float32Array,
+    indices: number[],
+    exportLayer?: KromacutExportLayerData
+) {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setIndex(indices);
+    geom.userData.kromacutExportGeometry = { positions, indices, ...exportLayer };
+    return geom;
+}
+
+interface E2EBuildMetrics {
+    status: 'building' | 'complete';
+    startedAt?: number;
+    completedAt?: number;
+    elapsedMs?: number;
+    imageWidth?: number;
+    imageHeight?: number;
+    cropWidth?: number;
+    cropHeight?: number;
+    meshCount?: number;
+    visibleMeshCount?: number;
+    vertexCount?: number;
+    triangleCount?: number;
+    dimensions?: {
+        width: number;
+        height: number;
+        depth: number;
+    };
+    settings?: {
+        pixelSize: number;
+        layerHeight: number;
+        slicerFirstLayerHeight: number;
+        smoothMeshing: boolean;
+        autoPaintEnabled: boolean;
+        enhancedColorMatch: boolean;
+        heightDithering: boolean;
+    };
+}
+
+declare global {
+    interface Window {
+        __KROMACUT_E2E?: {
+            lastBuild?: E2EBuildMetrics;
+            buildHistory?: E2EBuildMetrics[];
+        };
+    }
+}
+
+function updateE2EBuild(metrics: E2EBuildMetrics) {
+    if (typeof window === 'undefined' || !window.__KROMACUT_E2E) return;
+    const next = { ...(window.__KROMACUT_E2E.lastBuild ?? {}), ...metrics };
+    window.__KROMACUT_E2E.lastBuild = next;
+    if (metrics.status === 'complete') {
+        window.__KROMACUT_E2E.buildHistory = [
+            ...(window.__KROMACUT_E2E.buildHistory ?? []),
+            next,
+        ];
+    }
+}
+
+function collectMeshStats(root: THREE.Object3D) {
+    let meshCount = 0;
+    let visibleMeshCount = 0;
+    let vertexCount = 0;
+    let triangleCount = 0;
+
+    root.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+
+        meshCount++;
+        if (child.visible) visibleMeshCount++;
+
+        const geometry = child.geometry;
+        const position = geometry.getAttribute('position');
+        const index = geometry.getIndex();
+        vertexCount += position?.count ?? 0;
+        triangleCount += index ? index.count / 3 : (position?.count ?? 0) / 3;
+    });
+
+    return { meshCount, visibleMeshCount, vertexCount, triangleCount };
+}
+
 export default function ThreeDView({
     imageSrc,
     baseSliceHeight,
@@ -77,6 +273,7 @@ export default function ThreeDView({
     colorSliceHeights,
     colorOrder,
     swatches,
+    filamentSwatches,
     pixelSize = 0.01,
     heightScale = 1,
     stepped = false,
@@ -98,8 +295,14 @@ export default function ThreeDView({
         height: number;
         depth: number;
     } | null>(null);
+    const [previewMinHeight, setPreviewMinHeight] = useState(0);
     const [previewHeight, setPreviewHeight] = useState<number | null>(null);
     const [maxModelHeight, setMaxModelHeight] = useState(0);
+    const [hoveredSegment, setHoveredSegment] = useState<{
+        segment: LayerPreviewSegment;
+        xPercent: number;
+    } | null>(null);
+    const previewTrackRef = useRef<HTMLDivElement | null>(null);
     const { cameraRef, controlsRef, modelGroupRef, materialRef, requestRender } = useThreeScene(
         mountRef,
         setIsBuilding
@@ -108,11 +311,12 @@ export default function ThreeDView({
     const progressRef = useRef(0);
     const progressLastUpdateRef = useRef(0);
     const pushProgress = (value: number) => {
-        progressRef.current = value;
+        const nextValue = clampProgress(value);
+        progressRef.current = nextValue;
         const now = performance.now();
-        if (value >= 1 || now - progressLastUpdateRef.current > 60) {
+        if (nextValue <= 0 || nextValue >= 1 || now - progressLastUpdateRef.current > 60) {
             progressLastUpdateRef.current = now;
-            setBuildProgress(value);
+            setBuildProgress(nextValue);
         }
     };
 
@@ -127,16 +331,18 @@ export default function ThreeDView({
         const modelGroup = modelGroupRef.current;
         if (!modelGroup || previewHeight === null) return;
 
+        const minHeight = Math.min(previewMinHeight, previewHeight);
+        const maxHeight = Math.max(previewMinHeight, previewHeight);
         modelGroup.traverse((child) => {
             if (child instanceof THREE.Mesh && child.userData.baseZ !== undefined) {
                 const baseZ = child.userData.baseZ as number;
-                // Show mesh if any part of it is below or at the preview height
-                child.visible = baseZ < previewHeight;
+                const topZ = (child.userData.topZ as number | undefined) ?? baseZ;
+                child.visible = topZ > minHeight && baseZ < maxHeight;
             }
         });
 
         requestRender();
-    }, [previewHeight, modelGroupRef, requestRender]);
+    }, [previewHeight, previewMinHeight, modelGroupRef, requestRender]);
 
     const snapPreviewHeight = (value: number): number => {
         const bounded = Math.max(0, Math.min(maxModelHeight, value));
@@ -144,7 +350,10 @@ export default function ThreeDView({
 
         const first = Math.max(0, slicerFirstLayerHeight || 0);
         if (first <= 0) {
-            return Math.max(0, Math.min(maxModelHeight, Math.round(bounded / layerHeight) * layerHeight));
+            return Math.max(
+                0,
+                Math.min(maxModelHeight, Math.round(bounded / layerHeight) * layerHeight)
+            );
         }
 
         if (bounded <= first / 2) return 0;
@@ -153,6 +362,82 @@ export default function ThreeDView({
         const delta = Math.max(0, bounded - first);
         const snapped = first + Math.round(delta / layerHeight) * layerHeight;
         return Math.max(0, Math.min(maxModelHeight, snapped));
+    };
+
+    const layerPreviewSegments = useMemo<LayerPreviewSegment[]>(() => {
+        if (maxModelHeight <= 0 || colorOrder.length === 0) return [];
+
+        const segments: LayerPreviewSegment[] = [];
+        let running = 0;
+
+        colorOrder.forEach((swatchIndex, layerPosition) => {
+            const thickness =
+                layerPosition === 0
+                    ? Math.max(colorSliceHeights[swatchIndex] || 0, slicerFirstLayerHeight)
+                    : colorSliceHeights[swatchIndex] || 0;
+            if (thickness <= 0.0001) return;
+
+            const startHeight = running;
+            running += thickness;
+            const endHeight = running;
+            const clampedStart = Math.max(0, Math.min(maxModelHeight, startHeight));
+            const clampedEnd = Math.max(0, Math.min(maxModelHeight, endHeight));
+            if (clampedEnd <= clampedStart + 0.0001) return;
+
+            const filamentSwatch = filamentSwatches?.[swatchIndex] ?? swatches[swatchIndex];
+            const color = normalizeHexColor(filamentSwatch?.hex);
+            const previous = segments[segments.length - 1];
+
+            if (previous && previous.color === color) {
+                previous.endHeight = clampedEnd;
+                return;
+            }
+
+            segments.push({
+                color,
+                startHeight: clampedStart,
+                endHeight: clampedEnd,
+                transitionLayer: layerNumberForTransition(
+                    clampedStart,
+                    layerHeight,
+                    slicerFirstLayerHeight
+                ),
+                isBase: segments.length === 0 && clampedStart <= 0,
+            });
+        });
+
+        return segments;
+    }, [
+        maxModelHeight,
+        colorOrder,
+        colorSliceHeights,
+        slicerFirstLayerHeight,
+        filamentSwatches,
+        swatches,
+        layerHeight,
+    ]);
+
+    const updateHoveredSegment = (
+        segment: LayerPreviewSegment,
+        event: PointerEvent<HTMLDivElement>
+    ) => {
+        const rect = previewTrackRef.current?.getBoundingClientRect();
+        if (!rect || rect.width <= 0) {
+            setHoveredSegment({ segment, xPercent: 50 });
+            return;
+        }
+        const xPercent = Math.max(
+            2,
+            Math.min(98, ((event.clientX - rect.left) / rect.width) * 100)
+        );
+        setHoveredSegment({ segment, xPercent });
+    };
+
+    const handlePreviewRangeChange = (value: number[]) => {
+        const low = snapPreviewHeight(value[0] ?? 0);
+        const high = snapPreviewHeight(value[1] ?? maxModelHeight);
+        setPreviewMinHeight(Math.min(low, high));
+        setPreviewHeight(Math.max(low, high));
     };
 
     // 2. Rebuild mesh geometry whenever inputs change (debounced, progressive, adaptive resolution)
@@ -207,9 +492,23 @@ export default function ThreeDView({
         if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = window.setTimeout(() => {
             const token = ++buildTokenRef.current;
+            const buildStartedAt = performance.now();
             // mark that a build is in progress for the overlay
             setIsBuilding(true);
             pushProgress(0);
+            updateE2EBuild({
+                status: 'building',
+                startedAt: buildStartedAt,
+                settings: {
+                    pixelSize,
+                    layerHeight,
+                    slicerFirstLayerHeight,
+                    smoothMeshing,
+                    autoPaintEnabled,
+                    enhancedColorMatch,
+                    heightDithering,
+                },
+            });
 
             const requestIdle = (fn: () => void) => {
                 const ric = (
@@ -241,8 +540,6 @@ export default function ThreeDView({
                 const fullW = img.naturalWidth;
                 const fullH = img.naturalHeight;
                 const { minX, minY, boxW, boxH } = bbox;
-                const totalUnitsBase = Math.max(1, colorOrder.length * boxH);
-                const totalUnits = Math.max(1, totalUnitsBase + boxH);
 
                 const canvas = document.createElement('canvas');
                 canvas.width = fullW;
@@ -517,7 +814,9 @@ export default function ThreeDView({
                                 pixelHeightMap[mapIdx] = targetHeight;
                                 colorHeightCache.set(cacheKey, targetHeight);
                             }
-                            pushProgress((py - minY + 1) / totalUnits);
+                            pushProgress(
+                                layeredBuildScanProgress(py - minY, boxH, colorOrder.length)
+                            );
                         }
 
                         // --- Pass 2: Quantize heights (with optional dithering) ---
@@ -747,12 +1046,27 @@ export default function ThreeDView({
 
                                 pixelHeightMap[mapIdx] = pixelHeight;
                             }
-                            pushProgress((py - minY + 1) / totalUnits);
+                            pushProgress(
+                                layeredBuildScanProgress(py - minY, boxH, colorOrder.length)
+                            );
                         }
                     }
 
-                    // For each layer, find pixels whose target height falls within this layer
-                    for (let i = 0; i < colorOrder.length; i++) {
+                    // Build each layer once; smooth meshing does not run overhang repair passes.
+                    const layerBuildOrder = Array.from(
+                        { length: colorOrder.length },
+                        (_, layerIndex) => layerIndex
+                    );
+                    const builtLayerMeshes: Array<THREE.Mesh | undefined> = new Array(
+                        colorOrder.length
+                    );
+
+                    for (
+                        let buildLayerIndex = 0;
+                        buildLayerIndex < layerBuildOrder.length;
+                        buildLayerIndex++
+                    ) {
+                        const i = layerBuildOrder[buildLayerIndex];
                         if (token !== buildTokenRef.current) return;
 
                         const swatchIdx = colorOrder[i];
@@ -785,7 +1099,14 @@ export default function ThreeDView({
                                 }
                             }
 
-                            pushProgress((boxH + i * boxH + (y + 1)) / totalUnits);
+                            pushProgress(
+                                layeredBuildLayerProgress(
+                                    buildLayerIndex,
+                                    y,
+                                    boxH,
+                                    colorOrder.length
+                                )
+                            );
 
                             if (performance.now() - lastYield > YIELD_MS) {
                                 await new Promise((r) => requestAnimationFrame(r));
@@ -797,40 +1118,47 @@ export default function ThreeDView({
                         if (activeCount === 0) continue;
 
                         // Generate mesh for this layer
-                        const meshFn = smoothMeshing ? generateSmoothMesh : generateGreedyMesh;
-                        const { positions, indices } = await meshFn(
-                            activePixels,
-                            boxW,
-                            boxH,
-                            thickness,
-                            baseZ,
-                            pixelSize,
-                            heightScale,
-                            { yieldIntervalMs: 8 }
+                        const generatedMesh = await (
+                            smoothMeshing ? generateSmoothMesh : generateGreedyMesh
+                        )(activePixels, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
+                            yieldIntervalMs: 8,
+                        });
+
+                        const geom = createFlatShadedGeometry(
+                            generatedMesh.positions,
+                            generatedMesh.indices,
+                            {
+                                activePixels,
+                                width: boxW,
+                                height: boxH,
+                                pixelSize,
+                                topZ: (baseZ + thickness) * heightScale,
+                            }
                         );
-
-                        const geom = new THREE.BufferGeometry();
-                        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                        geom.setIndex(indices);
-                        geom.computeVertexNormals();
-
                         const mat = new THREE.MeshStandardMaterial({
                             color: colorHex,
-                            roughness: 0.5,
-                            metalness: 0.1,
-                            side: THREE.DoubleSide,
+                            side: THREE.FrontSide,
+                            metalness: 0,
+                            roughness: 0.7,
+                            flatShading: true,
                         });
 
                         const mesh = new THREE.Mesh(geom, mat);
                         // Store layer Z range for preview slider
                         mesh.userData.baseZ = baseZ;
                         mesh.userData.topZ = topZ;
-                        modelGroup.add(mesh);
+                        builtLayerMeshes[i] = mesh;
 
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
                             if (token !== buildTokenRef.current) return;
                             lastYield = performance.now();
+                        }
+                    }
+
+                    for (const mesh of builtLayerMeshes) {
+                        if (mesh) {
+                            modelGroup.add(mesh);
                         }
                     }
                 } else {
@@ -869,14 +1197,18 @@ export default function ThreeDView({
                             const a = data[idx + 3];
                             if (a === 0) continue;
 
-                            const sIdx = nearestSwatchIndex(data[idx], data[idx + 1], data[idx + 2]);
+                            const sIdx = nearestSwatchIndex(
+                                data[idx],
+                                data[idx + 1],
+                                data[idx + 2]
+                            );
                             if (sIdx === -1) continue;
 
                             const layerPos = layerIndexBySwatch[sIdx];
                             pixelLayerPos[flippedRowOffset + x] = layerPos;
                         }
 
-                        pushProgress((y + 1) / totalUnits);
+                        pushProgress(layeredBuildScanProgress(y, boxH, colorOrder.length));
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
                             if (token !== buildTokenRef.current) return;
@@ -884,8 +1216,21 @@ export default function ThreeDView({
                         }
                     }
 
-                    // Iterate each color layer and build a mesh
-                    for (let i = 0; i < colorOrder.length; i++) {
+                    // Build each layer once; smooth meshing does not run overhang repair passes.
+                    const layerBuildOrder = Array.from(
+                        { length: colorOrder.length },
+                        (_, layerIndex) => layerIndex
+                    );
+                    const builtLayerMeshes: Array<THREE.Mesh | undefined> = new Array(
+                        colorOrder.length
+                    );
+
+                    for (
+                        let buildLayerIndex = 0;
+                        buildLayerIndex < layerBuildOrder.length;
+                        buildLayerIndex++
+                    ) {
+                        const i = layerBuildOrder[buildLayerIndex];
                         if (token !== buildTokenRef.current) return;
 
                         const swatchIdx = colorOrder[i];
@@ -917,7 +1262,14 @@ export default function ThreeDView({
                                     activeCount++;
                                 }
                             }
-                            pushProgress((boxH + i * boxH + (y + 1)) / totalUnits);
+                            pushProgress(
+                                layeredBuildLayerProgress(
+                                    buildLayerIndex,
+                                    y,
+                                    boxH,
+                                    colorOrder.length
+                                )
+                            );
                             if (performance.now() - lastYield > YIELD_MS) {
                                 await new Promise((r) => requestAnimationFrame(r));
                                 if (token !== buildTokenRef.current) return;
@@ -928,28 +1280,29 @@ export default function ThreeDView({
                         if (activeCount === 0) continue;
 
                         // Generate Optimized Greedy Mesh
-                        const meshFn = smoothMeshing ? generateSmoothMesh : generateGreedyMesh;
-                        const { positions, indices } = await meshFn(
-                            activePixels,
-                            boxW,
-                            boxH,
-                            thickness,
-                            baseZ,
-                            pixelSize,
-                            heightScale,
-                            { yieldIntervalMs: 8 }
+                        const generatedMesh = await (
+                            smoothMeshing ? generateSmoothMesh : generateGreedyMesh
+                        )(activePixels, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
+                            yieldIntervalMs: 8,
+                        });
+
+                        const geom = createFlatShadedGeometry(
+                            generatedMesh.positions,
+                            generatedMesh.indices,
+                            {
+                                activePixels,
+                                width: boxW,
+                                height: boxH,
+                                pixelSize,
+                                topZ: (baseZ + thickness) * heightScale,
+                            }
                         );
-
-                        const geom = new THREE.BufferGeometry();
-                        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                        geom.setIndex(indices);
-                        geom.computeVertexNormals();
-
                         const mat = new THREE.MeshStandardMaterial({
                             color: colorHex,
-                            roughness: 0.5,
-                            metalness: 0.1,
-                            side: THREE.DoubleSide,
+                            side: THREE.FrontSide,
+                            metalness: 0,
+                            roughness: 0.7,
+                            flatShading: true,
                         });
 
                         // Note: generateGreedyMesh returns world-space coordinates (scaled by pixelSize/heightScale)
@@ -958,12 +1311,18 @@ export default function ThreeDView({
                         // Store layer Z range for preview slider
                         mesh.userData.baseZ = baseZ;
                         mesh.userData.topZ = topZ;
-                        modelGroup.add(mesh);
+                        builtLayerMeshes[i] = mesh;
 
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
                             if (token !== buildTokenRef.current) return;
                             lastYield = performance.now();
+                        }
+                    }
+
+                    for (const mesh of builtLayerMeshes) {
+                        if (mesh) {
+                            modelGroup.add(mesh);
                         }
                     }
                 }
@@ -983,14 +1342,38 @@ export default function ThreeDView({
                 const maxDepth = box.max.z - box.min.z;
                 const finalW = boxW;
                 const finalH = boxH;
-                setModelDimensions({
+                const nextModelDimensions = {
                     width: finalW * pixelSize,
                     height: finalH * pixelSize,
                     depth: maxDepth,
-                });
+                };
+                setModelDimensions(nextModelDimensions);
                 // Set max height for layer preview slider
                 setMaxModelHeight(box.max.z);
+                setPreviewMinHeight(0);
                 setPreviewHeight(box.max.z); // Start at full height
+                setHoveredSegment(null);
+                updateE2EBuild({
+                    status: 'complete',
+                    startedAt: buildStartedAt,
+                    completedAt: performance.now(),
+                    elapsedMs: performance.now() - buildStartedAt,
+                    imageWidth: fullW,
+                    imageHeight: fullH,
+                    cropWidth: finalW,
+                    cropHeight: finalH,
+                    ...collectMeshStats(modelGroup),
+                    dimensions: nextModelDimensions,
+                    settings: {
+                        pixelSize,
+                        layerHeight,
+                        slicerFirstLayerHeight,
+                        smoothMeshing,
+                        autoPaintEnabled,
+                        enhancedColorMatch,
+                        heightDithering,
+                    },
+                });
 
                 // Auto-frame
                 try {
@@ -1112,25 +1495,34 @@ export default function ThreeDView({
         requestRender,
     ]);
 
+    const buildOverlayStep = getBuildOverlayStep(
+        buildProgress,
+        colorOrder.length,
+        autoPaintEnabled
+    );
+    const previewHeightLabel =
+        previewHeight !== null && previewMinHeight > 0.0001
+            ? `${previewMinHeight.toFixed(2)} - ${previewHeight.toFixed(2)} mm`
+            : `${(previewHeight ?? 0).toFixed(2)} mm`;
+    const previewMinPercent = heightToPercent(previewMinHeight, maxModelHeight);
+    const previewMaxPercent = heightToPercent(previewHeight ?? maxModelHeight, maxModelHeight);
+    const previewSelectionLeft = Math.min(previewMinPercent, previewMaxPercent);
+    const previewSelectionRight = Math.max(previewMinPercent, previewMaxPercent);
+    const previewSelectionClip = `inset(0 ${sliderRightInsetPercentCss(
+        previewSelectionRight
+    )} 0 ${sliderCenterPercentCss(previewSelectionLeft)})`;
+
     return (
         <div className="w-full h-full relative" ref={mountRef}>
             {isBuilding && (
-                <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-                    <div className="w-[260px] rounded-xl border border-border/60 bg-background/90 shadow-lg px-4 py-3">
-                        <div className="text-sm font-semibold text-foreground">
-                            Generating mesh...
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                            {Math.round(buildProgress * 100)}%
-                        </div>
-                        <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                            <div
-                                className="h-2 rounded-full bg-primary transition-[width] duration-150"
-                                style={{ width: `${Math.round(buildProgress * 100)}%` }}
-                            />
-                        </div>
-                    </div>
-                </div>
+                <ProgressOverlay
+                    title={smoothMeshing ? 'Generating smooth mesh' : 'Generating mesh'}
+                    stepLabel={buildOverlayStep.stepLabel}
+                    stepIndex={buildOverlayStep.stepIndex}
+                    stepCount={buildOverlayStep.stepCount}
+                    stepProgress={buildOverlayStep.stepProgress}
+                    progress={buildProgress}
+                />
             )}
             {modelDimensions && (
                 <div
@@ -1143,27 +1535,192 @@ export default function ThreeDView({
             )}
             {/* Layer Preview Slider */}
             {!isBuilding && maxModelHeight > 0 && previewHeight !== null && (
-                <div className="absolute bottom-4 left-4 right-4 bg-background/90 backdrop-blur-sm border border-border/50 rounded-lg p-3 shadow-lg z-10">
-                    <div className="flex items-center gap-3">
-                        <Layers className="w-4 h-4 text-primary flex-shrink-0" />
-                        <div className="flex-1 space-y-1.5">
-                            <div className="flex items-center justify-between text-xs">
+                <div className="absolute bottom-2 left-4 right-4 bg-background/90 backdrop-blur-sm border border-border/50 rounded-md px-3 py-1.5 shadow-lg z-10">
+                    <div className="flex items-center gap-2.5">
+                        <Layers className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+                        <div className="flex-1 space-y-0.5">
+                            <div className="flex items-center justify-between text-[11px] leading-none">
                                 <span className="text-muted-foreground font-medium">
                                     Layer Preview
                                 </span>
                                 <span className="text-foreground font-mono font-semibold">
-                                    {previewHeight.toFixed(2)} mm
+                                    {previewHeightLabel}
                                 </span>
                             </div>
-                            <Slider
-                                value={[previewHeight]}
-                                onValueChange={(v) => setPreviewHeight(snapPreviewHeight(v[0]))}
-                                min={0}
-                                max={maxModelHeight}
-                                step={0.01}
-                                className="w-full"
-                            />
-                            <div className="flex justify-between text-[10px] text-muted-foreground">
+                            <div className="relative pt-0.5">
+                                {hoveredSegment && (
+                                    <div
+                                        className="pointer-events-none absolute -top-1.5 z-20 min-w-36 -translate-x-1/2 -translate-y-full rounded-md border border-border/70 bg-popover px-2.5 py-2 text-popover-foreground shadow-lg"
+                                        style={{ left: `${hoveredSegment.xPercent}%` }}
+                                    >
+                                        <div className="text-xs font-semibold leading-tight">
+                                            {hoveredSegment.segment.isBase
+                                                ? 'Start Layer 1'
+                                                : `Swap Layer ${hoveredSegment.segment.transitionLayer}`}
+                                        </div>
+                                        <div className="mt-1 text-[10px] text-muted-foreground">
+                                            Height:{' '}
+                                            {hoveredSegment.segment.startHeight.toFixed(2)} mm
+                                        </div>
+                                        <div className="mt-1 flex items-center gap-1.5 font-mono text-[11px] font-semibold">
+                                            <span
+                                                className="h-2.5 w-2.5 rounded-full border border-border/70 shadow-sm"
+                                                style={{
+                                                    backgroundColor: hoveredSegment.segment.color,
+                                                }}
+                                            />
+                                            <span>{hoveredSegment.segment.color}</span>
+                                        </div>
+                                        <div className="absolute left-1/2 top-full h-2 w-2 -translate-x-1/2 -translate-y-1/2 rotate-45 border-b border-r border-border/70 bg-popover" />
+                                    </div>
+                                )}
+                                <SliderPrimitive.Root
+                                    value={[previewMinHeight, previewHeight]}
+                                    onValueChange={handlePreviewRangeChange}
+                                    min={0}
+                                    max={maxModelHeight}
+                                    step={0.01}
+                                    minStepsBetweenThumbs={0}
+                                    className="relative flex h-4 w-full touch-none select-none items-center"
+                                    data-testid="layer-preview-range"
+                                >
+                                    <SliderPrimitive.Track
+                                        ref={previewTrackRef}
+                                        className="relative h-1.5 w-full grow rounded-full bg-primary/15"
+                                    >
+                                        <div className="absolute inset-0 overflow-hidden rounded-full border border-border/40">
+                                            {layerPreviewSegments.map((segment, idx) => {
+                                                const left = heightToPercent(
+                                                    segment.startHeight,
+                                                    maxModelHeight
+                                                );
+                                                const right = heightToPercent(
+                                                    segment.endHeight,
+                                                    maxModelHeight
+                                                );
+                                                return (
+                                                    <div
+                                                        key={`${segment.color}-${idx}-${segment.startHeight}`}
+                                                        data-testid="layer-preview-filament-segment"
+                                                        className="absolute inset-y-0 cursor-help transition-[filter] hover:brightness-110"
+                                                        style={{
+                                                            left: sliderCenterPercentCss(left),
+                                                            width: sliderSpanPercentCss(left, right),
+                                                            backgroundColor: segment.color,
+                                                            filter: 'grayscale(1)',
+                                                            opacity: 0.45,
+                                                        }}
+                                                        title={`${
+                                                            segment.isBase
+                                                                ? 'Start'
+                                                                : `Swap at layer ${segment.transitionLayer}`
+                                                        }: ${segment.color} (${segment.startHeight.toFixed(
+                                                            2
+                                                        )} mm)`}
+                                                        onPointerEnter={(event) =>
+                                                            updateHoveredSegment(segment, event)
+                                                        }
+                                                        onPointerMove={(event) =>
+                                                            updateHoveredSegment(segment, event)
+                                                        }
+                                                        onPointerLeave={() =>
+                                                            setHoveredSegment(null)
+                                                        }
+                                                    />
+                                                );
+                                            })}
+                                            <div
+                                                className="pointer-events-none absolute inset-0"
+                                                style={{ clipPath: previewSelectionClip }}
+                                            >
+                                                {layerPreviewSegments.map((segment, idx) => {
+                                                    const left = heightToPercent(
+                                                        segment.startHeight,
+                                                        maxModelHeight
+                                                    );
+                                                    const right = heightToPercent(
+                                                        segment.endHeight,
+                                                        maxModelHeight
+                                                    );
+                                                    return (
+                                                        <div
+                                                            key={`visible-${segment.color}-${idx}-${segment.startHeight}`}
+                                                            className="absolute inset-y-0"
+                                                            style={{
+                                                                left: sliderCenterPercentCss(left),
+                                                                width: sliderSpanPercentCss(
+                                                                    left,
+                                                                    right
+                                                                ),
+                                                                backgroundColor: segment.color,
+                                                            }}
+                                                        />
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                        {layerPreviewSegments.slice(1).map((segment, idx) => {
+                                            const left = heightToPercent(
+                                                segment.startHeight,
+                                                maxModelHeight
+                                            );
+                                            return (
+                                                <div
+                                                    key={`marker-${segment.color}-${idx}-${segment.startHeight}`}
+                                                    className="pointer-events-none absolute top-1/2 h-3.5 w-px -translate-y-1/2 bg-foreground/30"
+                                                    style={{ left: sliderCenterPercentCss(left) }}
+                                                >
+                                                    <span
+                                                        className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-background shadow-sm"
+                                                        style={{
+                                                            backgroundColor: segment.color,
+                                                            filter: 'grayscale(1)',
+                                                            opacity: 0.55,
+                                                        }}
+                                                    />
+                                                </div>
+                                            );
+                                        })}
+                                        <div
+                                            className="pointer-events-none absolute inset-0"
+                                            style={{ clipPath: previewSelectionClip }}
+                                        >
+                                            {layerPreviewSegments.slice(1).map((segment, idx) => {
+                                                const left = heightToPercent(
+                                                    segment.startHeight,
+                                                    maxModelHeight
+                                                );
+                                                return (
+                                                    <div
+                                                        key={`visible-marker-${segment.color}-${idx}-${segment.startHeight}`}
+                                                        className="absolute top-1/2 h-3.5 w-px -translate-y-1/2 bg-foreground/40"
+                                                        style={{
+                                                            left: sliderCenterPercentCss(left),
+                                                        }}
+                                                    >
+                                                        <span
+                                                            className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-background shadow-sm"
+                                                            style={{
+                                                                backgroundColor: segment.color,
+                                                            }}
+                                                        />
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                        <SliderPrimitive.Range className="pointer-events-none absolute h-full rounded-full bg-transparent ring-1 ring-primary/70" />
+                                    </SliderPrimitive.Track>
+                                    <SliderPrimitive.Thumb
+                                        aria-label="Preview bottom layer cutoff"
+                                        className="block h-3.5 w-3.5 rounded-full border border-primary/70 bg-background shadow transition-colors hover:shadow-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                    />
+                                    <SliderPrimitive.Thumb
+                                        aria-label="Preview top layer cutoff"
+                                        className="block h-3.5 w-3.5 rounded-full border border-primary/70 bg-background shadow transition-colors hover:shadow-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                    />
+                                </SliderPrimitive.Root>
+                            </div>
+                            <div className="flex justify-between text-[8px] leading-none text-muted-foreground">
                                 <span>Base (0)</span>
                                 <span>Top ({maxModelHeight.toFixed(2)})</span>
                             </div>

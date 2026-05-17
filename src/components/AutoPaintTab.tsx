@@ -59,6 +59,7 @@ interface AutoPaintTabProps {
     autoPaintResult?: AutoPaintResult;
     autoPaintSliceData?: AutoPaintSliceData;
     isComputing?: boolean;
+    error?: string;
     calibrationLayerHeight: number;
     setCalibrationLayerHeight: (v: number) => void;
 
@@ -109,6 +110,7 @@ export default function AutoPaintTab({
     autoPaintResult,
     autoPaintSliceData,
     isComputing = false,
+    error,
     calibrationLayerHeight,
     setCalibrationLayerHeight: _setCalibrationLayerHeight,
     filteredCount,
@@ -286,6 +288,7 @@ export default function AutoPaintTab({
                             ref={importInputRef}
                             type="file"
                             accept=".kapp,.json"
+                            data-testid="autopaint-profile-import-input"
                             className="hidden"
                             onChange={handleImportFile}
                         />
@@ -430,6 +433,9 @@ export default function AutoPaintTab({
                                     <span>Optimizing filament order...</span>
                                 </div>
                             )}
+                            {error && !isComputing && (
+                                <div className="text-[10px] text-destructive">{error}</div>
+                            )}
                         </div>
                     )}
 
@@ -446,6 +452,7 @@ export default function AutoPaintTab({
                                 </Label>
                                 <Switch
                                     id="enhanced-color-match"
+                                    data-testid="autopaint-enhanced-color-match"
                                     checked={enhancedColorMatch}
                                     onCheckedChange={setEnhancedColorMatch}
                                 />
@@ -461,6 +468,7 @@ export default function AutoPaintTab({
                                 </Label>
                                 <Switch
                                     id="allow-repeated-swaps"
+                                    data-testid="autopaint-allow-repeated-swaps"
                                     checked={allowRepeatedSwaps}
                                     onCheckedChange={setAllowRepeatedSwaps}
                                     disabled={!enhancedColorMatch}
@@ -477,6 +485,7 @@ export default function AutoPaintTab({
                                 </Label>
                                 <Switch
                                     id="height-dithering"
+                                    data-testid="autopaint-height-dithering"
                                     checked={heightDithering}
                                     onCheckedChange={setHeightDithering}
                                     disabled={!enhancedColorMatch}
@@ -552,7 +561,11 @@ export default function AutoPaintTab({
                                             <SelectItem value="auto" className="text-xs">
                                                 Auto (smart selection)
                                             </SelectItem>
-                                            <SelectItem value="exhaustive" className="text-xs">
+                                            <SelectItem
+                                                value="exhaustive"
+                                                className="text-xs"
+                                                disabled={filaments.length > 8}
+                                            >
                                                 Exhaustive (≤8 filaments)
                                             </SelectItem>
                                             <SelectItem value="simulated-annealing" className="text-xs">
