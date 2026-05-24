@@ -3,6 +3,38 @@ import { ShapeUtils, Vector2 } from 'three';
 export interface MeshData {
     positions: Float32Array;
     indices: number[];
+    metrics?: MeshMetrics;
+}
+
+export interface MeshMetrics {
+    mesher: 'greedy' | 'smooth';
+    elapsedMs: number;
+    activePixelCount?: number;
+    componentCount?: number;
+    maxComponentPixelCount?: number;
+    exactLoopCount?: number;
+    smoothedLoopCount?: number;
+    denseComponentLookupCount?: number;
+    sparseComponentLookupCount?: number;
+    componentLookupCellCount?: number;
+    smoothTemplateHitCount?: number;
+    smoothTemplateMissCount?: number;
+    topologyCheckElapsedMs?: number;
+    vertexCount: number;
+    triangleCount: number;
+}
+
+export interface MeshProgress {
+    phase:
+        | 'component-scan'
+        | 'boundary-trace'
+        | 'smoothing'
+        | 'topology'
+        | 'rectangles'
+        | 'caps'
+        | 'walls';
+    label: string;
+    progress: number;
 }
 
 // ============================================================================
@@ -23,6 +55,11 @@ const pointDistanceSq = (a: Vector2, b: Vector2) => {
     const dy = a.y - b.y;
     return dx * dx + dy * dy;
 };
+
+function progressInUnitSpan(index: number, count: number, start: number, span: number) {
+    const fraction = (Math.max(0, Math.floor(index)) + 1) / Math.max(1, count);
+    return Math.max(0, Math.min(1, start + Math.max(0, span) * fraction));
+}
 
 function simplifyLoop(loop: Vector2[]): Vector2[] {
     let points = loop.filter(
@@ -220,50 +257,47 @@ function smoothLoop(
     return chaikinSmoothLoop(simplified, canCutCorner);
 }
 
-function traceComponentLoops(
+async function traceComponentLoops(
     componentCells: number[],
     activePixels: Uint8Array | Uint8ClampedArray | boolean[],
     width: number,
-    height: number
-): Vector2[][] {
-    const stride = width + 1;
-
-    interface BoundaryEdge {
-        id: number;
-        start: number;
-        end: number;
-        startX: number;
-        startY: number;
-        endX: number;
-        endY: number;
-        direction: number;
+    height: number,
+    options?: {
+        maybeYield?: () => Promise<void>;
+        onProgress?: (progress: number) => void;
     }
+): Promise<Vector2[][]> {
+    const stride = width + 1;
+    const maybeYield = options?.maybeYield ?? (async () => undefined);
+    const reportProgress = (progress: number) => {
+        options?.onProgress?.(Math.max(0, Math.min(1, progress)));
+    };
 
-    const edges: BoundaryEdge[] = [];
-    const edgesByStart = new Map<number, BoundaryEdge[]>();
+    const edgeStart: number[] = [];
+    const edgeEnd: number[] = [];
+    const edgeStartX: number[] = [];
+    const edgeStartY: number[] = [];
+    const edgeDirection: number[] = [];
+    const edgesByStart = new Map<number, number[]>();
     const addEdge = (sx: number, sy: number, ex: number, ey: number) => {
-        const id = edges.length;
-        const edge = {
-            id,
-            start: sy * stride + sx,
-            end: ey * stride + ex,
-            startX: sx,
-            startY: sy,
-            endX: ex,
-            endY: ey,
-            direction: ex > sx ? 0 : ey > sy ? 1 : ex < sx ? 2 : 3,
-        };
+        const id = edgeStart.length;
+        const start = sy * stride + sx;
+        edgeStart.push(start);
+        edgeEnd.push(ey * stride + ex);
+        edgeStartX.push(sx);
+        edgeStartY.push(sy);
+        edgeDirection.push(ex > sx ? 0 : ey > sy ? 1 : ex < sx ? 2 : 3);
 
-        edges.push(edge);
-        const outgoing = edgesByStart.get(edge.start);
+        const outgoing = edgesByStart.get(start);
         if (outgoing) {
-            outgoing.push(edge);
+            outgoing.push(id);
         } else {
-            edgesByStart.set(edge.start, [edge]);
+            edgesByStart.set(start, [id]);
         }
     };
 
-    for (const cell of componentCells) {
+    for (let cellIndex = 0; cellIndex < componentCells.length; cellIndex++) {
+        const cell = componentCells[cellIndex];
         const x = cell % width;
         const y = Math.floor(cell / width);
 
@@ -279,49 +313,62 @@ function traceComponentLoops(
         if (x === 0 || !activePixels[y * width + (x - 1)]) {
             addEdge(x, y + 1, x, y);
         }
+
+        if ((cellIndex & 2047) === 0) {
+            reportProgress((cellIndex / Math.max(1, componentCells.length)) * 0.45);
+            await maybeYield();
+        }
     }
 
-    const visitedEdges = new Uint8Array(edges.length);
+    const visitedEdges = new Uint8Array(edgeStart.length);
     const loops: Vector2[][] = [];
     const turnPriority = [3, 0, 1, 2]; // left, straight, right, then back
+    let tracedEdgeCount = 0;
 
-    const selectNextEdge = (edge: BoundaryEdge): BoundaryEdge | undefined => {
-        const outgoing = edgesByStart.get(edge.end);
+    const selectNextEdge = (edgeId: number): number | undefined => {
+        const outgoing = edgesByStart.get(edgeEnd[edgeId]);
         if (!outgoing) return undefined;
 
         for (const turn of turnPriority) {
-            const wantedDirection = (edge.direction + turn) & 3;
-            const next = outgoing.find(
-                (candidate) =>
-                    !visitedEdges[candidate.id] && candidate.direction === wantedDirection
-            );
-            if (next) return next;
+            const wantedDirection = (edgeDirection[edgeId] + turn) & 3;
+
+            for (const candidateId of outgoing) {
+                if (!visitedEdges[candidateId] && edgeDirection[candidateId] === wantedDirection) {
+                    return candidateId;
+                }
+            }
         }
 
         return undefined;
     };
 
-    for (const startEdge of edges) {
-        if (visitedEdges[startEdge.id]) continue;
+    for (let startEdgeId = 0; startEdgeId < edgeStart.length; startEdgeId++) {
+        if (visitedEdges[startEdgeId]) continue;
 
         const loop: Vector2[] = [];
-        let current = startEdge;
+        let current = startEdgeId;
         let closed = false;
         let guard = 0;
 
-        while (!visitedEdges[current.id] && guard <= edges.length) {
-            visitedEdges[current.id] = 1;
-            loop.push(new Vector2(current.startX, current.startY));
+        while (!visitedEdges[current] && guard <= edgeStart.length) {
+            visitedEdges[current] = 1;
+            tracedEdgeCount++;
+            loop.push(new Vector2(edgeStartX[current], edgeStartY[current]));
 
-            if (current.end === startEdge.start) {
+            if (edgeEnd[current] === edgeStart[startEdgeId]) {
                 closed = true;
                 break;
             }
 
             const next = selectNextEdge(current);
-            if (!next) break;
+            if (next === undefined) break;
             current = next;
             guard++;
+
+            if ((tracedEdgeCount & 4095) === 0) {
+                reportProgress(0.45 + (tracedEdgeCount / Math.max(1, edgeStart.length)) * 0.5);
+                await maybeYield();
+            }
         }
 
         if (closed && loop.length >= 3) {
@@ -329,6 +376,7 @@ function traceComponentLoops(
         }
     }
 
+    reportProgress(1);
     return loops;
 }
 
@@ -398,7 +446,8 @@ function isTopologySafeAfterCoordinateWeld(
     coordScale = 100000
 ) {
     const vertexCount = Math.floor(positions.length / 3);
-    const vertexKeys = new Array<string>(vertexCount);
+    const vertexIds = new Int32Array(vertexCount);
+    const weldedVertices = new Map<string, number>();
 
     for (let vertex = 0; vertex < vertexCount; vertex++) {
         const offset = vertex * 3;
@@ -410,19 +459,42 @@ function isTopologySafeAfterCoordinateWeld(
             return false;
         }
 
-        vertexKeys[vertex] = [
+        const key = [
             Math.round(x * coordScale),
             Math.round(y * coordScale),
             Math.round(z * coordScale),
         ].join(',');
+        let weldedId = weldedVertices.get(key);
+
+        if (weldedId === undefined) {
+            weldedId = weldedVertices.size;
+            weldedVertices.set(key, weldedId);
+        }
+
+        vertexIds[vertex] = weldedId;
     }
 
-    const edges = new Map<string, number>();
-    const triangles = new Set<string>();
+    const weldedVertexCount = weldedVertices.size;
+    const numericEdgeLimit = Math.floor(Math.sqrt(Number.MAX_SAFE_INTEGER));
+    const useNumericEdgeKeys = weldedVertexCount <= numericEdgeLimit;
+    const stringEdges = new Map<string, number>();
+    const triangleCount = Math.floor(indices.length / 3);
+    const numericEdgeKeys = useNumericEdgeKeys ? new Float64Array(triangleCount * 3) : null;
+    let numericEdgeKeyCount = 0;
 
-    const addEdge = (a: string, b: string) => {
+    if (indices.length % 3 !== 0) {
+        return false;
+    }
+
+    const addEdge = (a: number, b: number) => {
+        if (numericEdgeKeys) {
+            const key = a < b ? a * weldedVertexCount + b : b * weldedVertexCount + a;
+            numericEdgeKeys[numericEdgeKeyCount++] = key;
+            return;
+        }
+
         const key = a < b ? `${a}|${b}` : `${b}|${a}`;
-        edges.set(key, (edges.get(key) ?? 0) + 1);
+        stringEdges.set(key, (stringEdges.get(key) ?? 0) + 1);
     };
 
     for (let i = 0; i + 2 < indices.length; i += 3) {
@@ -444,28 +516,41 @@ function isTopologySafeAfterCoordinateWeld(
             return false;
         }
 
-        const keyA = vertexKeys[a];
-        const keyB = vertexKeys[b];
-        const keyC = vertexKeys[c];
+        const keyA = vertexIds[a];
+        const keyB = vertexIds[b];
+        const keyC = vertexIds[c];
 
         if (keyA === keyB || keyB === keyC || keyC === keyA) {
             return false;
         }
-
-        const triangleKey = [keyA, keyB, keyC].sort().join('|');
-        if (triangles.has(triangleKey)) {
-            return false;
-        }
-        triangles.add(triangleKey);
 
         addEdge(keyA, keyB);
         addEdge(keyB, keyC);
         addEdge(keyC, keyA);
     }
 
-    for (const count of edges.values()) {
-        if (count !== 2) {
-            return false;
+    if (numericEdgeKeys) {
+        numericEdgeKeys.sort();
+
+        for (let i = 0; i < numericEdgeKeyCount; ) {
+            const key = numericEdgeKeys[i];
+            let count = 1;
+            i++;
+
+            while (i < numericEdgeKeyCount && numericEdgeKeys[i] === key) {
+                count++;
+                i++;
+            }
+
+            if (count !== 2) {
+                return false;
+            }
+        }
+    } else {
+        for (const count of stringEdges.values()) {
+            if (count !== 2) {
+                return false;
+            }
         }
     }
 
@@ -531,6 +616,172 @@ function repairBinaryCornerContacts(
     return repaired ?? activePixels;
 }
 
+interface ComponentBounds {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+}
+
+interface ComponentFootprintLookup {
+    allocatedCellCount: number;
+    kind: 'dense' | 'sparse';
+    containsCell: (x: number, y: number) => boolean;
+}
+
+function createComponentFootprintLookup(
+    componentCells: number[],
+    width: number,
+    bounds: ComponentBounds
+): ComponentFootprintLookup {
+    const bboxWidth = bounds.maxX - bounds.minX + 1;
+    const bboxHeight = bounds.maxY - bounds.minY + 1;
+    const bboxArea = bboxWidth * bboxHeight;
+
+    // Dense masks are fastest for compact components. Sparse sets avoid the old
+    // full-image allocation for tiny islands and long, thin components.
+    if (bboxArea <= 65_536 || bboxArea <= componentCells.length * 8) {
+        const mask = new Uint8Array(bboxArea);
+
+        for (const cell of componentCells) {
+            const x = cell % width;
+            const y = Math.floor(cell / width);
+            mask[(y - bounds.minY) * bboxWidth + (x - bounds.minX)] = 1;
+        }
+
+        return {
+            allocatedCellCount: bboxArea,
+            kind: 'dense',
+            containsCell: (x, y) =>
+                x >= bounds.minX &&
+                x <= bounds.maxX &&
+                y >= bounds.minY &&
+                y <= bounds.maxY &&
+                mask[(y - bounds.minY) * bboxWidth + (x - bounds.minX)] === 1,
+        };
+    }
+
+    const cells = new Set(componentCells);
+
+    return {
+        allocatedCellCount: componentCells.length,
+        kind: 'sparse',
+        containsCell: (x, y) =>
+            x >= bounds.minX &&
+            x <= bounds.maxX &&
+            y >= bounds.minY &&
+            y <= bounds.maxY &&
+            cells.has(y * width + x),
+    };
+}
+
+interface SmoothComponentTemplate {
+    xy: number[];
+    indices: number[];
+    loopCount: number;
+    requiresGlobalTopologyCheck: boolean;
+}
+
+function makeComponentTemplateKey(
+    componentCells: number[],
+    width: number,
+    bounds: ComponentBounds
+) {
+    const bboxWidth = bounds.maxX - bounds.minX + 1;
+    const bboxHeight = bounds.maxY - bounds.minY + 1;
+    const relativeCells = new Array<number>(componentCells.length);
+
+    for (let i = 0; i < componentCells.length; i++) {
+        const cell = componentCells[i];
+        const x = cell % width;
+        const y = Math.floor(cell / width);
+        relativeCells[i] = (y - bounds.minY) * bboxWidth + (x - bounds.minX);
+    }
+
+    relativeCells.sort((a, b) => a - b);
+    return `${bboxWidth}x${bboxHeight}:${relativeCells.join(',')}`;
+}
+
+function buildSmoothComponentTemplate(
+    loops: Vector2[][],
+    faces: number[][],
+    bounds: ComponentBounds,
+    requiresGlobalTopologyCheck: boolean
+): SmoothComponentTemplate {
+    const vertices = loops.flat();
+    const xy: number[] = [];
+    const indices: number[] = [];
+    const topVertexCount = vertices.length;
+
+    for (const point of vertices) {
+        xy.push(point.x - bounds.minX, point.y - bounds.minY);
+    }
+
+    for (const [a, b, c] of faces) {
+        indices.push(a, b, c);
+        indices.push(topVertexCount + a, topVertexCount + c, topVertexCount + b);
+    }
+
+    let loopOffset = 0;
+    for (let loopIndex = 0; loopIndex < loops.length; loopIndex++) {
+        const loop = loops[loopIndex];
+        addExtrudedLoopWalls(indices, 0, topVertexCount, loopOffset, loop, loopIndex > 0);
+        loopOffset += loop.length;
+    }
+
+    return {
+        xy,
+        indices,
+        loopCount: loops.length,
+        requiresGlobalTopologyCheck,
+    };
+}
+
+function stampSmoothComponentTemplate(
+    template: SmoothComponentTemplate,
+    positions: number[],
+    indices: number[],
+    bounds: ComponentBounds,
+    pixelSize: number,
+    zBottom: number,
+    zTop: number
+) {
+    const baseVert = positions.length / 3;
+
+    for (let i = 0; i < template.xy.length; i += 2) {
+        positions.push(
+            (template.xy[i] + bounds.minX) * pixelSize,
+            (template.xy[i + 1] + bounds.minY) * pixelSize,
+            zTop
+        );
+    }
+
+    for (let i = 0; i < template.xy.length; i += 2) {
+        positions.push(
+            (template.xy[i] + bounds.minX) * pixelSize,
+            (template.xy[i + 1] + bounds.minY) * pixelSize,
+            zBottom
+        );
+    }
+
+    for (const index of template.indices) {
+        indices.push(baseVert + index);
+    }
+}
+
+function isSmoothComponentTemplateTopologySafe(
+    template: SmoothComponentTemplate,
+    bounds: ComponentBounds,
+    pixelSize: number,
+    zBottom: number,
+    zTop: number
+) {
+    const positions: number[] = [];
+    const indices: number[] = [];
+    stampSmoothComponentTemplate(template, positions, indices, bounds, pixelSize, zBottom, zTop);
+    return isTopologySafeAfterCoordinateWeld(new Float32Array(positions), indices);
+}
+
 /**
  * Generates a smooth mesh by extracting exact voxel boundaries and rounding convex corners.
  * This preserves topology while producing cleaner diagonal edges than raw voxel extrusions.
@@ -545,8 +796,22 @@ export async function generateSmoothMesh(
     heightScale: number,
     options?: MeshYieldOptions
 ): Promise<MeshData> {
+    const startedAt = performance.now();
     const positions: number[] = [];
     const indices: number[] = [];
+    let activePixelCount = 0;
+    let componentCount = 0;
+    let maxComponentPixelCount = 0;
+    let exactLoopCount = 0;
+    let smoothedLoopCount = 0;
+    let denseComponentLookupCount = 0;
+    let sparseComponentLookupCount = 0;
+    let componentLookupCellCount = 0;
+    let smoothTemplateHitCount = 0;
+    let smoothTemplateMissCount = 0;
+    let requiresGlobalTopologyCheck = false;
+    let topologyCheckElapsedMs = 0;
+    const smoothTemplateCache = new Map<string, SmoothComponentTemplate>();
 
     const yieldControl =
         options?.onYield ??
@@ -556,6 +821,18 @@ export async function generateSmoothMesh(
             }));
     const yieldIntervalMs = options?.yieldIntervalMs ?? 8;
     let lastYield = performance.now();
+    let lastReportedProgress = 0;
+    const reportProgress = (progress: MeshProgress) => {
+        const nextProgress = Math.max(
+            lastReportedProgress,
+            Math.max(0, Math.min(1, progress.progress))
+        );
+        lastReportedProgress = nextProgress;
+        options?.onProgress?.({
+            ...progress,
+            progress: nextProgress,
+        });
+    };
     const maybeYield = async () => {
         if (performance.now() - lastYield >= yieldIntervalMs) {
             await yieldControl();
@@ -570,10 +847,28 @@ export async function generateSmoothMesh(
 
     const visited = new Uint8Array(width * height);
     const queue: number[] = [];
+    reportProgress({
+        phase: 'component-scan',
+        label: 'Finding smooth components',
+        progress: 0,
+    });
     for (let start = 0; start < activePixels.length; start++) {
+        if ((start & 8191) === 0) {
+            reportProgress({
+                phase: 'component-scan',
+                label: 'Finding smooth components',
+                progress: (start / activePixels.length) * 0.18,
+            });
+            await maybeYield();
+        }
+
         if (!activePixels[start] || visited[start]) continue;
 
         const componentCells: number[] = [];
+        let minX = width;
+        let minY = height;
+        let maxX = 0;
+        let maxY = 0;
         queue.length = 0;
         queue.push(start);
         visited[start] = 1;
@@ -584,6 +879,10 @@ export async function generateSmoothMesh(
 
             const x = cell % width;
             const y = Math.floor(cell / width);
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
             const north = cell - width;
             const south = cell + width;
             const west = cell - 1;
@@ -607,14 +906,58 @@ export async function generateSmoothMesh(
             }
 
             if ((head & 255) === 0) {
+                reportProgress({
+                    phase: 'component-scan',
+                    label: 'Finding smooth components',
+                    progress: Math.min(0.25, ((start + head) / activePixels.length) * 0.25),
+                });
                 await maybeYield();
             }
         }
 
-        const componentMask = new Uint8Array(width * height);
-        for (const cell of componentCells) {
-            componentMask[cell] = 1;
+        componentCount++;
+        activePixelCount += componentCells.length;
+        maxComponentPixelCount = Math.max(maxComponentPixelCount, componentCells.length);
+        const bounds = { minX, minY, maxX, maxY };
+        const componentTemplateKey =
+            componentCells.length <= 4096
+                ? makeComponentTemplateKey(componentCells, width, bounds)
+                : null;
+        const cachedTemplate = componentTemplateKey
+            ? smoothTemplateCache.get(componentTemplateKey)
+            : undefined;
+
+        if (cachedTemplate) {
+            smoothTemplateHitCount++;
+            smoothedLoopCount += cachedTemplate.loopCount;
+            requiresGlobalTopologyCheck =
+                requiresGlobalTopologyCheck || cachedTemplate.requiresGlobalTopologyCheck;
+            reportProgress({
+                phase: 'smoothing',
+                label: 'Reusing smooth component topology',
+                progress: 0.25 + (start / activePixels.length) * 0.55,
+            });
+            stampSmoothComponentTemplate(
+                cachedTemplate,
+                positions,
+                indices,
+                bounds,
+                pixelSize,
+                zBottom,
+                zTop
+            );
+            await maybeYield();
+            continue;
         }
+
+        const footprint = createComponentFootprintLookup(componentCells, width, bounds);
+        componentLookupCellCount += footprint.allocatedCellCount;
+        if (footprint.kind === 'dense') {
+            denseComponentLookupCount++;
+        } else {
+            sparseComponentLookupCount++;
+        }
+
         const pointInsideComponentFootprint = (x: number, y: number) => {
             const epsilon = 1e-5;
             const minX = Math.max(0, Math.floor(x - epsilon));
@@ -624,7 +967,7 @@ export async function generateSmoothMesh(
 
             for (let yy = minY; yy <= maxY; yy++) {
                 for (let xx = minX; xx <= maxX; xx++) {
-                    if (componentMask[yy * width + xx]) {
+                    if (footprint.containsCell(xx, yy)) {
                         return true;
                     }
                 }
@@ -664,9 +1007,30 @@ export async function generateSmoothMesh(
             return true;
         };
 
-        const loops = traceComponentLoops(componentCells, activePixels, width, height)
+        reportProgress({
+            phase: 'boundary-trace',
+            label: 'Tracing smooth boundaries',
+            progress: 0.25,
+        });
+        const loops = (
+            await traceComponentLoops(componentCells, activePixels, width, height, {
+                maybeYield,
+                onProgress: (progress) =>
+                    reportProgress({
+                        phase: 'boundary-trace',
+                        label: 'Tracing smooth boundaries',
+                        progress: 0.25 + progress * 0.3,
+                    }),
+            })
+        )
             .filter((loop) => loop.length >= 3)
             .sort((a, b) => Math.abs(ShapeUtils.area(b)) - Math.abs(ShapeUtils.area(a)));
+        exactLoopCount += loops.length;
+        reportProgress({
+            phase: 'boundary-trace',
+            label: 'Tracing smooth boundaries',
+            progress: 0.55,
+        });
 
         if (loops.length === 0) {
             await maybeYield();
@@ -684,6 +1048,14 @@ export async function generateSmoothMesh(
                 normalized.reverse();
             }
             return normalized;
+        });
+        const exactLoops = [exactOuter, ...exactHoles].filter((loop) => loop.length >= 3);
+
+        smoothTemplateMissCount++;
+        reportProgress({
+            phase: 'smoothing',
+            label: 'Smoothing component boundaries',
+            progress: 0.45 + (start / activePixels.length) * 0.25,
         });
 
         const smoothOuter = smoothLoop(
@@ -705,8 +1077,9 @@ export async function generateSmoothMesh(
         }
 
         const smoothLoops = [smoothOuter, ...smoothHoles].filter((loop) => loop.length >= 3);
-        const exactLoops = [exactOuter, ...exactHoles].filter((loop) => loop.length >= 3);
         let topLoops = smoothLoops;
+        let usedExactLoops = false;
+        smoothedLoopCount += smoothLoops.length;
         if (topLoops.length === 0) {
             await maybeYield();
             continue;
@@ -716,6 +1089,7 @@ export async function generateSmoothMesh(
 
         if (faces.length === 0 || hasDegenerateCapFaces(topLoops, faces, pixelSize)) {
             topLoops = exactLoops;
+            usedExactLoops = true;
             faces = triangulateLoops(topLoops).faces;
         }
 
@@ -732,70 +1106,102 @@ export async function generateSmoothMesh(
             );
         }
 
-        const topVertices = topLoops.flat();
-        const topVertexCount = topVertices.length;
-        const baseVert = positions.length / 3;
+        const template = buildSmoothComponentTemplate(topLoops, faces, bounds, usedExactLoops);
+        reportProgress({
+            phase: 'topology',
+            label: 'Validating smooth topology',
+            progress: 0.8,
+        });
+        const topologyStartedAt = performance.now();
+        const templateTopologySafe = isSmoothComponentTemplateTopologySafe(
+            template,
+            bounds,
+            pixelSize,
+            zBottom,
+            zTop
+        );
+        topologyCheckElapsedMs += performance.now() - topologyStartedAt;
 
-        for (const point of topVertices) {
-            positions.push(point.x * pixelSize, point.y * pixelSize, zTop);
-        }
-        for (const point of topVertices) {
-            positions.push(point.x * pixelSize, point.y * pixelSize, zBottom);
-        }
-
-        for (const [a, b, c] of faces) {
-            indices.push(baseVert + a, baseVert + b, baseVert + c);
-            indices.push(
-                baseVert + topVertexCount + a,
-                baseVert + topVertexCount + c,
-                baseVert + topVertexCount + b
+        if (!templateTopologySafe) {
+            return generateGreedyMesh(
+                activePixels,
+                width,
+                height,
+                thickness,
+                zOffset,
+                pixelSize,
+                heightScale,
+                options
             );
         }
 
-        let loopOffset = 0;
-        for (let loopIndex = 0; loopIndex < topLoops.length; loopIndex++) {
-            const loop = topLoops[loopIndex];
-            addExtrudedLoopWalls(
-                indices,
-                baseVert,
-                topVertexCount,
-                loopOffset,
-                loop,
-                loopIndex > 0
-            );
-            loopOffset += loop.length;
+        if (componentTemplateKey) {
+            smoothTemplateCache.set(componentTemplateKey, template);
         }
+        requiresGlobalTopologyCheck = requiresGlobalTopologyCheck || usedExactLoops;
+        stampSmoothComponentTemplate(template, positions, indices, bounds, pixelSize, zBottom, zTop);
 
         await maybeYield();
     }
 
     const outputPositions = new Float32Array(positions);
 
-    if (
-        outputPositions.length > 0 &&
-        !isTopologySafeAfterCoordinateWeld(outputPositions, indices)
-    ) {
-        return generateGreedyMesh(
-            activePixels,
-            width,
-            height,
-            thickness,
-            zOffset,
-            pixelSize,
-            heightScale,
-            options
-        );
+    if (outputPositions.length > 0 && requiresGlobalTopologyCheck) {
+        reportProgress({
+            phase: 'topology',
+            label: 'Validating layer topology',
+            progress: 0.92,
+        });
+        const topologyStartedAt = performance.now();
+        const topologySafe = isTopologySafeAfterCoordinateWeld(outputPositions, indices);
+        topologyCheckElapsedMs += performance.now() - topologyStartedAt;
+
+        if (!topologySafe) {
+            return generateGreedyMesh(
+                activePixels,
+                width,
+                height,
+                thickness,
+                zOffset,
+                pixelSize,
+                heightScale,
+                options
+            );
+        }
     }
+    reportProgress({
+        phase: 'topology',
+        label: 'Smooth mesh complete',
+        progress: 1,
+    });
 
     return {
         positions: outputPositions,
         indices,
+        metrics: {
+            mesher: 'smooth',
+            elapsedMs: performance.now() - startedAt,
+            activePixelCount,
+            componentCount,
+            maxComponentPixelCount,
+            exactLoopCount,
+            smoothedLoopCount,
+            denseComponentLookupCount,
+            sparseComponentLookupCount,
+            componentLookupCellCount,
+            smoothTemplateHitCount,
+            smoothTemplateMissCount,
+            topologyCheckElapsedMs,
+            vertexCount: outputPositions.length / 3,
+            triangleCount: indices.length / 3,
+        },
     };
 }
 
 interface MeshYieldOptions {
     yieldIntervalMs?: number;
     onYield?: () => Promise<void>;
+    onProgress?: (progress: MeshProgress) => void;
 }
 
 /**
@@ -826,10 +1232,16 @@ export async function generateGreedyMesh(
     heightScale: number,
     options?: MeshYieldOptions
 ): Promise<MeshData> {
+    const startedAt = performance.now();
     const meshingPixels = repairBinaryCornerContacts(activePixels, width, height);
     const positions: number[] = [];
     const indices: number[] = [];
     let vertCount = 0;
+    let activePixelCount = 0;
+
+    for (let i = 0; i < activePixels.length; i++) {
+        if (activePixels[i]) activePixelCount++;
+    }
 
     const yieldIntervalMs = options?.yieldIntervalMs ?? 8;
     const yieldControl =
@@ -839,6 +1251,12 @@ export async function generateGreedyMesh(
                 requestAnimationFrame(() => resolve());
             }));
     let lastYield = performance.now();
+    const reportProgress = (progress: MeshProgress) => {
+        options?.onProgress?.({
+            ...progress,
+            progress: Math.max(0, Math.min(1, progress.progress)),
+        });
+    };
     const maybeYield = async () => {
         const now = performance.now();
         if (now - lastYield >= yieldIntervalMs) {
@@ -886,6 +1304,11 @@ export async function generateGreedyMesh(
     }
     const rectangles: Rect[] = [];
     const visited = new Uint8Array(width * height);
+    reportProgress({
+        phase: 'rectangles',
+        label: 'Finding mesh rectangles',
+        progress: 0,
+    });
 
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
@@ -926,6 +1349,11 @@ export async function generateGreedyMesh(
                 rectangles.push({ x, y, w, h });
             }
         }
+        reportProgress({
+            phase: 'rectangles',
+            label: 'Finding mesh rectangles',
+            progress: progressInUnitSpan(y, height, 0, 0.28),
+        });
         await maybeYield();
     }
 
@@ -959,6 +1387,11 @@ export async function generateGreedyMesh(
 
         await maybeYield();
     }
+    reportProgress({
+        phase: 'caps',
+        label: 'Building mesh caps',
+        progress: 0.42,
+    });
 
     // --- Generate Top and Bottom Faces for each rectangle ---
 
@@ -1058,6 +1491,11 @@ export async function generateGreedyMesh(
 
         await maybeYield();
     }
+    reportProgress({
+        phase: 'walls',
+        label: 'Collecting mesh walls',
+        progress: 0.62,
+    });
 
     // --- Global Wall Generation ---
     // Collect all wall segments at pixel granularity, then merge respecting all vertices
@@ -1106,6 +1544,11 @@ export async function generateGreedyMesh(
 
         await maybeYield();
     }
+    reportProgress({
+        phase: 'walls',
+        label: 'Building mesh walls',
+        progress: 0.8,
+    });
 
     // Helper: merge wall segments respecting vertex positions
     const mergeAndEmitHorizontalWalls = (
@@ -1231,9 +1674,23 @@ export async function generateGreedyMesh(
         mergeAndEmitVerticalWalls(eastWalls, x, true);
         await maybeYield();
     }
+    reportProgress({
+        phase: 'walls',
+        label: 'Mesh geometry complete',
+        progress: 1,
+    });
+
+    const outputPositions = new Float32Array(positions);
 
     return {
-        positions: new Float32Array(positions),
-        indices: indices,
+        positions: outputPositions,
+        indices,
+        metrics: {
+            mesher: 'greedy',
+            elapsedMs: performance.now() - startedAt,
+            activePixelCount,
+            vertexCount: outputPositions.length / 3,
+            triangleCount: indices.length / 3,
+        },
     };
 }

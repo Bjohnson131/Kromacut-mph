@@ -286,6 +286,23 @@ async function runFlow(
                 page,
                 profile.colorCount >= 8 ? 3 * 60 * 1000 : 90 * 1000
             );
+
+            const buildState = await page.evaluate(() => {
+                const hook = (
+                    window as Window & {
+                        __KROMACUT_E2E?: {
+                            buildHistory?: unknown[];
+                            lastBuild?: { status?: string };
+                        };
+                    }
+                ).__KROMACUT_E2E;
+                return {
+                    historyCount: hook?.buildHistory?.length ?? 0,
+                    status: hook?.lastBuild?.status ?? null,
+                };
+            });
+            expect(buildState.historyCount).toBe(0);
+            expect(buildState.status).not.toBe('building');
         },
         persistMetrics
     );

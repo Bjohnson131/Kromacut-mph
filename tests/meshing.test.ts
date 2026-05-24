@@ -260,6 +260,10 @@ test('meshers produce valid closed meshes for topology-heavy masks', async (t: T
             name: 'separate island and concave block',
             mask: maskFromRows(['##...##', '##...##', '.......', '..###..', '..#....', '..####.']),
         },
+        {
+            name: 'repeated diagonal islands',
+            mask: maskFromRows(['#.#.#.', '.#.#.#', '#.#.#.', '.#.#.#', '#.#.#.', '.#.#.#']),
+        },
     ];
 
     for (const { name: caseName, mask } of cases) {

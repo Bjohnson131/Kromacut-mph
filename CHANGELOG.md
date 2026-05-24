@@ -8,7 +8,11 @@ All notable changes to Kromacut are documented in this file.
 
 ### Changed
 
+- **Smooth meshing performance** - Smooth mesh generation now reuses repeated component templates, avoids full-image per-component footprint masks, validates reusable topology once per template, and reports finer-grained 3D build progress for component-heavy or dithered layers
+
 ### Fixed
+
+- **Manual 3D build trigger** - 3D print settings, including the smooth meshing toggle, no longer start or cancel preview mesh generation unless the user clicks **Build 3D Model**
 
 ## v2.6.0 - 2026-05-17
 
