@@ -6,6 +6,11 @@ export interface MeshData {
     metrics?: MeshMetrics;
 }
 
+export type SmoothFallbackReason =
+    | 'degenerate-exact-cap-faces'
+    | 'unsafe-component-topology'
+    | 'unsafe-layer-topology';
+
 export interface MeshMetrics {
     mesher: 'greedy' | 'smooth';
     elapsedMs: number;
@@ -14,11 +19,13 @@ export interface MeshMetrics {
     maxComponentPixelCount?: number;
     exactLoopCount?: number;
     smoothedLoopCount?: number;
+    exactLoopFallbackCount?: number;
     denseComponentLookupCount?: number;
     sparseComponentLookupCount?: number;
     componentLookupCellCount?: number;
     smoothTemplateHitCount?: number;
     smoothTemplateMissCount?: number;
+    smoothFallbackReason?: SmoothFallbackReason;
     topologyCheckElapsedMs?: number;
     vertexCount: number;
     triangleCount: number;
@@ -679,6 +686,7 @@ interface SmoothComponentTemplate {
     xy: number[];
     indices: number[];
     loopCount: number;
+    usedExactLoops: boolean;
     requiresGlobalTopologyCheck: boolean;
 }
 
@@ -706,7 +714,7 @@ function buildSmoothComponentTemplate(
     loops: Vector2[][],
     faces: number[][],
     bounds: ComponentBounds,
-    requiresGlobalTopologyCheck: boolean
+    usedExactLoops: boolean
 ): SmoothComponentTemplate {
     const vertices = loops.flat();
     const xy: number[] = [];
@@ -733,7 +741,8 @@ function buildSmoothComponentTemplate(
         xy,
         indices,
         loopCount: loops.length,
-        requiresGlobalTopologyCheck,
+        usedExactLoops,
+        requiresGlobalTopologyCheck: usedExactLoops,
     };
 }
 
@@ -804,6 +813,7 @@ export async function generateSmoothMesh(
     let maxComponentPixelCount = 0;
     let exactLoopCount = 0;
     let smoothedLoopCount = 0;
+    let exactLoopFallbackCount = 0;
     let denseComponentLookupCount = 0;
     let sparseComponentLookupCount = 0;
     let componentLookupCellCount = 0;
@@ -838,6 +848,40 @@ export async function generateSmoothMesh(
             await yieldControl();
             lastYield = performance.now();
         }
+    };
+    const fallbackToGreedy = async (smoothFallbackReason: SmoothFallbackReason) => {
+        const fallback = await generateGreedyMesh(
+            activePixels,
+            width,
+            height,
+            thickness,
+            zOffset,
+            pixelSize,
+            heightScale,
+            options
+        );
+
+        fallback.metrics = {
+            ...fallback.metrics,
+            mesher: 'greedy',
+            elapsedMs: performance.now() - startedAt,
+            componentCount,
+            maxComponentPixelCount,
+            exactLoopCount,
+            smoothedLoopCount,
+            exactLoopFallbackCount,
+            denseComponentLookupCount,
+            sparseComponentLookupCount,
+            componentLookupCellCount,
+            smoothTemplateHitCount,
+            smoothTemplateMissCount,
+            smoothFallbackReason,
+            topologyCheckElapsedMs,
+            vertexCount: fallback.positions.length / 3,
+            triangleCount: fallback.indices.length / 3,
+        };
+
+        return fallback;
     };
 
     const scaledThickness = thickness * heightScale;
@@ -930,6 +974,7 @@ export async function generateSmoothMesh(
         if (cachedTemplate) {
             smoothTemplateHitCount++;
             smoothedLoopCount += cachedTemplate.loopCount;
+            if (cachedTemplate.usedExactLoops) exactLoopFallbackCount++;
             requiresGlobalTopologyCheck =
                 requiresGlobalTopologyCheck || cachedTemplate.requiresGlobalTopologyCheck;
             reportProgress({
@@ -1090,20 +1135,12 @@ export async function generateSmoothMesh(
         if (faces.length === 0 || hasDegenerateCapFaces(topLoops, faces, pixelSize)) {
             topLoops = exactLoops;
             usedExactLoops = true;
+            exactLoopFallbackCount++;
             faces = triangulateLoops(topLoops).faces;
         }
 
         if (faces.length === 0 || hasDegenerateCapFaces(topLoops, faces, pixelSize)) {
-            return generateGreedyMesh(
-                activePixels,
-                width,
-                height,
-                thickness,
-                zOffset,
-                pixelSize,
-                heightScale,
-                options
-            );
+            return fallbackToGreedy('degenerate-exact-cap-faces');
         }
 
         const template = buildSmoothComponentTemplate(topLoops, faces, bounds, usedExactLoops);
@@ -1123,16 +1160,7 @@ export async function generateSmoothMesh(
         topologyCheckElapsedMs += performance.now() - topologyStartedAt;
 
         if (!templateTopologySafe) {
-            return generateGreedyMesh(
-                activePixels,
-                width,
-                height,
-                thickness,
-                zOffset,
-                pixelSize,
-                heightScale,
-                options
-            );
+            return fallbackToGreedy('unsafe-component-topology');
         }
 
         if (componentTemplateKey) {
@@ -1157,16 +1185,7 @@ export async function generateSmoothMesh(
         topologyCheckElapsedMs += performance.now() - topologyStartedAt;
 
         if (!topologySafe) {
-            return generateGreedyMesh(
-                activePixels,
-                width,
-                height,
-                thickness,
-                zOffset,
-                pixelSize,
-                heightScale,
-                options
-            );
+            return fallbackToGreedy('unsafe-layer-topology');
         }
     }
     reportProgress({
@@ -1186,6 +1205,7 @@ export async function generateSmoothMesh(
             maxComponentPixelCount,
             exactLoopCount,
             smoothedLoopCount,
+            exactLoopFallbackCount,
             denseComponentLookupCount,
             sparseComponentLookupCount,
             componentLookupCellCount,

@@ -6,6 +6,8 @@ All notable changes to Kromacut are documented in this file.
 
 ### Added
 
+- **Smooth meshing diagnostics** - 3D build metrics now report exact-loop component fallbacks and greedy fallback reasons so blocky smooth-mesh layers can be diagnosed from test output
+
 ### Changed
 
 - **Smooth meshing performance** - Smooth mesh generation now reuses repeated component templates, avoids full-image per-component footprint masks, validates reusable topology once per template, and reports finer-grained 3D build progress for component-heavy or dithered layers

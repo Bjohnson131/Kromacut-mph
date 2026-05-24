@@ -408,6 +408,57 @@ test('smooth caps do not create overhangs outside the source footprint', async (
     assert.equal(countCapCentroidsOutsideMask(mesh, mask, 0.4), 0);
 });
 
+test('smooth metrics report exact-loop fallback state', async () => {
+    const smoothMask = maskFromRows(['##', '##']);
+    const smoothMesh = await generateSmoothMesh(
+        smoothMask.activePixels,
+        smoothMask.width,
+        smoothMask.height,
+        0.08,
+        0,
+        0.4,
+        1,
+        noYieldOptions
+    );
+
+    assert.equal(smoothMesh.metrics?.mesher, 'smooth');
+    assert.equal(smoothMesh.metrics?.exactLoopFallbackCount, 0);
+    assert.equal(smoothMesh.metrics?.smoothFallbackReason, undefined);
+
+    const exportRoundedMesh = await generateSmoothMesh(
+        smoothMask.activePixels,
+        smoothMask.width,
+        smoothMask.height,
+        0.08,
+        0,
+        0.00005,
+        1,
+        noYieldOptions
+    );
+
+    assert.equal(exportRoundedMesh.metrics?.mesher, 'smooth');
+    assert.equal(exportRoundedMesh.metrics?.exactLoopFallbackCount, 1);
+    assert.equal(exportRoundedMesh.metrics?.smoothFallbackReason, undefined);
+});
+
+test('smooth metrics report greedy fallback reason', async () => {
+    const mask = maskFromRows(['##', '##']);
+    const mesh = await generateSmoothMesh(
+        mask.activePixels,
+        mask.width,
+        mask.height,
+        0.08,
+        0,
+        0.000001,
+        1,
+        noYieldOptions
+    );
+
+    assert.equal(mesh.metrics?.mesher, 'greedy');
+    assert.equal(mesh.metrics?.exactLoopFallbackCount, 1);
+    assert.equal(mesh.metrics?.smoothFallbackReason, 'degenerate-exact-cap-faces');
+});
+
 test('yield options do not compromise mesh integrity', async () => {
     const mask = maskFromRows(['####.', '#..#.', '####.', '..###', '..#.#', '..###']);
     let yieldCount = 0;
