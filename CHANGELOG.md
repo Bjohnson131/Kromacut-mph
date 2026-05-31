@@ -4,6 +4,11 @@ All notable changes to Kromacut are documented in this file.
 
 ## v2.7.0 - unreleased
 
+### Added
+
+- **In-app user documentation** - Added a bundled Markdown Docs view with global and per-page tables of contents, stable heading links, cross-document navigation, and end-user guides for the image-to-3D-print workflow
+- **Pre-build model size estimate** - Added an estimated 3D model size beside the Pixel Size setting so users can preview footprint and stack height before building the model
+
 ### Changed
 
 - **Smooth meshing performance** - Smooth mesh generation now uses one fast welded-grid algorithm with deterministic boundary-chain smoothing in a bounded sub-pixel envelope and fan-triangulated caps instead of contour tracing and cap cleanup, avoiding hangs and browser memory blowups on complex image layers

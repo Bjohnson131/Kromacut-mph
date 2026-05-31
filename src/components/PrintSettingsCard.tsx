@@ -8,6 +8,7 @@ interface PrintSettingsCardProps {
     layerHeight: number;
     slicerFirstLayerHeight: number;
     pixelSize: number;
+    modelSizeEstimate?: { width: number; height: number; depth: number } | null;
     smoothMeshing: boolean;
     onLayerHeightChange: (v: number) => void;
     onSlicerFirstLayerHeightChange: (v: number) => void;
@@ -38,6 +39,11 @@ function parseDraftNumber(value: string) {
 
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function formatModelDimension(value: number) {
+    if (!Number.isFinite(value)) return '0.0';
+    return value.toFixed(1);
 }
 
 function useDraftNumberInput(
@@ -94,6 +100,7 @@ export default function PrintSettingsCard({
     layerHeight,
     slicerFirstLayerHeight,
     pixelSize,
+    modelSizeEstimate,
     smoothMeshing,
     onLayerHeightChange,
     onSlicerFirstLayerHeightChange,
@@ -150,16 +157,32 @@ export default function PrintSettingsCard({
                                 mm/pixel
                             </span>
                         </div>
-                        <Input
-                            data-testid="print-pixel-size"
-                            type="text"
-                            inputMode="decimal"
-                            value={pixelSizeInput.value}
-                            className={pixelSizeInput.error ? 'border-red-500 focus-visible:ring-red-500' : ''}
-                            onChange={(e) => pixelSizeInput.onChange(e.target.value)}
-                            onFocus={pixelSizeInput.onFocus}
-                            onBlur={pixelSizeInput.onBlur}
-                        />
+                        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                            <Input
+                                data-testid="print-pixel-size"
+                                type="text"
+                                inputMode="decimal"
+                                value={pixelSizeInput.value}
+                                className={
+                                    pixelSizeInput.error
+                                        ? 'border-red-500 focus-visible:ring-red-500'
+                                        : ''
+                                }
+                                onChange={(e) => pixelSizeInput.onChange(e.target.value)}
+                                onFocus={pixelSizeInput.onFocus}
+                                onBlur={pixelSizeInput.onBlur}
+                            />
+                            {modelSizeEstimate && (
+                                <span
+                                    className="min-w-0 text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground font-medium text-center"
+                                    title="Estimated model size before building"
+                                >
+                                    Model: {formatModelDimension(modelSizeEstimate.width)}×
+                                    {formatModelDimension(modelSizeEstimate.height)}×
+                                    {formatModelDimension(modelSizeEstimate.depth)} mm
+                                </span>
+                            )}
+                        </div>
                         {pixelSizeInput.error && (
                             <span className="text-xs text-red-500">{pixelSizeInput.error}</span>
                         )}

@@ -20,13 +20,14 @@ import type { Swatch, ThreeDControlsStateShape } from '../types';
 import PrintSettingsCard from './PrintSettingsCard';
 import PrintInstructions from './PrintInstructions';
 import AutoPaintTab from './AutoPaintTab';
+import type { ImageDimensions } from '../hooks/useSwatches';
 
 // Re-export types for backward compatibility
 export type { Filament, ThreeDControlsStateShape } from '../types';
 
 interface ThreeDControlsProps {
     swatches: Swatch[] | null;
-    imageDimensions: { width: number; height: number } | null;
+    imageDimensions: ImageDimensions | null;
     onChange?: (state: ThreeDControlsStateShape) => void;
     /**
      * Called whenever non-build settings change so the parent can keep
@@ -197,6 +198,38 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         return autoPaintToSliceHeights(autoPaintResult, layerHeight, slicerFirstLayerHeight);
     }, [autoPaintResult, layerHeight, slicerFirstLayerHeight]);
 
+    const modelSizeEstimate = useMemo(() => {
+        if (!imageDimensions) return null;
+        const widthPx = imageDimensions.opaqueWidth || imageDimensions.width;
+        const heightPx = imageDimensions.opaqueHeight || imageDimensions.height;
+        const estimateOrder =
+            paintMode === 'autopaint' && autoPaintSliceData
+                ? autoPaintSliceData.colorOrder
+                : colorOrder;
+        const estimateHeights =
+            paintMode === 'autopaint' && autoPaintSliceData
+                ? autoPaintSliceData.colorSliceHeights
+                : colorSliceHeights;
+        const depth = estimateOrder.reduce((total, swatchIndex, position) => {
+            const height = estimateHeights[swatchIndex] ?? 0;
+            return total + (position === 0 ? Math.max(height, slicerFirstLayerHeight) : height);
+        }, 0);
+
+        return {
+            width: widthPx * pixelSize,
+            height: heightPx * pixelSize,
+            depth,
+        };
+    }, [
+        autoPaintSliceData,
+        colorOrder,
+        colorSliceHeights,
+        imageDimensions,
+        paintMode,
+        pixelSize,
+        slicerFirstLayerHeight,
+    ]);
+
     const instructionColorCount =
         paintMode === 'autopaint'
             ? autoPaintResult?.layers.length ?? 0
@@ -311,6 +344,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 layerHeight={layerHeight}
                 slicerFirstLayerHeight={slicerFirstLayerHeight}
                 pixelSize={pixelSize}
+                modelSizeEstimate={modelSizeEstimate}
                 smoothMeshing={smoothMeshing}
                 onLayerHeightChange={setLayerHeight}
                 onSlicerFirstLayerHeightChange={setSlicerFirstLayerHeight}

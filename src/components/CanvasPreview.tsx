@@ -186,7 +186,7 @@ const CanvasPreview = forwardRef<CanvasPreviewHandle, Props>(
             } catch {
                 // ignore
             }
-        }, [adjustmentsSig, hasAdjustments]);
+        }, [adjustments, adjustmentsSig, hasAdjustments]);
 
         const drawRafRef = useRef<number | null>(null);
         const requestDraw = useCallback(() => {
