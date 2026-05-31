@@ -6,6 +6,7 @@ import {
     saveProfilesToStorage,
     createProfile,
     overwriteProfile,
+    renameProfile,
     deleteProfile as deleteProfileFromList,
     importProfiles,
     parseProfileFile,
@@ -42,6 +43,8 @@ export function useProfileManager({ filaments, setFilaments }: UseProfileManager
     );
     const [showSaveNewPopover, setShowSaveNewPopover] = useState(false);
     const [saveProfileName, setSaveProfileName] = useState('');
+    const [showRenamePopover, setShowRenamePopover] = useState(false);
+    const [renameProfileName, setRenameProfileName] = useState('');
     const [importFeedback, setImportFeedback] = useState<string | null>(null);
     const importInputRef = useRef<HTMLInputElement>(null);
     const filamentCalibrationSignature = useCallback(
@@ -87,6 +90,17 @@ export function useProfileManager({ filaments, setFilaments }: UseProfileManager
         setProfiles(updated);
         saveProfilesToStorage(updated);
     }, [activeProfileId, filaments, profiles]);
+
+    const handleRenameProfile = useCallback(
+        (name: string) => {
+            if (!activeProfileId || !name.trim()) return;
+            const updated = renameProfile(profiles, activeProfileId, name);
+            setProfiles(updated);
+            saveProfilesToStorage(updated);
+            setShowRenamePopover(false);
+        },
+        [activeProfileId, profiles]
+    );
 
     const handleLoadProfile = useCallback(
         (id: string) => {
@@ -175,6 +189,12 @@ export function useProfileManager({ filaments, setFilaments }: UseProfileManager
         return () => clearTimeout(timer);
     }, [importFeedback]);
 
+    useEffect(() => {
+        if (!showRenamePopover) return;
+        const active = activeProfileId ? profiles.find((p) => p.id === activeProfileId) : null;
+        setRenameProfileName(active?.name ?? '');
+    }, [activeProfileId, profiles, showRenamePopover]);
+
     return {
         profiles,
         activeProfileId,
@@ -183,11 +203,16 @@ export function useProfileManager({ filaments, setFilaments }: UseProfileManager
         setShowSaveNewPopover,
         saveProfileName,
         setSaveProfileName,
+        showRenamePopover,
+        setShowRenamePopover,
+        renameProfileName,
+        setRenameProfileName,
         importFeedback,
         importInputRef,
         initialFilaments: initialState.initialFilaments,
         handleSaveNewProfile,
         handleOverwriteProfile,
+        handleRenameProfile,
         handleLoadProfile,
         handleDeleteProfile,
         handleExportProfile,

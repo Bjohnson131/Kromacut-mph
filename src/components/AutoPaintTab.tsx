@@ -10,6 +10,7 @@ import {
     Download,
     Upload,
     FilePlus,
+    Pencil,
     BadgeCheck,
     Loader2,
 } from 'lucide-react';
@@ -54,10 +55,15 @@ interface AutoPaintTabProps {
     setShowSaveNewPopover: (v: boolean) => void;
     saveProfileName: string;
     setSaveProfileName: (v: string) => void;
+    showRenamePopover: boolean;
+    setShowRenamePopover: (v: boolean) => void;
+    renameProfileName: string;
+    setRenameProfileName: (v: string) => void;
     importFeedback: string | null;
     importInputRef: React.RefObject<HTMLInputElement | null>;
     handleSaveNewProfile: (name: string) => void;
     handleOverwriteProfile: () => void;
+    handleRenameProfile: (name: string) => void;
     handleLoadProfile: (id: string) => void;
     handleDeleteProfile: (id: string) => void;
     handleExportProfile: () => void;
@@ -107,10 +113,15 @@ export default function AutoPaintTab({
     setShowSaveNewPopover,
     saveProfileName,
     setSaveProfileName,
+    showRenamePopover,
+    setShowRenamePopover,
+    renameProfileName,
+    setRenameProfileName,
     importFeedback,
     importInputRef,
     handleSaveNewProfile,
     handleOverwriteProfile,
+    handleRenameProfile,
     handleLoadProfile,
     handleDeleteProfile,
     handleExportProfile,
@@ -287,6 +298,46 @@ export default function AutoPaintTab({
                                         className="w-full h-7 text-xs cursor-pointer"
                                     >
                                         Save
+                                    </Button>
+                                </div>
+                            </PopoverContent>
+                        </Popover>
+
+                        {/* Rename */}
+                        <Popover open={showRenamePopover} onOpenChange={setShowRenamePopover}>
+                            <PopoverTrigger asChild>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-muted-foreground hover:text-primary cursor-pointer flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    title="Rename selected profile"
+                                    disabled={!activeProfileId}
+                                >
+                                    <Pencil className="w-4 h-4" />
+                                </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-64 p-3" align="end">
+                                <div className="space-y-2">
+                                    <h4 className="text-xs font-semibold">Rename Profile</h4>
+                                    <Input
+                                        placeholder="Profile name..."
+                                        value={renameProfileName}
+                                        onChange={(e) => setRenameProfileName(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                handleRenameProfile(renameProfileName);
+                                            }
+                                        }}
+                                        className="h-8 text-xs"
+                                        autoFocus
+                                    />
+                                    <Button
+                                        size="sm"
+                                        onClick={() => handleRenameProfile(renameProfileName)}
+                                        disabled={!renameProfileName.trim()}
+                                        className="w-full h-7 text-xs cursor-pointer"
+                                    >
+                                        Rename
                                     </Button>
                                 </div>
                             </PopoverContent>

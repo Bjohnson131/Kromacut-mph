@@ -85,6 +85,25 @@ export function overwriteProfile(
     );
 }
 
+export function renameProfile(
+    profiles: AutoPaintProfile[],
+    id: string,
+    name: string
+): AutoPaintProfile[] {
+    const trimmedName = name.trim();
+    if (!trimmedName) return profiles;
+
+    return profiles.map((p) =>
+        p.id === id
+            ? {
+                  ...p,
+                  name: trimmedName,
+                  updatedAt: Date.now(),
+              }
+            : p
+    );
+}
+
 export function deleteProfile(profiles: AutoPaintProfile[], id: string): AutoPaintProfile[] {
     return profiles.filter((p) => p.id !== id);
 }

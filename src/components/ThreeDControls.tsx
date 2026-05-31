@@ -385,10 +385,15 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                     setShowSaveNewPopover={profileManager.setShowSaveNewPopover}
                     saveProfileName={profileManager.saveProfileName}
                     setSaveProfileName={profileManager.setSaveProfileName}
+                    showRenamePopover={profileManager.showRenamePopover}
+                    setShowRenamePopover={profileManager.setShowRenamePopover}
+                    renameProfileName={profileManager.renameProfileName}
+                    setRenameProfileName={profileManager.setRenameProfileName}
                     importFeedback={profileManager.importFeedback}
                     importInputRef={profileManager.importInputRef}
                     handleSaveNewProfile={profileManager.handleSaveNewProfile}
                     handleOverwriteProfile={profileManager.handleOverwriteProfile}
+                    handleRenameProfile={profileManager.handleRenameProfile}
                     handleLoadProfile={profileManager.handleLoadProfile}
                     handleDeleteProfile={profileManager.handleDeleteProfile}
                     handleExportProfile={profileManager.handleExportProfile}

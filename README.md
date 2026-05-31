@@ -187,6 +187,7 @@ Auto-paint configurations (filament lists) can be saved, loaded, and shared as *
 
 - **Save / Save New** — Persist the current filament set under a name. Overwrite an existing profile or create a new one.
 - **Load** — Select a saved profile from the dropdown to restore its filaments.
+- **Rename** — Change the selected profile name without changing its filaments.
 - **Export** — Download the current filaments as a `.kfil` file (JSON) to share with others.
 - **Import** — Load a `.kfil`, legacy `.kapp`, or `.json` profile file from disk.
 - **Delete** — Remove a saved profile.
