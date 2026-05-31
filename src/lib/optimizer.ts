@@ -10,7 +10,7 @@
  * - Result Caching: Skip redundant computations
  */
 
-import type { Filament } from '@/types';
+import type { Filament } from '../types';
 import { rgbToLab, deltaELab, hexToRgb, blendColors, type RGB, type Lab } from './autoPaint';
 
 // ============================================================================

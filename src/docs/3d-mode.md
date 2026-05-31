@@ -60,8 +60,8 @@ Auto-paint profiles store reusable filament sets.
 
 - **Save changes to current profile** updates the selected profile.
 - **Save as new profile** creates a new profile name.
-- **Import profile from file** loads a `.kapp` or `.json` profile.
-- **Export current filaments as .kapp file** shares the current filament setup.
+- **Import profile from file** loads a `.kfil`, legacy `.kapp`, or `.json` profile.
+- **Export current filaments as .kfil file** shares the current filament setup.
 - **Delete selected profile** removes the selected profile.
 
 ## Max Height

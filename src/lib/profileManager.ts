@@ -1,4 +1,4 @@
-import type { Filament } from '@/types';
+import type { Filament } from '../types';
 
 export interface AutoPaintProfile {
     id: string;
@@ -214,5 +214,5 @@ export function exportProfileBlob(profile: AutoPaintProfile): Blob {
 
 /** Sanitize a name for use as a filename. */
 export function profileFileName(name: string): string {
-    return `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.kapp`;
+    return `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.kfil`;
 }

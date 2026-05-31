@@ -11,6 +11,7 @@ All notable changes to Kromacut are documented in this file.
 
 ### Changed
 
+- **Filament profile extension** - Auto-paint filament profile exports now use `.kfil` by default while continuing to import legacy `.kapp` files
 - **Smooth meshing performance** - Smooth mesh generation now uses one fast welded-grid algorithm with deterministic boundary-chain smoothing in a bounded sub-pixel envelope and fan-triangulated caps instead of contour tracing and cap cleanup, avoiding hangs and browser memory blowups on complex image layers
 
 ### Fixed

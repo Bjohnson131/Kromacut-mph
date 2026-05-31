@@ -59,4 +59,4 @@ Layer numbers depend on slicer behavior, especially first-layer height. Use the 
 
 ## Can I Share My Settings?
 
-Yes. Export custom 2D palettes as `.kpal` files and Auto-paint filament profiles as `.kapp` files.
+Yes. Export custom 2D palettes as `.kpal` files and Auto-paint filament profiles as `.kfil` files. Older `.kapp` filament profile files can still be imported.

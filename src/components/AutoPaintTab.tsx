@@ -296,7 +296,7 @@ export default function AutoPaintTab({
                         <input
                             ref={importInputRef}
                             type="file"
-                            accept=".kapp,.json"
+                            accept=".kfil,.kapp,.json"
                             data-testid="autopaint-profile-import-input"
                             className="hidden"
                             onChange={handleImportFile}
@@ -316,7 +316,7 @@ export default function AutoPaintTab({
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8 text-muted-foreground hover:text-primary cursor-pointer flex-shrink-0"
-                            title="Export current filaments as .kapp file"
+                            title="Export current filaments as .kfil file"
                             onClick={handleExportProfile}
                             disabled={filaments.length === 0}
                         >
