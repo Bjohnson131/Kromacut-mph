@@ -185,6 +185,30 @@ function pointInsideMask(mask: RasterMask, x: number, y: number) {
     return false;
 }
 
+function pointInsideExpandedMask(mask: RasterMask, x: number, y: number, margin: number) {
+    const minX = Math.max(0, Math.floor(x - margin));
+    const maxX = Math.min(mask.width - 1, Math.floor(x + margin));
+    const minY = Math.max(0, Math.floor(y - margin));
+    const maxY = Math.min(mask.height - 1, Math.floor(y + margin));
+
+    for (let yy = minY; yy <= maxY; yy++) {
+        for (let xx = minX; xx <= maxX; xx++) {
+            if (!mask.activePixels[yy * mask.width + xx]) continue;
+
+            if (
+                x >= xx - margin &&
+                x <= xx + 1 + margin &&
+                y >= yy - margin &&
+                y <= yy + 1 + margin
+            ) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 function countCapCentroidsOutsideMask(mesh: MeshData, mask: RasterMask, pixelSize: number) {
     let outsideCount = 0;
 
@@ -212,6 +236,45 @@ function countCapCentroidsOutsideMask(mesh: MeshData, mask: RasterMask, pixelSiz
             3;
 
         if (!pointInsideMask(mask, cx, cy)) {
+            outsideCount++;
+        }
+    }
+
+    return outsideCount;
+}
+
+function countCapCentroidsOutsideExpandedMask(
+    mesh: MeshData,
+    mask: RasterMask,
+    pixelSize: number,
+    margin: number
+) {
+    let outsideCount = 0;
+
+    for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
+        const a = mesh.indices[i] * 3;
+        const b = mesh.indices[i + 1] * 3;
+        const c = mesh.indices[i + 2] * 3;
+        const az = mesh.positions[a + 2];
+        const bz = mesh.positions[b + 2];
+        const cz = mesh.positions[c + 2];
+
+        if (Math.abs(az - bz) > 1e-6 || Math.abs(bz - cz) > 1e-6) {
+            continue;
+        }
+
+        const cx =
+            (mesh.positions[a] / pixelSize +
+                mesh.positions[b] / pixelSize +
+                mesh.positions[c] / pixelSize) /
+            3;
+        const cy =
+            (mesh.positions[a + 1] / pixelSize +
+                mesh.positions[b + 1] / pixelSize +
+                mesh.positions[c + 1] / pixelSize) /
+            3;
+
+        if (!pointInsideExpandedMask(mask, cx, cy, margin)) {
             outsideCount++;
         }
     }
@@ -390,7 +453,7 @@ test('smooth 1024px logo stays slicer-safe after 3MF export rounding', async () 
     });
 });
 
-test('smooth caps do not create overhangs outside the source footprint', async () => {
+test('smooth caps stay inside the bounded smoothing envelope', async () => {
     const mask = maskFromRows(['######', '#....#', '#.##.#', '#.##.#', '#....#', '######']);
     const mesh = await generateSmoothMesh(
         mask.activePixels,
@@ -405,10 +468,14 @@ test('smooth caps do not create overhangs outside the source footprint', async (
 
     assertHealthyMesh('smooth concave footprint mesh', mesh);
     assert.equal(hasFractionalXY(mesh, 0.4), true, 'concave footprint should still be smoothed');
-    assert.equal(countCapCentroidsOutsideMask(mesh, mask, 0.4), 0);
+    assert.ok(
+        countCapCentroidsOutsideMask(mesh, mask, 0.4) > 0,
+        'smooth boundaries should be able to fill source-pixel stair notches'
+    );
+    assert.equal(countCapCentroidsOutsideExpandedMask(mesh, mask, 0.4, 0.5), 0);
 });
 
-test('smooth metrics report exact-loop fallback state', async () => {
+test('smooth metrics stay on the smooth algorithm without mesher substitution state', async () => {
     const smoothMask = maskFromRows(['##', '##']);
     const smoothMesh = await generateSmoothMesh(
         smoothMask.activePixels,
@@ -422,8 +489,7 @@ test('smooth metrics report exact-loop fallback state', async () => {
     );
 
     assert.equal(smoothMesh.metrics?.mesher, 'smooth');
-    assert.equal(smoothMesh.metrics?.exactLoopFallbackCount, 0);
-    assert.equal(smoothMesh.metrics?.smoothFallbackReason, undefined);
+    assert.equal(hasFractionalXY(smoothMesh, 0.4), true);
 
     const exportRoundedMesh = await generateSmoothMesh(
         smoothMask.activePixels,
@@ -437,26 +503,35 @@ test('smooth metrics report exact-loop fallback state', async () => {
     );
 
     assert.equal(exportRoundedMesh.metrics?.mesher, 'smooth');
-    assert.equal(exportRoundedMesh.metrics?.exactLoopFallbackCount, 1);
-    assert.equal(exportRoundedMesh.metrics?.smoothFallbackReason, undefined);
+    assert.equal(hasFractionalXY(exportRoundedMesh, 0.00005), true);
 });
 
-test('smooth metrics report greedy fallback reason', async () => {
-    const mask = maskFromRows(['##', '##']);
-    const mesh = await generateSmoothMesh(
-        mask.activePixels,
-        mask.width,
-        mask.height,
-        0.08,
-        0,
-        0.000001,
-        1,
-        noYieldOptions
-    );
+test('smooth meshing uses the fast smooth grid algorithm for complex image layers', async () => {
+    const masks = [
+        maskFromJpegLuminance(largeIssueFixturePath, 56, 96),
+        maskFromJpegLuminance(largeIssueFixturePath, 56, 112),
+        maskFromJpegLuminance(largeIssueFixturePath, 56, 128),
+    ];
 
-    assert.equal(mesh.metrics?.mesher, 'greedy');
-    assert.equal(mesh.metrics?.exactLoopFallbackCount, 1);
-    assert.equal(mesh.metrics?.smoothFallbackReason, 'degenerate-exact-cap-faces');
+    for (const [index, mask] of masks.entries()) {
+        const mesh = await generateSmoothMesh(
+            mask.activePixels,
+            mask.width,
+            mask.height,
+            0.08,
+            0,
+            0.36,
+            1,
+            noYieldOptions
+        );
+
+        assert.equal(mesh.metrics?.mesher, 'smooth');
+        assert.equal(hasFractionalXY(mesh, 0.36), true);
+        assert.ok(
+            mesh.indices.length / 3 < 10_000,
+            `complex smooth layer ${index + 1} should stay compact`
+        );
+    }
 });
 
 test('yield options do not compromise mesh integrity', async () => {

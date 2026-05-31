@@ -4,16 +4,14 @@ All notable changes to Kromacut are documented in this file.
 
 ## v2.7.0 - unreleased
 
-### Added
-
-- **Smooth meshing diagnostics** - 3D build metrics now report exact-loop component fallbacks and greedy fallback reasons so blocky smooth-mesh layers can be diagnosed from test output
-
 ### Changed
 
-- **Smooth meshing performance** - Smooth mesh generation now reuses repeated component templates, avoids full-image per-component footprint masks, validates reusable topology once per template, and reports finer-grained 3D build progress for component-heavy or dithered layers
+- **Smooth meshing performance** - Smooth mesh generation now uses one fast welded-grid algorithm with deterministic boundary-chain smoothing in a bounded sub-pixel envelope and fan-triangulated caps instead of contour tracing and cap cleanup, avoiding hangs and browser memory blowups on complex image layers
 
 ### Fixed
 
+- **Smooth meshing layer coverage** - Smooth meshing now applies to every generated layer without mesher substitution state
+- **Smooth STL export** - STL export now preserves smooth layer geometry instead of compacting smooth builds back into square-pixel heightfields
 - **Manual 3D build trigger** - 3D print settings, including the smooth meshing toggle, no longer start or cancel preview mesh generation unless the user clicks **Build 3D Model**
 
 ## v2.6.0 - 2026-05-17
@@ -41,7 +39,7 @@ All notable changes to Kromacut are documented in this file.
 ### Fixed
 
 - **Slicer-safe 3MF and meshing topology** - 3MF export now preserves shared vertex connectivity for non-indexed preview geometry while keeping separate colored layer objects, and greedy/smooth meshing now avoids degenerate cap triangles and inverted hole wall winding that could trigger non-manifold or missing-layer slicer warnings
-- **Auto-paint smooth 3MF topology** - 3MF export now welds raw Kromacut export vertices at serialized precision, smooth meshing rejects cap triangles that collapse during 3MF coordinate rounding, and fallback meshing bridges diagonal-only pixel contacts, preventing non-manifold edges in the 8-color logo regression
+- **Auto-paint smooth 3MF topology** - 3MF export now welds raw Kromacut export vertices at serialized precision, smooth meshing rejects cap triangles that collapse during 3MF coordinate rounding, and diagonal-only pixel contacts are bridged during meshing, preventing non-manifold edges in the 8-color logo regression
 - **Desktop large-file saves** - Native STL/3MF/PNG saves now stream blob data to disk in chunks instead of sending one huge array through Tauri IPC, avoiding large-export `RangeError: Invalid array length` failures on Windows
 - **Smooth meshing footprint safety** - Smooth corner cuts and simplification shortcuts now stay inside the source pixel footprint without running support-repair or clipping passes during smooth layer generation
 - **3MF smooth layer packaging** - Smooth layers now export as one manifold mesh object per non-empty color layer, and auto-paint exports use the intended physical filament colors instead of the preview's virtual blend colors

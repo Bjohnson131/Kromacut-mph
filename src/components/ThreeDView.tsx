@@ -38,7 +38,7 @@ interface ThreeDViewProps {
     enhancedColorMatch?: boolean; // Use color-distance mapping instead of luminance
     heightDithering?: boolean; // Floyd-Steinberg error diffusion on height map
     ditherLineWidth?: number; // Minimum dot size in mm for dithering
-    smoothMeshing?: boolean; // Use marching squares for smooth edges
+    smoothMeshing?: boolean; // Smooth connected boundaries using welded grid topology
 }
 
 // Convert hex color to RGB tuple
@@ -88,6 +88,7 @@ interface KromacutExportLayerData {
     height: number;
     pixelSize: number;
     topZ: number;
+    compactHeightfield?: boolean;
 }
 
 interface LayerPreviewSegment {
@@ -1247,6 +1248,7 @@ export default function ThreeDView({
                                 height: boxH,
                                 pixelSize,
                                 topZ: (baseZ + thickness) * heightScale,
+                                compactHeightfield: !smoothMeshing,
                             }
                         );
                         pushLayerDetail(buildLayerIndex, 'Preparing preview geometry', 0.96);
@@ -1418,6 +1420,7 @@ export default function ThreeDView({
                                 height: boxH,
                                 pixelSize,
                                 topZ: (baseZ + thickness) * heightScale,
+                                compactHeightfield: !smoothMeshing,
                             }
                         );
                         pushLayerDetail(buildLayerIndex, 'Preparing preview geometry', 0.96);

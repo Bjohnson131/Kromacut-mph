@@ -223,7 +223,7 @@ export default function PrintSettingsCard({
                     <div>
                         <span className="font-semibold text-foreground">Smooth Meshing</span>
                         <p className="text-xs text-muted-foreground">
-                            Use marching squares for smoother color boundary edges
+                            Smooth connected color boundary edges with fast welded topology
                         </p>
                     </div>
                     <Switch
