@@ -85,6 +85,17 @@ the same unreleased section. If a feature, test suite, or workflow was added dur
 unreleased version, later refinements to that same new work should usually stay under `Added` or be
 folded into the original bullet, not listed as `Changed` or `Fixed`.
 
+## Documentation Guidance
+
+Kromacut has user-facing in-app documentation in `src/docs`. When changing behavior that affects how
+someone uses the app, check whether those docs need to move with the code. This especially applies
+to workflow steps, settings, import/export formats, print instructions, auto-paint behavior,
+dedithering, supported platforms, release/update behavior, and troubleshooting advice.
+
+Docs updates should explain the practical user-facing behavior, not implementation details. Skip
+docs changes for purely internal cleanup, visual polish that does not change usage, or temporary
+debugging.
+
 ## Editing Heuristics
 
 - Preserve printability over cosmetic simplification. If mesh/export code gets shorter but loses
