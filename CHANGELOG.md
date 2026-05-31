@@ -17,6 +17,7 @@ All notable changes to Kromacut are documented in this file.
 
 ### Fixed
 
+- **Desktop update notices** - Fixed the Tauri desktop update checker so it runs without requiring the disabled global Tauri API, reports when the release endpoint differs from the installed app, uses a solid notification surface, and opens the GitHub releases page from the download button
 - **Windows desktop image drop** - Disabled Tauri's native webview file-drop interception so dragging image files onto the 2D canvas can reach the app's HTML drop handler on Windows
 - **Smooth meshing layer coverage** - Smooth meshing now applies to every generated layer without mesher substitution state
 - **Smooth STL export** - STL export now preserves smooth layer geometry instead of compacting smooth builds back into square-pixel heightfields
