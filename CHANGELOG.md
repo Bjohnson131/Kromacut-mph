@@ -15,6 +15,7 @@ All notable changes to Kromacut are documented in this file.
 
 ### Fixed
 
+- **Windows desktop image drop** - Disabled Tauri's native webview file-drop interception so dragging image files onto the 2D canvas can reach the app's HTML drop handler on Windows
 - **Smooth meshing layer coverage** - Smooth meshing now applies to every generated layer without mesher substitution state
 - **Smooth STL export** - STL export now preserves smooth layer geometry instead of compacting smooth builds back into square-pixel heightfields
 - **Manual 3D build trigger** - 3D print settings, including the smooth meshing toggle, no longer start or cancel preview mesh generation unless the user clicks **Build 3D Model**
