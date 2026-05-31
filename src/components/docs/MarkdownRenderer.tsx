@@ -106,15 +106,14 @@ function renderListItem(item: MarkdownListItem, props: MarkdownRendererProps, ke
     );
 }
 
-function headingClassName(depth: number, active: boolean) {
+function headingClassName(depth: number) {
     const base =
         'group scroll-mt-6 font-semibold tracking-normal text-foreground transition-colors';
-    const activeClass = active ? ' text-primary' : '';
 
-    if (depth === 1) return `${base} text-3xl sm:text-4xl mb-4${activeClass}`;
-    if (depth === 2) return `${base} text-2xl mt-10 mb-3 border-b border-border pb-2${activeClass}`;
-    if (depth === 3) return `${base} text-xl mt-8 mb-2${activeClass}`;
-    return `${base} text-base mt-6 mb-2${activeClass}`;
+    if (depth === 1) return `${base} text-3xl sm:text-4xl mb-4`;
+    if (depth === 2) return `${base} text-2xl mt-10 mb-3 border-b border-border pb-2`;
+    if (depth === 3) return `${base} text-xl mt-8 mb-2`;
+    return `${base} text-base mt-6 mb-2`;
 }
 
 function renderHeading(
@@ -128,7 +127,7 @@ function renderHeading(
         `h${level}`,
         {
             id: block.id,
-            className: headingClassName(level, props.activeHeading === block.id),
+            className: headingClassName(level),
         },
         <>
             <span>{renderInlineNodes(block.children, props, `heading-${block.id}`)}</span>

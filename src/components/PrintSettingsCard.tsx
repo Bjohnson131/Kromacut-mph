@@ -157,29 +157,31 @@ export default function PrintSettingsCard({
                                 mm/pixel
                             </span>
                         </div>
-                        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                        <div className="flex flex-wrap items-center gap-2">
                             <Input
                                 data-testid="print-pixel-size"
                                 type="text"
                                 inputMode="decimal"
                                 value={pixelSizeInput.value}
-                                className={
+                                className={`min-w-32 flex-1 ${
                                     pixelSizeInput.error
                                         ? 'border-red-500 focus-visible:ring-red-500'
                                         : ''
-                                }
+                                }`}
                                 onChange={(e) => pixelSizeInput.onChange(e.target.value)}
                                 onFocus={pixelSizeInput.onFocus}
                                 onBlur={pixelSizeInput.onBlur}
                             />
                             {modelSizeEstimate && (
                                 <span
-                                    className="min-w-0 text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground font-medium text-center"
+                                    className="inline-flex h-9 min-w-0 max-w-full flex-1 basis-44 items-center justify-start rounded-md border border-primary/20 bg-primary/10 px-3 text-xs font-semibold text-primary"
                                     title="Estimated model size before building"
                                 >
-                                    Model: {formatModelDimension(modelSizeEstimate.width)}×
-                                    {formatModelDimension(modelSizeEstimate.height)}×
-                                    {formatModelDimension(modelSizeEstimate.depth)} mm
+                                    <span className="truncate">
+                                        Model: {formatModelDimension(modelSizeEstimate.width)}×
+                                        {formatModelDimension(modelSizeEstimate.height)}×
+                                        {formatModelDimension(modelSizeEstimate.depth)} mm
+                                    </span>
                                 </span>
                             )}
                         </div>

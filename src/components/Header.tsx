@@ -6,10 +6,11 @@ import logo from '../assets/logo.png';
 interface Props {
     onLoadTest: () => void;
     docsOpen: boolean;
+    onBackToApp: () => void;
     onToggleDocs: () => void;
 }
 
-export const Header: React.FC<Props> = ({ onLoadTest, docsOpen, onToggleDocs }) => {
+export const Header: React.FC<Props> = ({ onLoadTest, docsOpen, onBackToApp, onToggleDocs }) => {
     const [isDark, setIsDark] = React.useState(() => {
         return document.documentElement.classList.contains('dark');
     });
@@ -30,17 +31,34 @@ export const Header: React.FC<Props> = ({ onLoadTest, docsOpen, onToggleDocs }) 
     return (
         <header className="h-12 flex items-center justify-between px-4 border-b border-border bg-card">
             <div className="flex items-center gap-2">
-                <img src={logo} alt="Kromacut" className="h-7 w-auto" />
-                <span className="font-extrabold text-base text-foreground tracking-wide ml-1 select-none max-md:hidden">
-                    Kromacut
-                </span>
+                {docsOpen ? (
+                    <button
+                        type="button"
+                        onClick={onBackToApp}
+                        className="-ml-1 flex cursor-pointer items-center gap-2 rounded-md p-1 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                        aria-label="Back to app"
+                        title="Back to app"
+                    >
+                        <img src={logo} alt="" className="h-7 w-auto" />
+                        <span className="font-extrabold text-base text-foreground tracking-wide ml-1 select-none max-md:hidden">
+                            Kromacut
+                        </span>
+                    </button>
+                ) : (
+                    <>
+                        <img src={logo} alt="Kromacut" className="h-7 w-auto" />
+                        <span className="font-extrabold text-base text-foreground tracking-wide ml-1 select-none max-md:hidden">
+                            Kromacut
+                        </span>
+                    </>
+                )}
             </div>
             <div className="flex gap-2.5 items-center">
                 <Button
                     size="sm"
                     onClick={onToggleDocs}
                     title={docsOpen ? 'Back to app' : 'Open docs'}
-                    className="bg-secondary hover:bg-secondary/80 text-secondary-foreground font-semibold transition-all duration-200 shadow-md hover:shadow-lg hover:scale-105 active:scale-95 gap-1.5"
+                    className="bg-foreground hover:bg-foreground/90 text-background font-semibold transition-all duration-200 shadow-md hover:shadow-lg hover:scale-105 active:scale-95 gap-1.5 border border-foreground/20"
                 >
                     {docsOpen ? (
                         <ArrowLeft className="w-4 h-4" />

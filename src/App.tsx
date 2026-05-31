@@ -285,16 +285,20 @@ function App(): React.ReactElement | null {
         return () => window.removeEventListener('hashchange', syncDocsHash);
     }, []);
 
+    const backToApp = () => {
+        setDocsOpen(false);
+        if (parseDocsHash(window.location.hash)) {
+            window.history.pushState(
+                null,
+                '',
+                `${window.location.pathname}${window.location.search}`
+            );
+        }
+    };
+
     const toggleDocs = () => {
         if (docsOpen) {
-            setDocsOpen(false);
-            if (parseDocsHash(window.location.hash)) {
-                window.history.pushState(
-                    null,
-                    '',
-                    `${window.location.pathname}${window.location.search}`
-                );
-            }
+            backToApp();
             return;
         }
 
@@ -363,6 +367,7 @@ function App(): React.ReactElement | null {
         <div className="box-border text-inherit font-sans flex flex-col flex-1 min-w-0 max-w-full min-h-0 h-screen w-full">
             <Header
                 docsOpen={docsOpen}
+                onBackToApp={backToApp}
                 onToggleDocs={toggleDocs}
                 onLoadTest={() => {
                     invalidate();

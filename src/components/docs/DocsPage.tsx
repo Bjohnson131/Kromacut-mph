@@ -21,6 +21,33 @@ function tocIndent(entry: TocEntry) {
     return Math.max(0, entry.depth - 1) * 12;
 }
 
+const DOC_NAV_GROUPS = [
+    {
+        id: 'start-here',
+        label: 'Start Here',
+        nested: false,
+        slugs: ['overview', 'quick-start'],
+    },
+    {
+        id: 'workflow',
+        label: 'Workflow',
+        nested: true,
+        slugs: [
+            'loading-images',
+            'reducing-colors',
+            'dedithering-cleanup',
+            '3d-mode',
+            'generating-exporting-output',
+        ],
+    },
+    {
+        id: 'reference',
+        label: 'Reference',
+        nested: false,
+        slugs: ['settings-and-controls', 'troubleshooting', 'faq'],
+    },
+] as const;
+
 export default function DocsPage() {
     const initialTarget = useMemo(getInitialTarget, []);
     const [activeDocSlug, setActiveDocSlug] = useState(initialTarget.docSlug);
@@ -103,44 +130,74 @@ export default function DocsPage() {
                 className="max-h-48 flex-shrink-0 overflow-y-auto border-b border-border bg-card/70 px-4 py-4 lg:max-h-none lg:w-72 lg:border-b-0 lg:border-r"
             >
                 <div className="mb-3">
-                    <h2 className="text-sm font-semibold text-foreground">Docs</h2>
+                    <h2 className="text-sm font-semibold text-foreground">Contents</h2>
                     <p className="mt-1 text-xs leading-5 text-muted-foreground">
                         User guide for turning images into printable color layers.
                     </p>
                 </div>
-                <div className="space-y-1">
-                    {docs.map((doc) => {
-                        const selected = doc.meta.slug === activeDoc.meta.slug;
+                <div className="space-y-5">
+                    {DOC_NAV_GROUPS.map((group) => {
+                        const groupDocs = group.slugs
+                            .map((slug) => docs.find((doc) => doc.meta.slug === slug))
+                            .filter((doc): doc is DocRecord => doc !== undefined);
+                        if (groupDocs.length === 0) return null;
+
                         return (
-                            <a
-                                key={doc.meta.slug}
-                                href={buildDocsHash(doc.meta.slug)}
-                                onClick={(event) => {
-                                    event.preventDefault();
-                                    navigate({ docSlug: doc.meta.slug });
-                                }}
-                                className={`block rounded-md px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
-                                    selected
-                                        ? 'bg-primary text-primary-foreground'
-                                        : 'text-foreground hover:bg-muted'
-                                }`}
-                                aria-current={selected ? 'page' : undefined}
-                            >
-                                <span className="block text-sm font-semibold">
-                                    {doc.meta.title}
-                                </span>
-                                {doc.meta.description && (
-                                    <span
-                                        className={`mt-1 block text-xs leading-5 ${
-                                            selected
-                                                ? 'text-primary-foreground/80'
-                                                : 'text-muted-foreground'
-                                        }`}
-                                    >
-                                        {doc.meta.description}
-                                    </span>
-                                )}
-                            </a>
+                            <section key={group.id} aria-labelledby={`docs-nav-${group.id}`}>
+                                <h3
+                                    id={`docs-nav-${group.id}`}
+                                    className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+                                >
+                                    {group.label}
+                                </h3>
+                                <ul
+                                    className={
+                                        group.nested
+                                            ? 'ml-2 space-y-1 border-l border-border pl-3'
+                                            : 'space-y-1'
+                                    }
+                                >
+                                    {groupDocs.map((doc) => {
+                                        const selected = doc.meta.slug === activeDoc.meta.slug;
+                                        return (
+                                            <li key={doc.meta.slug}>
+                                                <a
+                                                    href={buildDocsHash(doc.meta.slug)}
+                                                    onClick={(event) => {
+                                                        event.preventDefault();
+                                                        navigate({ docSlug: doc.meta.slug });
+                                                    }}
+                                                    className={`block border-l-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
+                                                        selected
+                                                            ? 'border-primary bg-muted text-foreground'
+                                                            : 'border-transparent text-foreground hover:border-border hover:bg-muted/60'
+                                                    }`}
+                                                    aria-current={selected ? 'page' : undefined}
+                                                >
+                                                    <span
+                                                        className={`block text-sm font-semibold ${
+                                                            selected ? 'text-primary' : 'text-foreground'
+                                                        }`}
+                                                    >
+                                                        {doc.meta.title}
+                                                    </span>
+                                                    {doc.meta.description && (
+                                                        <span
+                                                            className={`mt-1 block text-xs leading-5 ${
+                                                                selected
+                                                                    ? 'text-foreground/80'
+                                                                    : 'text-muted-foreground'
+                                                            }`}
+                                                        >
+                                                            {doc.meta.description}
+                                                        </span>
+                                                    )}
+                                                </a>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            </section>
                         );
                     })}
                 </div>
@@ -160,6 +217,10 @@ export default function DocsPage() {
             <aside className="max-h-44 flex-shrink-0 overflow-y-auto border-t border-border bg-card/70 px-4 py-4 lg:max-h-none lg:w-64 lg:border-l lg:border-t-0">
                 <nav aria-label="Current document headings">
                     <h2 className="text-sm font-semibold text-foreground">On This Page</h2>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                        Headings inside{' '}
+                        <span className="font-semibold">{activeDoc.meta.title}</span>.
+                    </p>
                     <div className="mt-3 space-y-1">
                         {activeDoc.toc.map((entry) => {
                             const selected = entry.id === activeHeading;

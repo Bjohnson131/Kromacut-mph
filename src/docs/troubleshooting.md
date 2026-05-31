@@ -22,8 +22,10 @@ If the image has more than 64 colors, Kromacut disables swap instructions. Go ba
 Try these in order:
 
 1. In Auto-paint, set **Max Height** lower and watch for compressed transition zones.
-2. In Manual mode, reduce one or more color slice heights.
-3. Confirm **Layer Height** and **First Layer Height** match your actual slicer settings.
+2. In Manual mode, check the image color count. Many colors create many stacked slices, so the model naturally becomes taller.
+3. Reduce colors in **2D** if you do not need every color as a separate printed layer.
+4. In Manual mode, reduce one or more color slice heights.
+5. Confirm **Layer Height** and **First Layer Height** match your actual slicer settings.
 
 ## The Model Is Too Large In X Or Y
 

@@ -25,7 +25,7 @@ If Kromacut shows a **Performance Warning**, the build may be slow because of im
 
 Click **Build 3D Model** whenever you want the preview and export geometry to reflect current 3D settings.
 
-While building, Kromacut shows progress such as reading image color layers, mapping image colors, or building color layers. Wait until the overlay disappears before exporting.
+While building, Kromacut shows progress such as reading image color layers, mapping image colors, or building color layers. Export controls become useful again once the overlay disappears and the updated model is ready to inspect.
 
 ## Choose STL Or 3MF
 

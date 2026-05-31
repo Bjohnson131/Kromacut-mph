@@ -21,7 +21,9 @@ Use **Auto-paint** when you have real filament colors and TD values and want Kro
 
 ## Do I Need To Calibrate Filaments?
 
-You can start with estimated TD values, but calibration usually improves Auto-paint results. Calibration is most useful when:
+You can start with estimated TD values. You can also check whether the filament maker, seller, or community has published Transmission Distance values for the exact filament you own.
+
+Calibration usually improves Auto-paint results, especially when published values are unavailable or the result still looks wrong. Calibration is most useful when:
 
 - A filament is translucent.
 - Two filaments are visually similar.

@@ -6,8 +6,8 @@ All notable changes to Kromacut are documented in this file.
 
 ### Added
 
-- **In-app user documentation** - Added a bundled Markdown Docs view with global and per-page tables of contents, stable heading links, cross-document navigation, and end-user guides for the image-to-3D-print workflow
-- **Pre-build model size estimate** - Added an estimated 3D model size beside the Pixel Size setting so users can preview footprint and stack height before building the model
+- **In-app user documentation** - Added a bundled Markdown Docs view with a conventional guide table of contents, per-page tables of contents, stable heading links, header brand navigation back to the app, cross-document navigation, and end-user guides for the image-to-3D-print workflow
+- **Pre-build model size estimate** - Added an estimated 3D model size to the Pixel Size setting, shown as a blue input-height estimate beside the input when space allows so users can preview footprint and stack height before building the model
 
 ### Changed
 

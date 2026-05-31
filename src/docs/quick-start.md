@@ -25,16 +25,18 @@ Click **Apply** in the Adjustments panel when you want to bake the current adjus
 
 In **Quantization Settings**:
 
-1. Choose a **Palette** or leave it on **Auto**.
-2. Set **Number of Colors** to the size you want to print or preview.
-3. Choose an **Algorithm**.
+1. Leave **Palette** on **Auto** unless you already have a specific palette in mind.
+2. Start with **Number of Colors** set to **16**. Lower it if you need fewer filament changes, or raise it if the preview needs more detail.
+3. Leave **Algorithm** on the default **K-means** option. It is the recommended starting algorithm for most images.
 4. Click **Apply**.
 
 Use the **Image colors** panel to inspect the result. Click a swatch to edit or delete that color.
 
 ## Dedither Or Clean Up
 
-If color reduction leaves isolated speckles, use **Dedither**. Start with the default **Weight** and **Passes**, then click **Apply**. Increase passes only when the image still looks noisy after one pass.
+If color reduction leaves isolated speckles, use **Dedither** as a denoising pass. It is especially useful because individual stray pixels in the 2D image can become individual bits of geometry in the 3D model.
+
+Start with the default **Weight** and **Passes**, then click **Apply**. Increase passes only when the image still has too many isolated pixels after one pass.
 
 ## Enable 3D Mode
 
@@ -47,9 +49,19 @@ Click **3D**. Set the print basics first:
 
 ## Choose Manual Or Auto-paint
 
-Use **Manual** when you want to directly tune the color stack. Drag colors to reorder them and use each row slider to set slice height.
+Use **Manual** when you want direct control over the reduced image colors. Manual mode uses the swatches from **Image colors**: drag colors into the print order you want, then use each row slider to decide how much height that color contributes. This is a good first choice when you already know the layer order you want or you are matching a small, simple palette.
 
-Use **Auto-paint** when you want Kromacut to build a layer stack from your real filaments. Add filaments, set each color and TD, then use **Enhanced color matching** if you want the optimizer to search for a better filament order.
+Use **Auto-paint** when you want Kromacut to plan the physical filament stack for you. Auto-paint starts from your real filaments instead of the reduced image swatches, then uses each filament's color and **Transmission Distance (TD)** to estimate how stacked layers will look.
+
+For a first Auto-paint run:
+
+1. Add the filaments you actually plan to print with.
+2. Set each filament color as accurately as you can.
+3. Set each filament's **TD**. The wand estimate is fine for experimenting, but calibrated TD values usually give better results.
+4. Leave **Max Height** on **Auto** at first.
+5. Enable **Enhanced color matching** if the first result misses important colors or you want the optimizer to search for a better filament order.
+
+After Auto-paint computes a stack, check the transition zones and confidence details before exporting. Low confidence usually means the filament set is missing a useful color, the TD values need calibration, or the max height is too restrictive.
 
 ## Generate And Export
 
