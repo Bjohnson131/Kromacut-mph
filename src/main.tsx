@@ -9,6 +9,9 @@ if (savedTheme !== 'light') {
     document.documentElement.classList.add('dark');
 }
 
+// Keep browser tabs compact while the static HTML title remains descriptive for crawlers and previews.
+document.title = 'Kromacut';
+
 createRoot(document.getElementById('root')!).render(
     <StrictMode>
         <App />
