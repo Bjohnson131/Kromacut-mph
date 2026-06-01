@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn detects_any_different_release_version() {
         assert!(is_different_version("2.6.1", "2.6.0"));
-        assert!(is_different_version("2.6.0", "2.7.0"));
+        assert!(is_different_version("2.6.0", "3.0.0"));
         assert!(is_different_version("3.0.0", "2.9.9"));
     }
 
