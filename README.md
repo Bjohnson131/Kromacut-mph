@@ -334,4 +334,6 @@ Contributions welcome. Open issues or PRs for bugs, improvements, or feature sug
 
 ## License
 
-This project is open-source — see the `LICENSE` file in the repository.
+Kromacut is free software licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See the `LICENSE` file in the repository.
+
+Copyright (C) 2025 vycdev. Redistribution and modified versions must preserve the copyright and license notices. Modified desktop distributions must provide the corresponding source under the AGPL, and modified hosted/network versions must also offer source access to their users.
