@@ -286,6 +286,23 @@ async function runFlow(
                 page,
                 profile.colorCount >= 8 ? 3 * 60 * 1000 : 90 * 1000
             );
+
+            const buildState = await page.evaluate(() => {
+                const hook = (
+                    window as Window & {
+                        __KROMACUT_E2E?: {
+                            buildHistory?: unknown[];
+                            lastBuild?: { status?: string };
+                        };
+                    }
+                ).__KROMACUT_E2E;
+                return {
+                    historyCount: hook?.buildHistory?.length ?? 0,
+                    status: hook?.lastBuild?.status ?? null,
+                };
+            });
+            expect(buildState.historyCount).toBe(0);
+            expect(buildState.status).not.toBe('building');
         },
         persistMetrics
     );
@@ -508,14 +525,17 @@ async function exportModel(
 async function openDownloadMenu(page: Page, expectedItemTestId: string) {
     const trigger = page.getByTestId('download-3d-model');
     const expectedItem = page.getByTestId(expectedItemTestId);
+    let lastOpenError: unknown = null;
 
     await expect(trigger).toBeVisible();
     await expect(trigger).toBeEnabled();
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-        await trigger.evaluate((element: HTMLElement) => {
-            element.scrollIntoView({ block: 'center', inline: 'center' });
-        });
+    for (let attempt = 0; attempt < 5; attempt++) {
+        if (await expectedItem.isVisible().catch(() => false)) {
+            return;
+        }
+
+        await trigger.scrollIntoViewIfNeeded();
         try {
             await trigger.click({ force: attempt > 0, noWaitAfter: true, timeout: 10_000 });
         } catch {
@@ -524,17 +544,20 @@ async function openDownloadMenu(page: Page, expectedItemTestId: string) {
             await trigger.evaluate((element: HTMLElement) => element.click());
         }
 
-        if (await expectedItem.isVisible({ timeout: 2000 }).catch(() => false)) {
+        try {
+            await expectedItem.waitFor({ state: 'visible', timeout: 10_000 });
             return;
+        } catch (error) {
+            lastOpenError = error;
         }
 
         await page.keyboard.press('Escape').catch(() => {
             // The menu may not have opened.
         });
-        await delay(250);
+        await delay(500);
     }
 
-    await expect(expectedItem).toBeVisible();
+    throw lastOpenError ?? new Error(`Download menu item ${expectedItemTestId} did not appear`);
 }
 
 async function validateSTL(filePath: string) {
@@ -705,6 +728,7 @@ function createMetricsWriter(
                         project: testInfo.project.name,
                         retry: testInfo.retry,
                         status: testInfo.status,
+                        flowStatus: inferFlowStatus(metrics, browserErrors),
                         expectedStatus: testInfo.expectedStatus,
                         duration: testInfo.duration,
                     },
@@ -717,6 +741,22 @@ function createMetricsWriter(
             )
         );
     };
+}
+
+function inferFlowStatus(metrics: FlowMetrics, browserErrors: string[]) {
+    if (
+        browserErrors.length > 0 ||
+        metrics.phases.some((phase) => phase.error) ||
+        metrics.exports.some((exportMetric) => exportMetric.status === 'failed')
+    ) {
+        return 'failed';
+    }
+
+    if (metrics.exports.some((exportMetric) => exportMetric.status === 'running')) {
+        return 'running';
+    }
+
+    return 'passed';
 }
 
 async function attachJson(testInfo: TestInfo, name: string, value: unknown) {

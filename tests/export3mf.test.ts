@@ -306,7 +306,8 @@ function createCompactExportLayer(
     mask: RasterMask,
     pixelSize: number,
     topZ: number,
-    color: number
+    color: number,
+    compactHeightfield = true
 ) {
     const layer = createMeshDataLayer(mesh, color);
 
@@ -318,6 +319,7 @@ function createCompactExportLayer(
         height: mask.height,
         pixelSize,
         topZ,
+        compactHeightfield,
     };
 
     return layer;
@@ -1019,6 +1021,19 @@ function assertStlLayerIsManifold(mesh: MeshData, label: string) {
     );
 }
 
+function hasFractionalXY(mesh: MeshData, pixelSize: number) {
+    for (let i = 0; i + 2 < mesh.positions.length; i += 3) {
+        const x = mesh.positions[i] / pixelSize;
+        const y = mesh.positions[i + 1] / pixelSize;
+
+        if (Math.abs(x - Math.round(x)) > 1e-4 || Math.abs(y - Math.round(y)) > 1e-4) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function assertExportLayerHasOutwardNormals(mesh: MeshData, label: string) {
     const report = inspectMeshIntegrity(mesh, { edgeEpsilon: 1e-5 });
 
@@ -1527,6 +1542,21 @@ test('STL compact heightfield stays manifold for the large JPG 4-color stack', a
     const exported = await parseSingleBinaryStlMesh(await exportObjectToStlBlob(root));
 
     assertStlLayerIsManifold(exported.mesh, 'large JPG 4-color compact STL heightfield');
+});
+
+test('STL export preserves smooth layer geometry when heightfield compaction is disabled', async () => {
+    const root = new THREE.Group();
+    const mask = maskFromRows(['#....', '##...', '.##..', '..##.', '...##', '....#']);
+    const pixelSize = 0.2;
+    const layer = await buildLayer(mask, 0.16, 0, pixelSize, generateSmoothMesh);
+
+    root.add(createCompactExportLayer(layer, mask, pixelSize, 0.16, 0xffffff, false));
+
+    const exported = await parseSingleBinaryStlMesh(await exportObjectToStlBlob(root));
+
+    assert.equal(exported.triangleCount, layer.indices.length / 3);
+    assert.equal(hasFractionalXY(exported.mesh, pixelSize), true);
+    assertStlLayerIsManifold(exported.mesh, 'raw smooth STL layer');
 });
 
 test('3MF export preserves raw edge topology for indexed geometry', async () => {

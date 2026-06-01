@@ -13,10 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AutoPaintResult } from '../lib/autoPaint';
 import type { Filament } from '../types';
-import type {
-    AutoPaintWorkerRequest,
-    AutoPaintWorkerResponse,
-} from '../workers/autoPaint.worker';
+import type { AutoPaintWorkerRequest, AutoPaintWorkerResponse } from '../workers/autoPaint.worker';
 
 export interface UseAutoPaintWorkerOptions {
     paintMode: 'manual' | 'autopaint';
@@ -41,9 +38,15 @@ export interface UseAutoPaintWorkerResult {
 
 let nextRequestId = 1;
 
-export function useAutoPaintWorker(
-    opts: UseAutoPaintWorkerOptions
-): UseAutoPaintWorkerResult {
+function useStableValueByKey<T>(value: T, key: string): T {
+    const stableRef = useRef<{ key: string; value: T } | null>(null);
+    if (!stableRef.current || stableRef.current.key !== key) {
+        stableRef.current = { key, value };
+    }
+    return stableRef.current.value;
+}
+
+export function useAutoPaintWorker(opts: UseAutoPaintWorkerOptions): UseAutoPaintWorkerResult {
     const {
         paintMode,
         filaments,
@@ -109,15 +112,13 @@ export function useAutoPaintWorker(
     }, [filtered]);
 
     // Keep stable references when only array identity changes but content does not.
-    const stableFilaments = useMemo(() => filaments, [filamentsKey]);
-
-    const stableImageSwatches = useMemo(
-        () =>
-            filtered.map((s) => ({
-                hex: s.hex,
-                count: s.count as number | undefined,
-            })),
-        [filteredKey]
+    const stableFilaments = useStableValueByKey(filaments, filamentsKey);
+    const stableImageSwatches = useStableValueByKey(
+        filtered.map((s) => ({
+            hex: s.hex,
+            count: s.count as number | undefined,
+        })),
+        filteredKey
     );
 
     const getWorker = useCallback(() => {

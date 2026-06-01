@@ -3,11 +3,16 @@ import type { PointerEvent } from 'react';
 import * as THREE from 'three';
 import * as SliderPrimitive from '@radix-ui/react-slider';
 import useThreeScene from '../hooks/useThreeScene';
-import { generateGreedyMesh, generateSmoothMesh } from '../lib/meshing';
+import {
+    generateGreedyMesh,
+    generateSmoothMesh,
+    type MeshMetrics,
+    type MeshProgress,
+} from '../lib/meshing';
 import {
     clampProgress,
-    layeredBuildLayerProgress,
     layeredBuildScanProgress,
+    progressInSpan,
 } from '../lib/progress';
 import { Layers } from 'lucide-react';
 import ProgressOverlay from './ProgressOverlay';
@@ -33,7 +38,7 @@ interface ThreeDViewProps {
     enhancedColorMatch?: boolean; // Use color-distance mapping instead of luminance
     heightDithering?: boolean; // Floyd-Steinberg error diffusion on height map
     ditherLineWidth?: number; // Minimum dot size in mm for dithering
-    smoothMeshing?: boolean; // Use marching squares for smooth edges
+    smoothMeshing?: boolean; // Smooth connected boundaries using welded grid topology
 }
 
 // Convert hex color to RGB tuple
@@ -83,6 +88,7 @@ interface KromacutExportLayerData {
     height: number;
     pixelSize: number;
     topZ: number;
+    compactHeightfield?: boolean;
 }
 
 interface LayerPreviewSegment {
@@ -206,6 +212,7 @@ interface E2EBuildMetrics {
     visibleMeshCount?: number;
     vertexCount?: number;
     triangleCount?: number;
+    layerMetrics?: E2ELayerBuildMetrics[];
     dimensions?: {
         width: number;
         height: number;
@@ -220,6 +227,17 @@ interface E2EBuildMetrics {
         enhancedColorMatch: boolean;
         heightDithering: boolean;
     };
+}
+
+type BuildOverlayStep = ReturnType<typeof getBuildOverlayStep>;
+
+interface E2ELayerBuildMetrics {
+    layerIndex: number;
+    swatchIndex: number;
+    activePixelCount: number;
+    vertexCount: number;
+    triangleCount: number;
+    metrics?: MeshMetrics;
 }
 
 declare global {
@@ -289,7 +307,9 @@ export default function ThreeDView({
 }: ThreeDViewProps) {
     const mountRef = useRef<HTMLDivElement | null>(null);
     const [isBuilding, setIsBuilding] = useState(false);
+    const [activeBuildSmoothMeshing, setActiveBuildSmoothMeshing] = useState(smoothMeshing);
     const [buildProgress, setBuildProgress] = useState(0);
+    const [buildOverlayStep, setBuildOverlayStep] = useState<BuildOverlayStep | null>(null);
     const [modelDimensions, setModelDimensions] = useState<{
         width: number;
         height: number;
@@ -310,6 +330,7 @@ export default function ThreeDView({
 
     const progressRef = useRef(0);
     const progressLastUpdateRef = useRef(0);
+    const buildOverlayLastUpdateRef = useRef(0);
     const pushProgress = (value: number) => {
         const nextValue = clampProgress(value);
         progressRef.current = nextValue;
@@ -317,6 +338,18 @@ export default function ThreeDView({
         if (nextValue <= 0 || nextValue >= 1 || now - progressLastUpdateRef.current > 60) {
             progressLastUpdateRef.current = now;
             setBuildProgress(nextValue);
+        }
+    };
+    const pushBuildOverlayStep = (value: BuildOverlayStep) => {
+        const now = performance.now();
+        const stepProgress = clampProgress(value.stepProgress ?? 0);
+
+        if (stepProgress <= 0 || stepProgress >= 1 || now - buildOverlayLastUpdateRef.current > 60) {
+            buildOverlayLastUpdateRef.current = now;
+            setBuildOverlayStep({
+                ...value,
+                stepProgress,
+            });
         }
     };
 
@@ -440,25 +473,53 @@ export default function ThreeDView({
         setPreviewHeight(Math.max(low, high));
     };
 
-    // 2. Rebuild mesh geometry whenever inputs change (debounced, progressive, adaptive resolution)
+    // 2. Rebuild mesh geometry only when the parent sends an explicit build signal.
     const buildTokenRef = useRef(0);
     const debounceTimerRef = useRef<number | null>(null);
     const lastParamsKeyRef = useRef<string | null>(null);
     const lastRebuildRef = useRef<number>(rebuildSignal);
 
     useEffect(() => {
-        const modelGroup = modelGroupRef.current;
-        if (!modelGroup || !imageSrc) return;
+        return () => {
+            if (debounceTimerRef.current !== null) {
+                window.clearTimeout(debounceTimerRef.current);
+                debounceTimerRef.current = null;
+            }
+        };
+    }, []);
 
-        // If parent requested a rebuild via the rebuildSignal, clear the last params key
-        // to force the effect to proceed even if params otherwise match.
-        if (rebuildSignal !== lastRebuildRef.current) {
-            lastParamsKeyRef.current = null;
-            lastRebuildRef.current = rebuildSignal;
+    useEffect(() => {
+        const modelGroup = modelGroupRef.current;
+        if (!modelGroup) return;
+
+        if (!imageSrc) {
+            buildTokenRef.current++;
+            if (debounceTimerRef.current !== null) {
+                window.clearTimeout(debounceTimerRef.current);
+                debounceTimerRef.current = null;
+            }
+            modelGroup.clear();
+            setIsBuilding(false);
+            setModelDimensions(null);
+            setMaxModelHeight(0);
+            setPreviewHeight(null);
+            requestRender();
+            return;
         }
+
+        const rebuildRequested = rebuildSignal !== lastRebuildRef.current;
+        if (!rebuildRequested) return;
+
+        lastParamsKeyRef.current = null;
+        lastRebuildRef.current = rebuildSignal;
 
         // Don't build if there are no layers configured
         if (!colorOrder || colorOrder.length === 0 || !swatches || swatches.length === 0) {
+            buildTokenRef.current++;
+            if (debounceTimerRef.current !== null) {
+                window.clearTimeout(debounceTimerRef.current);
+                debounceTimerRef.current = null;
+            }
             modelGroup.clear();
             setIsBuilding(false);
             return;
@@ -489,13 +550,16 @@ export default function ThreeDView({
         lastParamsKeyRef.current = paramsKey;
 
         // Debounce rapid changes (e.g., dragging slider)
-        if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
+        if (debounceTimerRef.current !== null) window.clearTimeout(debounceTimerRef.current);
+        const token = ++buildTokenRef.current;
+        setActiveBuildSmoothMeshing(smoothMeshing);
         debounceTimerRef.current = window.setTimeout(() => {
-            const token = ++buildTokenRef.current;
+            debounceTimerRef.current = null;
             const buildStartedAt = performance.now();
             // mark that a build is in progress for the overlay
             setIsBuilding(true);
             pushProgress(0);
+            setBuildOverlayStep(null);
             updateE2EBuild({
                 status: 'building',
                 startedAt: buildStartedAt,
@@ -554,6 +618,43 @@ export default function ThreeDView({
 
                 const YIELD_MS = 12;
                 let lastYield = performance.now();
+                const meshBuildMetrics: E2ELayerBuildMetrics[] = [];
+                const buildStepCount = Math.max(1, colorOrder.length + 1);
+                const pushScanDetail = (label: string, progress: number) => {
+                    pushBuildOverlayStep({
+                        stepLabel: label,
+                        stepIndex: 1,
+                        stepCount: buildStepCount,
+                        stepProgress: progress,
+                    });
+                };
+                const pushLayerDetail = (
+                    buildLayerIndex: number,
+                    label: string,
+                    progress: number
+                ) => {
+                    const stepProgress = clampProgress(progress);
+                    pushBuildOverlayStep({
+                        stepLabel: `Layer ${buildLayerIndex + 1} of ${colorOrder.length}: ${label}`,
+                        stepIndex: Math.min(buildStepCount, buildLayerIndex + 2),
+                        stepCount: buildStepCount,
+                        stepProgress,
+                    });
+                    pushProgress(
+                        progressInSpan(
+                            (buildLayerIndex + 1) / buildStepCount,
+                            1 / buildStepCount,
+                            stepProgress
+                        )
+                    );
+                };
+                const meshProgressReporter = (buildLayerIndex: number) => (progress: MeshProgress) => {
+                    pushLayerDetail(
+                        buildLayerIndex,
+                        progress.label,
+                        progressInSpan(0.35, 0.55, progress.progress)
+                    );
+                };
 
                 if (autoPaintEnabled && autoPaintTotalHeight && autoPaintTotalHeight > 0) {
                     // === AUTO-PAINT MODE ===
@@ -814,6 +915,10 @@ export default function ThreeDView({
                                 pixelHeightMap[mapIdx] = targetHeight;
                                 colorHeightCache.set(cacheKey, targetHeight);
                             }
+                            pushScanDetail(
+                                'Mapping image colors to printable heights',
+                                (py - minY + 1) / boxH
+                            );
                             pushProgress(
                                 layeredBuildScanProgress(py - minY, boxH, colorOrder.length)
                             );
@@ -1046,6 +1151,10 @@ export default function ThreeDView({
 
                                 pixelHeightMap[mapIdx] = pixelHeight;
                             }
+                            pushScanDetail(
+                                'Mapping image luminance to printable heights',
+                                (py - minY + 1) / boxH
+                            );
                             pushProgress(
                                 layeredBuildScanProgress(py - minY, boxH, colorOrder.length)
                             );
@@ -1099,13 +1208,10 @@ export default function ThreeDView({
                                 }
                             }
 
-                            pushProgress(
-                                layeredBuildLayerProgress(
-                                    buildLayerIndex,
-                                    y,
-                                    boxH,
-                                    colorOrder.length
-                                )
+                            pushLayerDetail(
+                                buildLayerIndex,
+                                'Selecting active pixels',
+                                progressInSpan(0, 0.35, (y + 1) / boxH)
                             );
 
                             if (performance.now() - lastYield > YIELD_MS) {
@@ -1122,6 +1228,15 @@ export default function ThreeDView({
                             smoothMeshing ? generateSmoothMesh : generateGreedyMesh
                         )(activePixels, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
                             yieldIntervalMs: 8,
+                            onProgress: meshProgressReporter(buildLayerIndex),
+                        });
+                        meshBuildMetrics.push({
+                            layerIndex: i,
+                            swatchIndex: swatchIdx,
+                            activePixelCount: activeCount,
+                            vertexCount: generatedMesh.positions.length / 3,
+                            triangleCount: generatedMesh.indices.length / 3,
+                            metrics: generatedMesh.metrics,
                         });
 
                         const geom = createFlatShadedGeometry(
@@ -1133,8 +1248,10 @@ export default function ThreeDView({
                                 height: boxH,
                                 pixelSize,
                                 topZ: (baseZ + thickness) * heightScale,
+                                compactHeightfield: !smoothMeshing,
                             }
                         );
+                        pushLayerDetail(buildLayerIndex, 'Preparing preview geometry', 0.96);
                         const mat = new THREE.MeshStandardMaterial({
                             color: colorHex,
                             side: THREE.FrontSide,
@@ -1148,6 +1265,7 @@ export default function ThreeDView({
                         mesh.userData.baseZ = baseZ;
                         mesh.userData.topZ = topZ;
                         builtLayerMeshes[i] = mesh;
+                        pushLayerDetail(buildLayerIndex, 'Layer mesh complete', 1);
 
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
@@ -1208,6 +1326,7 @@ export default function ThreeDView({
                             pixelLayerPos[flippedRowOffset + x] = layerPos;
                         }
 
+                        pushScanDetail('Reading image color layers', (y + 1) / boxH);
                         pushProgress(layeredBuildScanProgress(y, boxH, colorOrder.length));
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
@@ -1262,13 +1381,10 @@ export default function ThreeDView({
                                     activeCount++;
                                 }
                             }
-                            pushProgress(
-                                layeredBuildLayerProgress(
-                                    buildLayerIndex,
-                                    y,
-                                    boxH,
-                                    colorOrder.length
-                                )
+                            pushLayerDetail(
+                                buildLayerIndex,
+                                'Selecting active pixels',
+                                progressInSpan(0, 0.35, (y + 1) / boxH)
                             );
                             if (performance.now() - lastYield > YIELD_MS) {
                                 await new Promise((r) => requestAnimationFrame(r));
@@ -1284,6 +1400,15 @@ export default function ThreeDView({
                             smoothMeshing ? generateSmoothMesh : generateGreedyMesh
                         )(activePixels, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
                             yieldIntervalMs: 8,
+                            onProgress: meshProgressReporter(buildLayerIndex),
+                        });
+                        meshBuildMetrics.push({
+                            layerIndex: i,
+                            swatchIndex: swatchIdx,
+                            activePixelCount: activeCount,
+                            vertexCount: generatedMesh.positions.length / 3,
+                            triangleCount: generatedMesh.indices.length / 3,
+                            metrics: generatedMesh.metrics,
                         });
 
                         const geom = createFlatShadedGeometry(
@@ -1295,8 +1420,10 @@ export default function ThreeDView({
                                 height: boxH,
                                 pixelSize,
                                 topZ: (baseZ + thickness) * heightScale,
+                                compactHeightfield: !smoothMeshing,
                             }
                         );
+                        pushLayerDetail(buildLayerIndex, 'Preparing preview geometry', 0.96);
                         const mat = new THREE.MeshStandardMaterial({
                             color: colorHex,
                             side: THREE.FrontSide,
@@ -1312,6 +1439,7 @@ export default function ThreeDView({
                         mesh.userData.baseZ = baseZ;
                         mesh.userData.topZ = topZ;
                         builtLayerMeshes[i] = mesh;
+                        pushLayerDetail(buildLayerIndex, 'Layer mesh complete', 1);
 
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
@@ -1363,6 +1491,7 @@ export default function ThreeDView({
                     cropWidth: finalW,
                     cropHeight: finalH,
                     ...collectMeshStats(modelGroup),
+                    layerMetrics: meshBuildMetrics,
                     dimensions: nextModelDimensions,
                     settings: {
                         pixelSize,
@@ -1464,10 +1593,6 @@ export default function ThreeDView({
                 }
             })();
         }, 120);
-
-        return () => {
-            if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
-        };
     }, [
         imageSrc,
         baseSliceHeight,
@@ -1495,11 +1620,8 @@ export default function ThreeDView({
         requestRender,
     ]);
 
-    const buildOverlayStep = getBuildOverlayStep(
-        buildProgress,
-        colorOrder.length,
-        autoPaintEnabled
-    );
+    const currentBuildOverlayStep =
+        buildOverlayStep ?? getBuildOverlayStep(buildProgress, colorOrder.length, autoPaintEnabled);
     const previewHeightLabel =
         previewHeight !== null && previewMinHeight > 0.0001
             ? `${previewMinHeight.toFixed(2)} - ${previewHeight.toFixed(2)} mm`
@@ -1516,11 +1638,11 @@ export default function ThreeDView({
         <div className="w-full h-full relative" ref={mountRef}>
             {isBuilding && (
                 <ProgressOverlay
-                    title={smoothMeshing ? 'Generating smooth mesh' : 'Generating mesh'}
-                    stepLabel={buildOverlayStep.stepLabel}
-                    stepIndex={buildOverlayStep.stepIndex}
-                    stepCount={buildOverlayStep.stepCount}
-                    stepProgress={buildOverlayStep.stepProgress}
+                    title={activeBuildSmoothMeshing ? 'Generating smooth mesh' : 'Generating mesh'}
+                    stepLabel={currentBuildOverlayStep.stepLabel}
+                    stepIndex={currentBuildOverlayStep.stepIndex}
+                    stepCount={currentBuildOverlayStep.stepCount}
+                    stepProgress={currentBuildOverlayStep.stepProgress}
                     progress={buildProgress}
                 />
             )}

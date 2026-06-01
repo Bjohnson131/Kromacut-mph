@@ -9,16 +9,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Download, X } from 'lucide-react';
-
-declare global {
-    interface Window {
-        __TAURI__?: {
-            core: {
-                invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-            };
-        };
-    }
-}
+import { invoke, isTauri } from '@tauri-apps/api/core';
 
 interface VersionInfo {
     version: string;
@@ -33,16 +24,15 @@ export function UpdateChecker() {
 
     useEffect(() => {
         // Only check for updates in Tauri environment
-        if (!window.__TAURI__) return;
+        if (!isTauri()) return;
 
         const checkForUpdates = async () => {
             setChecking(true);
             try {
-                const currentVersion = await window.__TAURI__!.core.invoke<string>('get_app_version');
-                const updateInfo = await window.__TAURI__!.core.invoke<VersionInfo | null>(
-                    'check_for_updates',
-                    { currentVersion }
-                );
+                const currentVersion = await invoke<string>('get_app_version');
+                const updateInfo = await invoke<VersionInfo | null>('check_for_updates', {
+                    currentVersion,
+                });
 
                 if (updateInfo) {
                     setUpdateAvailable(updateInfo);
@@ -63,21 +53,21 @@ export function UpdateChecker() {
         return () => clearInterval(interval);
     }, []);
 
-    if (!window.__TAURI__ || !updateAvailable || dismissed || checking) {
+    if (!isTauri() || !updateAvailable || dismissed || checking) {
         return null;
     }
 
-    const handleDownload = () => {
-        if (updateAvailable.download_url) {
-            window.open(updateAvailable.download_url, '_blank');
-        } else {
-            window.open('https://github.com/vycdev/Kromacut/releases', '_blank');
+    const handleDownload = async () => {
+        try {
+            await invoke('open_releases_page');
+        } catch (error) {
+            console.error('Failed to open releases page:', error);
         }
     };
 
     return (
         <div className="fixed bottom-4 right-4 z-50 animate-in slide-in-from-bottom-5">
-            <Card className="p-4 shadow-lg border-primary/50 bg-gradient-to-br from-primary/5 to-primary/10 max-w-sm">
+            <Card className="max-w-sm overflow-hidden border-primary/60 bg-card p-4 shadow-2xl shadow-black/30">
                 <div className="flex items-start gap-3">
                     <div className="flex-shrink-0">
                         <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center">

@@ -2,6 +2,30 @@
 
 All notable changes to Kromacut are documented in this file.
 
+## v3.0.0 - 2026-06-01
+
+### Added
+
+- **In-app user documentation** - Added a bundled Markdown Docs view with a conventional guide table of contents, per-page tables of contents, stable heading links, header brand navigation back to the app, cross-document navigation, and end-user guides for the image-to-3D-print workflow
+- **2D image resolution resize** - Added a 2D Resize Image tool for downscaling the current image by percentage before color reduction or 3D model generation
+- **Filament profile renaming** - Added a rename action for saved Auto-paint filament profiles
+- **Pre-build model size estimate** - Added an estimated 3D model size to the Pixel Size setting, shown as a blue input-height estimate beside the input when space allows so users can preview footprint and stack height before building the model
+
+### Changed
+
+- **Project license** - Kromacut is now licensed under `AGPL-3.0-only` instead of MIT so redistributed or hosted modified versions must stay open under the same copyleft terms
+- **Web metadata** - Improved the page title, search description, canonical URL, social preview tags, and web app manifest metadata for hosted Kromacut pages
+- **Filament profile extension** - Auto-paint filament profile exports now use `.kfil` by default while continuing to import legacy `.kapp` files
+- **Smooth meshing performance** - Smooth mesh generation now uses one fast welded-grid algorithm with deterministic boundary-chain smoothing in a bounded sub-pixel envelope and fan-triangulated caps instead of contour tracing and cap cleanup, avoiding hangs and browser memory blowups on complex image layers
+
+### Fixed
+
+- **Desktop update notices** - Fixed the Tauri desktop update checker so it runs without requiring the disabled global Tauri API, reports when the release endpoint differs from the installed app, uses a solid notification surface, and opens the GitHub releases page from the download button
+- **Windows desktop image drop** - Disabled Tauri's native webview file-drop interception so dragging image files onto the 2D canvas can reach the app's HTML drop handler on Windows
+- **Smooth meshing layer coverage** - Smooth meshing now applies to every generated layer without mesher substitution state
+- **Smooth STL export** - STL export now preserves smooth layer geometry instead of compacting smooth builds back into square-pixel heightfields
+- **Manual 3D build trigger** - 3D print settings, including the smooth meshing toggle, no longer start or cancel preview mesh generation unless the user clicks **Build 3D Model**
+
 ## v2.6.0 - 2026-05-17
 
 ### Added
@@ -27,7 +51,7 @@ All notable changes to Kromacut are documented in this file.
 ### Fixed
 
 - **Slicer-safe 3MF and meshing topology** - 3MF export now preserves shared vertex connectivity for non-indexed preview geometry while keeping separate colored layer objects, and greedy/smooth meshing now avoids degenerate cap triangles and inverted hole wall winding that could trigger non-manifold or missing-layer slicer warnings
-- **Auto-paint smooth 3MF topology** - 3MF export now welds raw Kromacut export vertices at serialized precision, smooth meshing rejects cap triangles that collapse during 3MF coordinate rounding, and fallback meshing bridges diagonal-only pixel contacts, preventing non-manifold edges in the 8-color logo regression
+- **Auto-paint smooth 3MF topology** - 3MF export now welds raw Kromacut export vertices at serialized precision, smooth meshing rejects cap triangles that collapse during 3MF coordinate rounding, and diagonal-only pixel contacts are bridged during meshing, preventing non-manifold edges in the 8-color logo regression
 - **Desktop large-file saves** - Native STL/3MF/PNG saves now stream blob data to disk in chunks instead of sending one huge array through Tauri IPC, avoiding large-export `RangeError: Invalid array length` failures on Windows
 - **Smooth meshing footprint safety** - Smooth corner cuts and simplification shortcuts now stay inside the source pixel footprint without running support-repair or clipping passes during smooth layer generation
 - **3MF smooth layer packaging** - Smooth layers now export as one manifold mesh object per non-empty color layer, and auto-paint exports use the intended physical filament colors instead of the preview's virtual blend colors

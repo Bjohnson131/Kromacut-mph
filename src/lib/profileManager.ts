@@ -1,4 +1,4 @@
-import type { Filament } from '@/types';
+import type { Filament } from '../types';
 
 export interface AutoPaintProfile {
     id: string;
@@ -79,6 +79,25 @@ export function overwriteProfile(
             ? {
                   ...p,
                   filaments: filaments.map((f) => ({ ...f })),
+                  updatedAt: Date.now(),
+              }
+            : p
+    );
+}
+
+export function renameProfile(
+    profiles: AutoPaintProfile[],
+    id: string,
+    name: string
+): AutoPaintProfile[] {
+    const trimmedName = name.trim();
+    if (!trimmedName) return profiles;
+
+    return profiles.map((p) =>
+        p.id === id
+            ? {
+                  ...p,
+                  name: trimmedName,
                   updatedAt: Date.now(),
               }
             : p
@@ -214,5 +233,5 @@ export function exportProfileBlob(profile: AutoPaintProfile): Blob {
 
 /** Sanitize a name for use as a filename. */
 export function profileFileName(name: string): string {
-    return `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.kapp`;
+    return `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.kfil`;
 }

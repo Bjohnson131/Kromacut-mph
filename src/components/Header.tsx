@@ -1,13 +1,16 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
-import { Image, Github, Heart, Moon, Sun, MessageCircle } from 'lucide-react';
+import { ArrowLeft, BookOpen, Image, Github, Heart, Moon, Sun, MessageCircle } from 'lucide-react';
 import logo from '../assets/logo.png';
 
 interface Props {
     onLoadTest: () => void;
+    docsOpen: boolean;
+    onBackToApp: () => void;
+    onToggleDocs: () => void;
 }
 
-export const Header: React.FC<Props> = ({ onLoadTest }) => {
+export const Header: React.FC<Props> = ({ onLoadTest, docsOpen, onBackToApp, onToggleDocs }) => {
     const [isDark, setIsDark] = React.useState(() => {
         return document.documentElement.classList.contains('dark');
     });
@@ -28,12 +31,42 @@ export const Header: React.FC<Props> = ({ onLoadTest }) => {
     return (
         <header className="h-12 flex items-center justify-between px-4 border-b border-border bg-card">
             <div className="flex items-center gap-2">
-                <img src={logo} alt="Kromacut" className="h-7 w-auto" />
-                <span className="font-extrabold text-base text-foreground tracking-wide ml-1 select-none max-md:hidden">
-                    Kromacut
-                </span>
+                {docsOpen ? (
+                    <button
+                        type="button"
+                        onClick={onBackToApp}
+                        className="-ml-1 flex cursor-pointer items-center gap-2 rounded-md p-1 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                        aria-label="Back to app"
+                        title="Back to app"
+                    >
+                        <img src={logo} alt="" className="h-7 w-auto" />
+                        <span className="font-extrabold text-base text-foreground tracking-wide ml-1 select-none max-md:hidden">
+                            Kromacut
+                        </span>
+                    </button>
+                ) : (
+                    <>
+                        <img src={logo} alt="Kromacut" className="h-7 w-auto" />
+                        <span className="font-extrabold text-base text-foreground tracking-wide ml-1 select-none max-md:hidden">
+                            Kromacut
+                        </span>
+                    </>
+                )}
             </div>
             <div className="flex gap-2.5 items-center">
+                <Button
+                    size="sm"
+                    onClick={onToggleDocs}
+                    title={docsOpen ? 'Back to app' : 'Open docs'}
+                    className="bg-foreground hover:bg-foreground/90 text-background font-semibold transition-all duration-200 shadow-md hover:shadow-lg hover:scale-105 active:scale-95 gap-1.5 border border-foreground/20"
+                >
+                    {docsOpen ? (
+                        <ArrowLeft className="w-4 h-4" />
+                    ) : (
+                        <BookOpen className="w-4 h-4" />
+                    )}
+                    <span className="max-sm:hidden">{docsOpen ? 'Back to app' : 'Docs'}</span>
+                </Button>
                 <Button
                     size="sm"
                     onClick={onLoadTest}
@@ -41,7 +74,7 @@ export const Header: React.FC<Props> = ({ onLoadTest }) => {
                     className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold transition-all duration-200 shadow-md hover:shadow-lg hover:scale-105 active:scale-95 gap-1.5"
                 >
                     <Image className="w-4 h-4" />
-                    <span>Load TD Test</span>
+                    <span className="max-sm:hidden">Load TD Test</span>
                 </Button>
                 <Button
                     size="sm"
@@ -52,9 +85,11 @@ export const Header: React.FC<Props> = ({ onLoadTest }) => {
                         href="https://discord.gg/nU63sFMcnX"
                         target="_blank"
                         rel="noopener noreferrer"
+                        aria-label="Discord"
+                        title="Discord"
                     >
                         <MessageCircle className="w-4 h-4" />
-                        <span>Discord</span>
+                        <span className="max-sm:hidden">Discord</span>
                     </a>
                 </Button>
                 <Button
@@ -66,9 +101,11 @@ export const Header: React.FC<Props> = ({ onLoadTest }) => {
                         href="https://github.com/vycdev/Kromacut"
                         target="_blank"
                         rel="noopener noreferrer"
+                        aria-label="GitHub"
+                        title="GitHub"
                     >
                         <Github className="w-4 h-4" />
-                        <span>GitHub</span>
+                        <span className="max-sm:hidden">GitHub</span>
                     </a>
                 </Button>
                 <Button
@@ -80,9 +117,11 @@ export const Header: React.FC<Props> = ({ onLoadTest }) => {
                         href="https://www.patreon.com/cw/vycdev"
                         target="_blank"
                         rel="noopener noreferrer"
+                        aria-label="Support me"
+                        title="Support me"
                     >
                         <Heart className="w-4 h-4 fill-current" />
-                        <span>Support me</span>
+                        <span className="max-sm:hidden">Support me</span>
                     </a>
                 </Button>
                 <Button

@@ -10,7 +10,7 @@
  * - Result Caching: Skip redundant computations
  */
 
-import type { Filament } from '@/types';
+import type { Filament } from '../types';
 import { rgbToLab, deltaELab, hexToRgb, blendColors, type RGB, type Lab } from './autoPaint';
 
 // ============================================================================
@@ -114,7 +114,12 @@ class OptimizerCache {
         return `${filamentKey}__${imageKey}__${context.layerHeight}__${context.firstLayerHeight}__${algoKey}__${seedKey}`;
     }
 
-    get(filaments: Filament[], context: ScoringContext, algorithm?: string, seed?: number): OptimizerResult | null {
+    get(
+        filaments: Filament[],
+        context: ScoringContext,
+        algorithm?: string,
+        seed?: number
+    ): OptimizerResult | null {
         const key = this.getCacheKey(filaments, context, algorithm, seed);
         return this.cache.get(key) || null;
     }
@@ -158,10 +163,7 @@ const globalCache = new OptimizerCache();
  *
  * Score is weighted deltaE between image colors and achievable blended colors.
  */
-function scoreFilamentOrder(
-    filaments: Filament[],
-    context: ScoringContext
-): number {
+function scoreFilamentOrder(filaments: Filament[], context: ScoringContext): number {
     if (filaments.length === 0) return Infinity;
 
     let totalError = 0;
@@ -169,7 +171,7 @@ function scoreFilamentOrder(
 
     // For each image color, find the best achievable match using this filament stack
     for (const targetColor of context.imageColors) {
-        const achievableColor = findBestAchievableColor(targetColor, filaments, context);
+        const achievableColor = findBestAchievableColor(targetColor, filaments);
         const error = deltaELab(targetColor, achievableColor);
 
         // Apply region weight if provided
@@ -184,11 +186,7 @@ function scoreFilamentOrder(
  * Find the best color achievable by stacking filaments to a certain height.
  * Uses Beer-Lambert simulation to predict the blended color at various heights.
  */
-function findBestAchievableColor(
-    targetLab: Lab,
-    filaments: Filament[],
-    context: ScoringContext
-): Lab {
+function findBestAchievableColor(targetLab: Lab, filaments: Filament[]): Lab {
     if (filaments.length === 0) return { L: 0, a: 0, b: 0 };
     if (filaments.length === 1) {
         return rgbToLab(hexToRgb(filaments[0].color));
@@ -202,7 +200,7 @@ function findBestAchievableColor(
 
     for (let i = 0; i <= steps; i++) {
         const height = (i / steps) * maxHeight;
-        const blendedColor = simulateStackAtHeight(filaments, height, context);
+        const blendedColor = simulateStackAtHeight(filaments, height);
         const blendedLab = rgbToLab(blendedColor);
         const delta = deltaELab(targetLab, blendedLab);
 
@@ -218,11 +216,7 @@ function findBestAchievableColor(
 /**
  * Simulate the blended color of stacked filaments at a given height.
  */
-function simulateStackAtHeight(
-    filaments: Filament[],
-    targetHeight: number,
-    _context: ScoringContext
-): RGB {
+function simulateStackAtHeight(filaments: Filament[], targetHeight: number): RGB {
     let currentHeight = 0;
     let blendedColor = hexToRgb(filaments[0].color);
 
@@ -247,10 +241,7 @@ function simulateStackAtHeight(
 // Exhaustive Search (Optimal but slow for >8 filaments)
 // ============================================================================
 
-function optimizeExhaustive(
-    filaments: Filament[],
-    context: ScoringContext
-): OptimizerResult {
+function optimizeExhaustive(filaments: Filament[], context: ScoringContext): OptimizerResult {
     if (filaments.length === 0) {
         return {
             order: [],
@@ -438,7 +429,7 @@ function optimizeGenetic(
             const parent2 = tournamentSelect(population, 3, rng);
 
             // Order crossover (OX)
-            let child = orderCrossover(parent1.order, parent2.order, rng);
+            const child = orderCrossover(parent1.order, parent2.order, rng);
 
             // Mutation: swap two positions with probability
             if (rng.next() < mutationRate) {
@@ -485,11 +476,7 @@ function tournamentSelect(
 /**
  * Order crossover (OX): preserves relative order from both parents
  */
-function orderCrossover(
-    parent1: Filament[],
-    parent2: Filament[],
-    rng: SeededRandom
-): Filament[] {
+function orderCrossover(parent1: Filament[], parent2: Filament[], rng: SeededRandom): Filament[] {
     const length = parent1.length;
     const start = rng.nextInt(0, length);
     const end = rng.nextInt(start + 1, length + 1);
