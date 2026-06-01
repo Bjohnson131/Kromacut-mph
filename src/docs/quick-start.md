@@ -21,6 +21,10 @@ In **2D**, use **Adjustments** before reducing colors. Exposure, contrast, highl
 
 Click **Apply** in the Adjustments panel when you want to bake the current adjustments into the image.
 
+## Resize If Needed
+
+If the image is much larger than the detail you want to print, use **Resize Image** to downscale it by percentage before reducing colors. This reduces the actual pixel dimensions, which can make the later 3D model faster to build and easier to size physically.
+
 ## Reduce Colors
 
 In **Quantization Settings**:

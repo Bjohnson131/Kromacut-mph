@@ -9,7 +9,9 @@ import type { CanvasPreviewHandle } from './components/CanvasPreview';
 import { SwatchesPanel } from './components/SwatchesPanel';
 import AdjustmentsPanel from './components/AdjustmentsPanel';
 import DeditherPanel from './components/DeditherPanel';
+import ImageResizePanel from './components/ImageResizePanel';
 import { ADJUSTMENT_DEFAULTS } from './lib/applyAdjustments';
+import { calculateImageResizeDimensions } from './lib/imageResize';
 import SLIDER_DEFS from './components/sliderDefs';
 import { useSwatches } from './hooks/useSwatches';
 import type { SwatchEntry } from './hooks/useSwatches';
@@ -326,6 +328,59 @@ function App(): React.ReactElement | null {
         if (inputRef.current) inputRef.current.value = '';
     };
 
+    const resizeCurrentImage = async (percent: number) => {
+        if (!canvasPreviewRef.current || !imageSrc) return;
+
+        let sourceUrl: string | null = null;
+        try {
+            const sourceBlob = await canvasPreviewRef.current.exportImageBlob();
+            if (!sourceBlob) return;
+
+            sourceUrl = URL.createObjectURL(sourceBlob);
+            const imageUrl = sourceUrl;
+            const img = await new Promise<HTMLImageElement | null>((resolve) => {
+                const image = new Image();
+                image.onload = () => resolve(image);
+                image.onerror = () => resolve(null);
+                image.src = imageUrl;
+            });
+
+            if (!img) return;
+
+            const target = calculateImageResizeDimensions(
+                img.naturalWidth,
+                img.naturalHeight,
+                percent
+            );
+
+            if (target.width >= img.naturalWidth && target.height >= img.naturalHeight) return;
+
+            const canvas = document.createElement('canvas');
+            canvas.width = target.width;
+            canvas.height = target.height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
+
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, 0, 0, target.width, target.height);
+
+            const resizedBlob = await new Promise<Blob | null>((resolve) =>
+                canvas.toBlob((blob) => resolve(blob), 'image/png')
+            );
+            if (!resizedBlob) return;
+
+            const url = URL.createObjectURL(resizedBlob);
+            invalidate();
+            setImage(url, true);
+        } catch (error) {
+            console.warn('Image resize failed', error);
+            alert('Image resize failed. See console for details.');
+        } finally {
+            if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+        }
+    };
+
     // splitter & layout management preserved below
 
     // wheel/pan handled in CanvasPreview
@@ -438,6 +493,11 @@ function App(): React.ReactElement | null {
                                                         console.warn('Bake adjustments failed', e);
                                                     }
                                                 }}
+                                            />
+                                            <ImageResizePanel
+                                                imageDimensions={imageDimensions}
+                                                disabled={!imageSrc || isCropMode}
+                                                onApply={resizeCurrentImage}
                                             />
                                             <DeditherPanel
                                                 canvasRef={canvasPreviewRef}
