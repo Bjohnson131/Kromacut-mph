@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Check, RotateCcw, Loader2 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { autoPaintToSliceHeights } from '../lib/autoPaint';
+import { runMultiHeadLayerAnalysis } from '../lib/multiHeadAnalysis';
 import {
     loadPrintSettingsFromStorage,
     savePrintSettingsToStorage,
@@ -109,6 +110,13 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         persisted?.regionWeightingMode ?? 'uniform'
     );
 
+    // --- Multi-head mode ---
+    const [multiHeadMode, setMultiHeadMode] = useState(persisted?.multiHeadMode ?? false);
+    const [multiHeadCount, setMultiHeadCount] = useState(persisted?.multiHeadCount ?? 4);
+    const [multiHeadSearchDepth, setMultiHeadSearchDepth] = useState<'fast' | 'balanced' | 'thorough'>(
+        persisted?.multiHeadSearchDepth ?? 'balanced'
+    );
+
     useEffect(() => {
         if (optimizerAlgorithm === 'exhaustive' && filaments.length > 8) {
             setOptimizerAlgorithm('auto');
@@ -136,9 +144,12 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
             optimizerSeed,
             regionWeightingMode,
             smoothMeshing,
+            multiHeadMode,
+            multiHeadCount,
+            multiHeadSearchDepth,
         });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [paintMode, filaments, enhancedColorMatch, allowRepeatedSwaps, heightDithering, ditherLineWidth, optimizerAlgorithm, optimizerSeed, regionWeightingMode, smoothMeshing]);
+    }, [paintMode, filaments, enhancedColorMatch, allowRepeatedSwaps, heightDithering, ditherLineWidth, optimizerAlgorithm, optimizerSeed, regionWeightingMode, smoothMeshing, multiHeadMode, multiHeadCount, multiHeadSearchDepth]);
 
     useEffect(() => {
         savePrintSettingsToStorage({ layerHeight, slicerFirstLayerHeight, pixelSize, smoothMeshing });
@@ -190,6 +201,8 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         optimizerSeed,
         regionWeightingMode,
         imageDimensions,
+        multiHeadMode,
+        multiHeadCount,
     });
 
     const autoPaintSliceData = useMemo(() => {
@@ -219,6 +232,17 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
     const handleApply = useCallback(() => {
         if (!onChange) return;
 
+        if (multiHeadMode && paintMode === 'autopaint' && autoPaintResult) {
+            runMultiHeadLayerAnalysis(
+                filaments,
+                autoPaintResult,
+                filtered.map((s) => ({ hex: s.hex })),
+                layerHeight,
+                slicerFirstLayerHeight,
+                multiHeadCount
+            );
+        }
+
         if (paintMode === 'autopaint' && autoPaintSliceData && autoPaintResult) {
             onChange({
                 layerHeight,
@@ -241,6 +265,9 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 autoPaintFilamentSwatches: autoPaintSliceData.filamentSwatches,
                 calibrationLayerHeight,
                 smoothMeshing,
+                multiHeadMode,
+                multiHeadCount,
+                multiHeadSearchDepth,
             });
         } else {
             onChange({
@@ -257,6 +284,9 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 regionWeightingMode,
                 calibrationLayerHeight,
                 smoothMeshing,
+                multiHeadMode,
+                multiHeadCount,
+                multiHeadSearchDepth,
             });
         }
     }, [
@@ -280,6 +310,10 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         smoothMeshing,
         autoPaintResult,
         autoPaintSliceData,
+        multiHeadMode,
+        multiHeadCount,
+        multiHeadSearchDepth,
+        filtered,
     ]);
 
     return (
@@ -382,6 +416,12 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                     setOptimizerSeed={setOptimizerSeed}
                     regionWeightingMode={regionWeightingMode}
                     setRegionWeightingMode={setRegionWeightingMode}
+                    multiHeadMode={multiHeadMode}
+                    setMultiHeadMode={setMultiHeadMode}
+                    multiHeadCount={multiHeadCount}
+                    setMultiHeadCount={setMultiHeadCount}
+                    multiHeadSearchDepth={multiHeadSearchDepth}
+                    setMultiHeadSearchDepth={setMultiHeadSearchDepth}
                 />
 
                 {/* Manual Tab */}

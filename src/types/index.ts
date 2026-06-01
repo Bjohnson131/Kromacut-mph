@@ -41,6 +41,10 @@ export interface ThreeDControlsStateShape {
     optimizerAlgorithm?: 'exhaustive' | 'simulated-annealing' | 'genetic' | 'auto';
     optimizerSeed?: number;
     regionWeightingMode?: 'uniform' | 'center' | 'edge';
+    // Multi-head mode (per-pixel layer order optimization)
+    multiHeadMode?: boolean;
+    multiHeadCount?: number; // 2–5 heads
+    multiHeadSearchDepth?: 'fast' | 'balanced' | 'thorough';
     // Auto-paint computed state (only used when paintMode is 'autopaint')
     autoPaintResult?: AutoPaintResult;
     autoPaintSwatches?: Swatch[];

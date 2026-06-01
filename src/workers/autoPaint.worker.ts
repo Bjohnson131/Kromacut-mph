@@ -23,6 +23,8 @@ export interface AutoPaintWorkerRequest {
     optimizerOptions?: Partial<OptimizerOptions>;
     regionWeightingMode: 'uniform' | 'center' | 'edge';
     imageDimensions?: { width: number; height: number } | null;
+    multiHeadMode?: boolean;
+    multiHeadCount?: number;
 }
 
 export interface AutoPaintWorkerResponse {
