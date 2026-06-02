@@ -1,4 +1,4 @@
-import { estimateTDFromColor } from './colorUtils';
+import { estimateTDFromColor } from './colorUtils.ts';
 
 /**
  * Filament Calibration System

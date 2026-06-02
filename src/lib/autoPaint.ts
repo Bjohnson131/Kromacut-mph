@@ -22,9 +22,9 @@ import {
     type OptimizerOptions,
     type OptimizerResult,
     type ScoringContext,
-} from './optimizer';
-import { generateCenterWeightedMapSimple, generateEdgeWeightedMapSimple } from './regionWeighting';
-import { computeProfileConfidence } from './calibration';
+} from './optimizer.ts';
+import { generateCenterWeightedMapSimple, generateEdgeWeightedMapSimple } from './regionWeighting.ts';
+import { computeProfileConfidence } from './calibration.ts';
 
 /** RGB color representation (0-255 range) */
 export interface RGB {

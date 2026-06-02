@@ -11,7 +11,7 @@
  */
 
 import type { Filament } from '@/types';
-import { rgbToLab, deltaELab, hexToRgb, blendColors, type RGB, type Lab } from './autoPaint';
+import { rgbToLab, deltaELab, hexToRgb, blendColors, type RGB, type Lab } from './autoPaint.ts';
 
 // ============================================================================
 // Type Definitions

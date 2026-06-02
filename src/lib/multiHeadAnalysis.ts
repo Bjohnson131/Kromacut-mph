@@ -1,13 +1,18 @@
 /**
  * Multi-head layer selection analysis.
  *
- * For a sliding window of N consecutive printer layers, builds a LUT of all N^N
- * filament-to-layer assignments and computes how much color error could be
- * reduced by choosing the best assignment (vs. the current global ordering)
- * at each pixel.
+ * Slides a window of N consecutive printer layers across the stack and, for each
+ * window, builds a LUT of all K^N filament-to-position assignments (K = unique
+ * filaments in that window). For every image swatch the per-pixel optimal LUT
+ * entry is found via full Beer-Lambert simulation. The errorFactor for a window
+ * is the sum of per-pixel improvements achievable by reordering its layers.
+ *
+ * Primary lookup chain for renderers / 3MF builders:
+ *   filamentIds[ lut[ pixelOptimalLUTIdx[p] ][n] ]
+ *   → the ID of the filament that gives pixel p its best color at window layer n.
  */
 
-import type { AutoPaintResult } from './autoPaint';
+import type { AutoPaintResult } from './autoPaint.ts';
 import type { Filament } from '../types';
 import {
     hexToRgb,
@@ -16,11 +21,11 @@ import {
     getLuminance,
     luminanceToHeight,
     type RGB,
-} from './autoPaint';
+} from './autoPaint.ts';
 
 const FRONTLIT_TD_SCALE = 0.1;
 
-interface PrinterLayer {
+export interface PrinterLayer {
     /** Index into the original filaments array */
     filamentIdx: number;
     filamentRgb: RGB;
@@ -28,6 +33,20 @@ interface PrinterLayer {
     td: number;
     thickness: number;
     startZ: number;
+}
+
+export interface WindowFilament {
+    rgb: RGB;
+    /** TD already multiplied by FRONTLIT_TD_SCALE */
+    td: number;
+}
+
+export interface PixelData {
+    targetRgb: RGB;
+    /** Index of the printer layer this swatch maps to. */
+    layerIdx: number;
+    /** ΔE between target and actual stack color at layerIdx. */
+    actualErr: number;
 }
 
 /** Per-window output from the sliding-window analysis. */
@@ -38,12 +57,30 @@ export interface WindowResult {
     windowEnd: number;
     windowBottomZ: number;
     windowTopZ: number;
-    /** Current filament name/color at each window position in the actual stack. */
+    /**
+     * Display names of the K unique filaments in this window, in LUT index order.
+     * `currentFilaments[lut[entry][n]]` gives the name of the filament at position n
+     * for a given LUT entry.
+     */
     currentFilaments: string[];
+    /**
+     * IDs of the K unique filaments in this window, in LUT index order.
+     * Full renderer lookup: `filamentIds[lut[pixelOptimalLUTIdx[p]][n]]`
+     * gives the filament ID that minimises error for pixel p at window layer n.
+     */
+    filamentIds: string[];
     /** Number of palette swatches whose mapped height reaches this window. */
     affectedSwatches: number;
     /** Sum of (actualΔE − minPossibleΔE) across affected swatches. Always ≥ 0. */
     errorFactor: number;
+    /** All K^N filament assignments for this window (K = unique filaments in window). */
+    lut: number[][];
+    /**
+     * Per-swatch best LUT entry index (length = imageSwatches.length passed to analysis).
+     * -1 for swatches whose mapped height falls below this window.
+     * Use as: lut[pixelOptimalLUTIdx[p]][n] → index into filamentIds / currentFilaments.
+     */
+    pixelOptimalLUTIdx: number[];
 }
 
 /** Expand transition zones into individual printer-layer entries. */
@@ -90,19 +127,22 @@ function expandZonesToPrinterLayers(
 }
 
 /**
- * Generate all N^N filament-index assignments for a window of N layers.
- * Entry i encodes which filament (0..N-1) goes in each window position,
- * reading the digits of i in base N.
+ * Generate all filamentCount^windowSize filament-index assignments.
+ * Each entry assigns one of `filamentCount` filaments to each of
+ * `windowSize` window positions, reading the digits of i in base filamentCount.
+ *
+ * The returned LUT is deterministic and can be reconstructed from the same inputs,
+ * so callers may store only the index rather than the full entry when space matters.
  */
-function buildLUT(n: number): number[][] {
-    const total = Math.pow(n, n);
+export function buildLUT(windowSize: number, filamentCount: number): number[][] {
+    const total = Math.pow(filamentCount, windowSize);
     const lut: number[][] = new Array(total);
     for (let i = 0; i < total; i++) {
-        const entry = new Array(n);
+        const entry = new Array(windowSize);
         let v = i;
-        for (let j = 0; j < n; j++) {
-            entry[j] = v % n;
-            v = Math.floor(v / n);
+        for (let j = 0; j < windowSize; j++) {
+            entry[j] = v % filamentCount;
+            v = Math.floor(v / filamentCount);
         }
         lut[i] = entry;
     }
@@ -120,8 +160,113 @@ function findLayerIdxAtHeight(layers: PrinterLayer[], h: number): number {
 }
 
 /**
+ * Accumulate the Beer-Lambert stack color at each printer layer.
+ * Layer 0 is the opaque foundation (raw filament color); each subsequent
+ * layer blends its filament on top of the running total.
+ */
+export function buildColorStack(layers: PrinterLayer[]): RGB[] {
+    const colorAtLayer: RGB[] = new Array(layers.length);
+    colorAtLayer[0] = { ...layers[0].filamentRgb };
+    for (let i = 1; i < layers.length; i++) {
+        colorAtLayer[i] = blendColors(
+            colorAtLayer[i - 1],
+            layers[i].filamentRgb,
+            layers[i].td,
+            layers[i].thickness
+        );
+    }
+    return colorAtLayer;
+}
+
+/**
+ * Map each image swatch to its target printer layer and precompute actual ΔE.
+ * Luminance drives height via the Beer-Lambert inverse; the layer at that height
+ * gives the current stack color for comparison.
+ */
+export function buildPixelData(
+    imageSwatches: Array<{ hex: string }>,
+    layers: PrinterLayer[],
+    colorAtLayer: RGB[],
+    transitionZones: AutoPaintResult['transitionZones'],
+    totalHeight: number,
+    firstLayerHeight: number
+): PixelData[] {
+    return imageSwatches.map((s) => {
+        const rgb = hexToRgb(s.hex);
+        const lum = getLuminance(rgb) / 255;
+        const h = luminanceToHeight(lum, transitionZones, totalHeight, firstLayerHeight);
+        const layerIdx = findLayerIdxAtHeight(layers, h);
+        return { targetRgb: rgb, layerIdx, actualErr: deltaE(rgb, colorAtLayer[layerIdx]) };
+    });
+}
+
+/**
+ * Run the LUT simulation for a single window and return per-pixel optimal assignments.
+ *
+ * For each affected pixel (layerIdx ≥ wStart), every LUT entry is simulated:
+ * - Layers below the window are captured in `baseColor` (colorAtLayer[wStart-1]).
+ * - Window layers are applied in LUT order (up to the pixel's own layerIdx).
+ * - Layers above the window continue in their original order.
+ * The entry producing the lowest ΔE is recorded in `pixelOptimalLUTIdx`.
+ *
+ * @param wStart         First layer index in the window (1-based).
+ * @param N              Window size (number of layers).
+ * @param layers         Full printer-layer stack.
+ * @param baseColor      Accumulated stack color just below the window (colorAtLayer[wStart-1]).
+ * @param windowFilaments Unique filaments available in this window, in LUT index order.
+ * @param lut            All K^N assignments from buildLUT(N, windowFilaments.length).
+ * @param pixels         Swatch pixel data from buildPixelData.
+ */
+export function analyzeWindowLUT(
+    wStart: number,
+    N: number,
+    layers: PrinterLayer[],
+    baseColor: RGB,
+    windowFilaments: WindowFilament[],
+    lut: number[][],
+    pixels: PixelData[]
+): { errorFactor: number; affectedSwatches: number; pixelOptimalLUTIdx: number[] } {
+    const wEnd = wStart + N - 1;
+    let totalActualError = 0;
+    let totalMinError = 0;
+    let affectedSwatches = 0;
+    const pixelOptimalLUTIdx: number[] = new Array(pixels.length).fill(-1);
+
+    for (let pxIdx = 0; pxIdx < pixels.length; pxIdx++) {
+        const px = pixels[pxIdx];
+        if (px.layerIdx < wStart) continue;
+        affectedSwatches++;
+        totalActualError += px.actualErr;
+
+        let minErr = Infinity;
+        let bestLUTIdx = 0;
+        const applyCount = Math.min(N, px.layerIdx - wStart + 1);
+
+        for (let li = 0; li < lut.length; li++) {
+            const entry = lut[li];
+            let c: RGB = { ...baseColor };
+            for (let j = 0; j < applyCount; j++) {
+                const fi = entry[j];
+                c = blendColors(c, windowFilaments[fi].rgb, windowFilaments[fi].td, layers[wStart + j].thickness);
+            }
+            for (let i = wEnd + 1; i <= px.layerIdx && i < layers.length; i++) {
+                c = blendColors(c, layers[i].filamentRgb, layers[i].td, layers[i].thickness);
+            }
+            const err = deltaE(px.targetRgb, c);
+            if (err < minErr) { minErr = err; bestLUTIdx = li; }
+        }
+
+        pixelOptimalLUTIdx[pxIdx] = bestLUTIdx;
+        totalMinError += minErr;
+    }
+
+    return { errorFactor: totalActualError - totalMinError, affectedSwatches, pixelOptimalLUTIdx };
+}
+
+/**
  * Core sliding-window computation — returns one `WindowResult` per window
- * without any side effects. Use `runMultiHeadLayerAnalysis` for console output.
+ * without any side effects. Use `runMultiHeadLayerAnalysis` for console output
+ * and the selected non-overlapping subset.
  */
 export function analyzeMultiHeadWindows(
     filaments: Filament[],
@@ -137,90 +282,43 @@ export function analyzeMultiHeadWindows(
     const layers = expandZonesToPrinterLayers(result, filaments, layerHeight, firstLayerHeight);
     if (layers.length < N + 1) return [];
 
-    const scaledFilaments = filaments.slice(0, N).map((f) => ({
-        rgb: hexToRgb(f.color),
-        td: f.td * FRONTLIT_TD_SCALE,
-    }));
-
-    const lut = buildLUT(N);
-
-    // Pre-compute actual stack color at each printer layer.
-    // Layer 0 (foundation) is opaque; subsequent layers blend independently.
-    const colorAtLayer: RGB[] = new Array(layers.length);
-    colorAtLayer[0] = { ...layers[0].filamentRgb };
-    for (let i = 1; i < layers.length; i++) {
-        colorAtLayer[i] = blendColors(
-            colorAtLayer[i - 1],
-            layers[i].filamentRgb,
-            layers[i].td,
-            layers[i].thickness
-        );
-    }
-
-    const pixels = imageSwatches.map((s) => {
-        const rgb = hexToRgb(s.hex);
-        const lum = getLuminance(rgb) / 255;
-        const h = luminanceToHeight(
-            lum,
-            result.transitionZones,
-            result.totalHeight,
-            firstLayerHeight
-        );
-        const layerIdx = findLayerIdxAtHeight(layers, h);
-        return { targetRgb: rgb, layerIdx, actualErr: deltaE(rgb, colorAtLayer[layerIdx]) };
-    });
+    const colorAtLayer = buildColorStack(layers);
+    const pixels = buildPixelData(
+        imageSwatches, layers, colorAtLayer,
+        result.transitionZones, result.totalHeight, firstLayerHeight
+    );
 
     const windows: WindowResult[] = [];
 
     for (let wStart = 1; wStart + N <= layers.length; wStart++) {
         const wEnd = wStart + N - 1;
-        const windowBottomZ = layers[wStart].startZ;
-        const windowTopZ = layers[wEnd].startZ + layers[wEnd].thickness;
-        const baseColor = colorAtLayer[wStart - 1];
 
-        let totalActualError = 0;
-        let totalMinError = 0;
-        let affectedSwatches = 0;
+        const uniqueIndices = [...new Set(
+            Array.from({ length: N }, (_, j) => layers[wStart + j].filamentIdx)
+        )];
+        const windowFilaments: WindowFilament[] = uniqueIndices.map((fi) => ({
+            rgb: hexToRgb(filaments[fi]?.color ?? '#000000'),
+            td: (filaments[fi]?.td ?? 0.5) * FRONTLIT_TD_SCALE,
+        }));
+        const lut = buildLUT(N, windowFilaments.length);
 
-        for (const px of pixels) {
-            if (px.layerIdx < wStart) continue;
-            affectedSwatches++;
-            totalActualError += px.actualErr;
-
-            let minErr = px.actualErr;
-            for (const entry of lut) {
-                let c: RGB = { ...baseColor };
-                const applyCount = Math.min(N, px.layerIdx - wStart + 1);
-                for (let j = 0; j < applyCount; j++) {
-                    const fi = entry[j];
-                    c = blendColors(
-                        c,
-                        scaledFilaments[fi].rgb,
-                        scaledFilaments[fi].td,
-                        layers[wStart + j].thickness
-                    );
-                }
-                for (let i = wEnd + 1; i <= px.layerIdx && i < layers.length; i++) {
-                    c = blendColors(c, layers[i].filamentRgb, layers[i].td, layers[i].thickness);
-                }
-                const err = deltaE(px.targetRgb, c);
-                if (err < minErr) minErr = err;
-            }
-
-            totalMinError += minErr;
-        }
+        const { errorFactor, affectedSwatches, pixelOptimalLUTIdx } = analyzeWindowLUT(
+            wStart, N, layers, colorAtLayer[wStart - 1], windowFilaments, lut, pixels
+        );
 
         windows.push({
             windowStart: wStart,
             windowEnd: wEnd,
-            windowBottomZ,
-            windowTopZ,
-            currentFilaments: Array.from({ length: N }, (_, j) => {
-                const fi = layers[wStart + j].filamentIdx;
-                return filaments[fi]?.name ?? filaments[fi]?.color ?? `f${fi}`;
-            }),
+            windowBottomZ: layers[wStart].startZ,
+            windowTopZ: layers[wEnd].startZ + layers[wEnd].thickness,
+            currentFilaments: uniqueIndices.map((fi) =>
+                filaments[fi]?.name ?? filaments[fi]?.color ?? `f${fi}`
+            ),
+            filamentIds: uniqueIndices.map((fi) => filaments[fi]?.id ?? `f${fi}`),
             affectedSwatches,
-            errorFactor: totalActualError - totalMinError,
+            errorFactor,
+            lut,
+            pixelOptimalLUTIdx,
         });
     }
 
@@ -228,7 +326,52 @@ export function analyzeMultiHeadWindows(
 }
 
 /**
- * Run the multi-head layer analysis and log each window's result to the console.
+ * Select the non-overlapping subset of windows that maximises the total errorFactor.
+ *
+ * Windows overlap when their layer ranges share any index.  Because every window
+ * is width N and adjacent windows differ by one layer, the latest non-overlapping
+ * predecessor for window i is always exactly N steps back — so the DP recurrence
+ * is O(n) with no binary search needed.
+ *
+ *   dp[i] = max total errorFactor using windows[0..i-1]
+ *   dp[i] = max(dp[i-1],  windows[i-1].errorFactor + dp[max(0, i-N)])
+ */
+export function selectBestWindows(windows: WindowResult[], windowSize: number): WindowResult[] {
+    const n = windows.length;
+    if (n === 0) return [];
+
+    const dp = new Float64Array(n + 1); // dp[0] = 0
+
+    for (let i = 1; i <= n; i++) {
+        const predDp = i - windowSize >= 0 ? dp[i - windowSize] : 0;
+        const withWindow = windows[i - 1].errorFactor + predDp;
+        dp[i] = withWindow > dp[i - 1] ? withWindow : dp[i - 1];
+    }
+
+    // Traceback: at each step, check whether window i-1 was chosen
+    const selected: WindowResult[] = [];
+    let i = n;
+    while (i > 0) {
+        const predDp = i - windowSize >= 0 ? dp[i - windowSize] : 0;
+        const withWindow = windows[i - 1].errorFactor + predDp;
+        if (withWindow > dp[i - 1] + 1e-9) {
+            selected.unshift(windows[i - 1]);
+            i = Math.max(0, i - windowSize);
+        } else {
+            i -= 1;
+        }
+    }
+
+    return selected;
+}
+
+/**
+ * Run the full multi-head layer analysis, log results to the console, and return
+ * the selected non-overlapping windows with the highest combined errorFactor.
+ *
+ * Each returned `WindowResult` carries the LUT and per-pixel optimal indices
+ * needed by the renderer:
+ *   filamentIds[ lut[ pixelOptimalLUTIdx[p] ][n] ]  →  filament ID for pixel p at layer n
  */
 export function runMultiHeadLayerAnalysis(
     filaments: Filament[],
@@ -237,12 +380,12 @@ export function runMultiHeadLayerAnalysis(
     layerHeight: number,
     firstLayerHeight: number,
     n: number
-): void {
+): WindowResult[] {
     const N = Math.min(n, filaments.length);
 
     if (N < 2 || result.transitionZones.length === 0 || imageSwatches.length === 0) {
         console.log('[MultiHead] Insufficient data (need ≥2 filaments and image swatches).');
-        return;
+        return [];
     }
 
     const windows = analyzeMultiHeadWindows(
@@ -251,7 +394,7 @@ export function runMultiHeadLayerAnalysis(
 
     if (windows.length === 0) {
         console.log(`[MultiHead] Not enough printer layers for window size N=${N}.`);
-        return;
+        return [];
     }
 
     const heads = filaments.slice(0, N)
@@ -259,8 +402,8 @@ export function runMultiHeadLayerAnalysis(
         .join('  ');
 
     console.group(
-        `[MultiHead] N=${N} | LUT=${Math.pow(N, N)} entries (${N}^${N}) | ` +
-            `${windows.length + N} printer layers | ${imageSwatches.length} image swatches`
+        `[MultiHead] N=${N} heads | LUT per window: up to ${Math.pow(N, N)} entries (${N}^${N}) | ` +
+            `${windows.length + N} printer layers | ${imageSwatches.length} swatches`
     );
     console.log(`  Heads: ${heads}`);
 
@@ -274,5 +417,24 @@ export function runMultiHeadLayerAnalysis(
         );
     }
 
+    const best = selectBestWindows(windows, N);
+    const bestTotal = best.reduce((s, w) => s + w.errorFactor, 0);
+
+    console.log('');
+    console.log(
+        `  ── Best non-overlapping selection (${best.length} windows, ` +
+            `total errorFactor: ${bestTotal.toFixed(4)}) ──`
+    );
+    for (const w of best) {
+        console.log(
+            `  ★ W[${String(w.windowStart).padStart(3)}–${String(w.windowEnd).padStart(3)}]` +
+                `  Z: ${w.windowBottomZ.toFixed(3)}–${w.windowTopZ.toFixed(3)} mm` +
+                `  |  [${w.currentFilaments.join(' → ')}]` +
+                `  |  errorFactor: ${w.errorFactor.toFixed(4)}`
+        );
+    }
+
     console.groupEnd();
+
+    return best;
 }

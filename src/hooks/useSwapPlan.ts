@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import type { Swatch } from '../types';
 import type { AutoPaintResult } from '../lib/autoPaint';
+import type { WindowResult } from '../lib/multiHeadAnalysis';
 
 export type SwapEntry =
     | { type: 'start'; swatch: Swatch }
@@ -14,6 +15,7 @@ export interface UseSwapPlanOptions {
     slicerFirstLayerHeight: number;
     paintMode: 'manual' | 'autopaint';
     autoPaintResult?: AutoPaintResult;
+    multiHeadWindows?: WindowResult[];
     disabled?: boolean;
 }
 
@@ -25,6 +27,7 @@ export function useSwapPlan({
     slicerFirstLayerHeight,
     paintMode,
     autoPaintResult,
+    multiHeadWindows = [],
     disabled = false,
 }: UseSwapPlanOptions) {
     const swapPlan = useMemo(() => {
@@ -109,6 +112,7 @@ export function useSwapPlan({
         slicerFirstLayerHeight,
         paintMode,
         autoPaintResult,
+        multiHeadWindows,
         disabled,
     ]);
 

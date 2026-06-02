@@ -1,4 +1,5 @@
 import type { AutoPaintResult } from '../lib/autoPaint';
+import type { WindowResult } from '../lib/multiHeadAnalysis';
 import type { CalibrationResult } from '../lib/calibration';
 
 export type Swatch = { hex: string; a: number };
@@ -45,6 +46,7 @@ export interface ThreeDControlsStateShape {
     multiHeadMode?: boolean;
     multiHeadCount?: number; // 2–5 heads
     multiHeadSearchDepth?: 'fast' | 'balanced' | 'thorough';
+    multiHeadWindows?: WindowResult[];
     // Auto-paint computed state (only used when paintMode is 'autopaint')
     autoPaintResult?: AutoPaintResult;
     autoPaintSwatches?: Swatch[];

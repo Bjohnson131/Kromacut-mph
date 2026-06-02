@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Check, RotateCcw, Loader2 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { autoPaintToSliceHeights } from '../lib/autoPaint';
-import { runMultiHeadLayerAnalysis } from '../lib/multiHeadAnalysis';
+import { runMultiHeadLayerAnalysis, type WindowResult } from '../lib/multiHeadAnalysis';
 import {
     loadPrintSettingsFromStorage,
     savePrintSettingsToStorage,
@@ -116,6 +116,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
     const [multiHeadSearchDepth, setMultiHeadSearchDepth] = useState<'fast' | 'balanced' | 'thorough'>(
         persisted?.multiHeadSearchDepth ?? 'balanced'
     );
+    const [multiHeadWindows, setMultiHeadWindows] = useState<WindowResult[]>([]);
 
     useEffect(() => {
         if (optimizerAlgorithm === 'exhaustive' && filaments.length > 8) {
@@ -205,6 +206,11 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         multiHeadCount,
     });
 
+    // Reset multi-head windows whenever a new autopaint result arrives
+    useEffect(() => {
+        setMultiHeadWindows([]);
+    }, [autoPaintResult]);
+
     const autoPaintSliceData = useMemo(() => {
         if (!autoPaintResult) return undefined;
         return autoPaintToSliceHeights(autoPaintResult, layerHeight, slicerFirstLayerHeight);
@@ -214,7 +220,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         paintMode === 'autopaint'
             ? autoPaintResult?.layers.length ?? 0
             : displayOrder.length;
-    const isInstructionOverLimit = instructionColorCount > 64;
+    const isInstructionOverLimit = instructionColorCount > 256;
 
     // --- Swap Plan ---
     const { swapPlan, copied, copyToClipboard } = useSwapPlan({
@@ -225,6 +231,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         slicerFirstLayerHeight,
         paintMode,
         autoPaintResult,
+        multiHeadWindows,
         disabled: isInstructionOverLimit,
     });
 
@@ -232,16 +239,17 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
     const handleApply = useCallback(() => {
         if (!onChange) return;
 
-        if (multiHeadMode && paintMode === 'autopaint' && autoPaintResult) {
-            runMultiHeadLayerAnalysis(
+        const newMultiHeadWindows = multiHeadMode && paintMode === 'autopaint' && autoPaintResult
+            ? runMultiHeadLayerAnalysis(
                 filaments,
                 autoPaintResult,
                 filtered.map((s) => ({ hex: s.hex })),
                 layerHeight,
                 slicerFirstLayerHeight,
                 multiHeadCount
-            );
-        }
+            )
+            : [];
+        setMultiHeadWindows(newMultiHeadWindows);
 
         if (paintMode === 'autopaint' && autoPaintSliceData && autoPaintResult) {
             onChange({
@@ -268,6 +276,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 multiHeadMode,
                 multiHeadCount,
                 multiHeadSearchDepth,
+                multiHeadWindows: newMultiHeadWindows,
             });
         } else {
             onChange({
@@ -287,6 +296,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 multiHeadMode,
                 multiHeadCount,
                 multiHeadSearchDepth,
+                multiHeadWindows: newMultiHeadWindows,
             });
         }
     }, [
@@ -459,11 +469,11 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                             orientation="vertical">
                             <SortableContent asChild>
                                 <div className="space-y-2">
-                                    {displayOrder.length > 64 ? (
+                                    {displayOrder.length > 256 ? (
                                         <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-md text-sm text-destructive-foreground">
                                             <p className="font-semibold mb-2">Too many colors ({displayOrder.length})</p>
                                             <p>
-                                                The image has more than 64 unique colors. Please reduce
+                                                The image has more than 256 unique colors. Please reduce
                                                 the image to fewer colors in 2D mode using the quantization
                                                 tools before switching to 3D mode.
                                             </p>

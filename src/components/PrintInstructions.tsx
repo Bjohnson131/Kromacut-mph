@@ -109,7 +109,7 @@ export default function PrintInstructions({
                     {tooManyColors ? (
                         <div className="text-amber-600 text-sm p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
                             Swap instructions are disabled for very large palettes ({colorCount}{' '}
-                            colors). Reduce the image to 64 colors or fewer in 2D mode first.
+                            colors). Reduce the image to 256 colors or fewer in 2D mode first.
                         </div>
                     ) : swapPlan.length <= 1 ? (
                         <div className="text-muted-foreground text-sm p-3 rounded-lg bg-accent/5 border border-border/50">
