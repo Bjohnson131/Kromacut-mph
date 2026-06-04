@@ -24,7 +24,6 @@ import {
     expandZonesToPrinterLayers,
     findLayerIdxAtHeight,
     buildColorStack,
-    selectBestWindows,
     type PrinterLayer,
     type WindowFilament,
     type WindowResult,
@@ -216,8 +215,8 @@ export function computeColorOptimalAssignments(
 
 /**
  * Drop-in parallel to analyzeMultiHeadWindows that uses the color-first pixel
- * pipeline.  The returned WindowResult is structurally identical so it can be
- * passed directly to selectBestWindows for side-by-side comparison.
+ * pipeline.  The returned WindowResult is structurally identical to the base
+ * pipeline's output and carries errorFactor for comparison purposes.
  *
  * Note: affectedSwatches in the returned WindowResult is the total weighted
  * pixel count, not the number of unique color groups.
@@ -410,7 +409,7 @@ function applyComboToLayers(
  * Colors absent from the map fall below that window's start layer.
  */
 export interface ColorFirstResult {
-    /** Selected non-overlapping best windows from selectBestWindows. */
+    /** Windows selected by the iterative consensus loop, in application order. */
     windows: WindowResult[];
     /**
      * One map per selected window.  Key: swatch hex string.
