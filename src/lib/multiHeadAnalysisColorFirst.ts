@@ -509,10 +509,8 @@ export function runMultiHeadLayerAnalysisColorFirst(
 
         // Scan every candidate N-run window and find the one whose consensus
         // optimal ordering yields the greatest aggregate improvement.
-        let bestRStart = -1;
         let bestWindowRuns: ColorRun[] | null = null;
         let bestUniqueIndices: number[] | null = null;
-        let bestWindowFilaments: WindowFilament[] | null = null;
         let bestEntry: number[] | null = null;
         let bestErrorFactor = MIN_IMPROVEMENT;
         let bestAffectedCount = 0;
@@ -538,10 +536,8 @@ export function runMultiHeadLayerAnalysisColorFirst(
             );
 
             if (errorFactor > bestErrorFactor) {
-                bestRStart = rStart;
                 bestWindowRuns = windowRuns;
                 bestUniqueIndices = uniqueIndices;
-                bestWindowFilaments = windowFilaments;
                 bestEntry = entry;
                 bestErrorFactor = errorFactor;
                 bestAffectedCount = affectedCount;
