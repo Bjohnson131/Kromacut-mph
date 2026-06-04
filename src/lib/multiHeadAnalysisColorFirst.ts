@@ -29,6 +29,7 @@ import {
     type WindowResult,
 } from './multiHeadAnalysis.ts';
 
+
 const FRONTLIT_TD_SCALE = 0.1;
 
 /**
@@ -563,14 +564,29 @@ export function runMultiHeadLayerAnalysisColorFirst(
             pixelOptimalLUTIdx: [],
         };
 
-        // Patch the layer stack so the next iteration sees the updated stack.
-        applyComboToLayers(layers, bestWindowRuns, bestEntry, bestUniqueIndices, filaments);
+        // Per-color optimal assignments for this window, computed against the
+        // current stack (below this window already reflects prior iterations).
+        // Window *selection* used the consensus combo, but each colour now gets
+        // its OWN optimal filament-per-run-slot so the render can mix filaments
+        // across pixels within the same height band.
+        const bestWindowFilaments: WindowFilament[] = bestUniqueIndices.map((fi) => ({
+            rgb: hexToRgb(filaments[fi]?.color ?? '#000000'),
+            td: (filaments[fi]?.td ?? 0.5) * FRONTLIT_TD_SCALE,
+        }));
+        const { assignments } = computeColorOptimalAssignments(
+            bestWindowRuns, wEnd, layers, colorAtLayer[wStart - 1], bestWindowFilaments, pixels
+        );
 
-        // All colors above wStart share the same consensus entry.
         const colorMap = new Map<string, number[]>();
         for (const [hex, groupIdx] of hexToGroupIdx) {
-            if (pixels[groupIdx].layerIdx >= wStart) colorMap.set(hex, bestEntry.slice());
+            const assignment = assignments[groupIdx];
+            if (assignment) colorMap.set(hex, assignment);
         }
+
+        // Patch the layer stack with the consensus ordering so the next
+        // iteration's base (and any non-window layers) stay a single realisable
+        // stack for window selection.
+        applyComboToLayers(layers, bestWindowRuns, bestEntry, bestUniqueIndices, filaments);
 
         selectedWindows.push(w);
         selectedAssignments.push(colorMap);
