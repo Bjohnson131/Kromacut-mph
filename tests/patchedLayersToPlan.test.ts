@@ -212,16 +212,38 @@ test('patchedLayersToSliceData — cumulative heights match total model height',
     );
 });
 
-test('patchedLayersToSliceData — swatches have valid hex colors and alpha 255', () => {
+test('patchedLayersToSliceData — produces one slice per printer layer', () => {
+    const swatches = gradient(20);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const layers = expandZonesToPrinterLayers(result, FOUR_FILAMENTS, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { colorOrder } = patchedLayersToSliceData(layers, FOUR_FILAMENTS, FIRST_LAYER_HEIGHT);
+    // One slice per printer layer (matching autoPaintToSliceHeights granularity),
+    // not one per color run — this preserves the smooth per-layer gradient.
+    assert.equal(colorOrder.length, layers.length,
+        `expected one slice per layer (${layers.length}), got ${colorOrder.length}`);
+});
+
+test('patchedLayersToSliceData — swatches are valid 6-digit hex with alpha 255', () => {
     const swatches = gradient(20);
     const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
     const layers = expandZonesToPrinterLayers(result, FOUR_FILAMENTS, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
     const { swatches: sw } = patchedLayersToSliceData(layers, FOUR_FILAMENTS, FIRST_LAYER_HEIGHT);
 
-    const knownColors = new Set(FOUR_FILAMENTS.map((f) => f.color.startsWith('#') ? f.color : `#${f.color}`));
+    // Colours are Beer-Lambert blends, not raw filament colours, so we only
+    // assert valid hex format rather than membership in the filament palette.
     for (const s of sw) {
-        assert.ok(s.hex.startsWith('#'), `hex "${s.hex}" missing # prefix`);
+        assert.ok(/^#[0-9a-fA-F]{6}$/.test(s.hex), `invalid hex "${s.hex}"`);
         assert.equal(s.a, 255);
-        assert.ok(knownColors.has(s.hex), `swatch hex "${s.hex}" not a known filament color`);
     }
+});
+
+test('patchedLayersToSliceData — foundation slice colour equals the foundation filament colour', () => {
+    const swatches = gradient(20);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const layers = expandZonesToPrinterLayers(result, FOUR_FILAMENTS, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { swatches: sw } = patchedLayersToSliceData(layers, FOUR_FILAMENTS, FIRST_LAYER_HEIGHT);
+
+    // Layer 0 is the opaque foundation — its blended colour is the raw filament.
+    const foundationFilament = FOUR_FILAMENTS[layers[0].filamentIdx];
+    assert.equal(sw[0].hex.toLowerCase(), foundationFilament.color.toLowerCase());
 });

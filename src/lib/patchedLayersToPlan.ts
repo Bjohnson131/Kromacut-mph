@@ -8,7 +8,9 @@
  */
 
 import type { TransitionZone } from './autoPaint.ts';
+import { rgbToHex } from './autoPaint.ts';
 import type { PrinterLayer } from './multiHeadAnalysis.ts';
+import { buildColorStack } from './multiHeadAnalysis.ts';
 import type { Filament } from '../types';
 import { buildColorRuns } from './multiHeadAnalysisColorFirst.ts';
 
@@ -22,7 +24,7 @@ import { buildColorRuns } from './multiHeadAnalysisColorFirst.ts';
  * derives from autoPaintSliceData, so ThreeDView requires no changes.
  *
  * colorOrder is always the identity mapping [0, 1, …, N-1] so that
- * colorSliceHeights[colorOrder[i]] == colorSliceHeights[i] == thickness of run i.
+ * colorSliceHeights[colorOrder[i]] == colorSliceHeights[i] == thickness of layer i.
  */
 export interface PatchedSliceData {
     colorOrder: number[];
@@ -33,36 +35,37 @@ export interface PatchedSliceData {
 /**
  * Derive a PatchedSliceData triple from the patched printer-layer stack.
  *
- * Each contiguous same-filament run becomes one slice.  firstLayerHeight is
- * applied to slice 0 to match the clamping ThreeDView already does for the
- * base layer.
+ * Mirrors autoPaintToSliceHeights: one slice per *printer layer* (not per run),
+ * each carrying the Beer-Lambert blended colour at that layer.  This preserves
+ * the smooth per-layer gradient of the standard auto-paint render while
+ * reflecting the reordered filament assignment in patchedLayers — that is what
+ * makes the remixed window layers visible.
+ *
+ * Layer 0's thickness already accounts for firstLayerHeight because
+ * expandZonesToPrinterLayers clamps it to max(firstLayerHeight, layerHeight).
+ * The firstLayerHeight argument is kept for signature parity with the original
+ * slice-height helper and to guard against a degenerate base.
  */
 export function patchedLayersToSliceData(
     layers: PrinterLayer[],
-    filaments: Filament[],
+    _filaments: Filament[],
     firstLayerHeight: number
 ): PatchedSliceData {
     if (layers.length === 0) return { colorOrder: [], colorSliceHeights: [], swatches: [] };
 
-    const runs = buildColorRuns(layers);
+    // Beer-Lambert blended colour accumulated from the opaque foundation up.
+    const colorAtLayer = buildColorStack(layers);
+
     const colorOrder: number[] = [];
     const colorSliceHeights: number[] = [];
     const swatches: { hex: string; a: number }[] = [];
 
-    for (let i = 0; i < runs.length; i++) {
-        const run = runs[i];
-        const filament = filaments[run.filamentIdx];
-
-        const startZ = layers[run.startLayerIdx].startZ;
-        const lastLayer = layers[run.endLayerIdx];
-        const thickness = lastLayer.startZ + lastLayer.thickness - startZ;
-
+    for (let i = 0; i < layers.length; i++) {
         colorOrder.push(i);
-        // Match ThreeDView's first-layer clamping so the base is always watertight.
-        colorSliceHeights.push(i === 0 ? Math.max(thickness, firstLayerHeight) : thickness);
-
-        const raw = filament?.color ?? '#000000';
-        swatches.push({ hex: raw.startsWith('#') ? raw : `#${raw}`, a: 255 });
+        colorSliceHeights.push(
+            i === 0 ? Math.max(layers[i].thickness, firstLayerHeight) : layers[i].thickness
+        );
+        swatches.push({ hex: rgbToHex(colorAtLayer[i]), a: 255 });
     }
 
     return { colorOrder, colorSliceHeights, swatches };
