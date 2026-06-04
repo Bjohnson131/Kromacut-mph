@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import type { Swatch } from '../types';
-import type { AutoPaintResult } from '../lib/autoPaint';
+import type { AutoPaintResult, TransitionZone } from '../lib/autoPaint';
 import type { WindowResult } from '../lib/multiHeadAnalysis';
 
 export type SwapEntry =
@@ -16,6 +16,8 @@ export interface UseSwapPlanOptions {
     paintMode: 'manual' | 'autopaint';
     autoPaintResult?: AutoPaintResult;
     multiHeadWindows?: WindowResult[];
+    /** When set, used in place of autoPaintResult.layers for the swap plan. */
+    patchedTransitionZones?: TransitionZone[];
     disabled?: boolean;
 }
 
@@ -28,6 +30,7 @@ export function useSwapPlan({
     paintMode,
     autoPaintResult,
     multiHeadWindows = [],
+    patchedTransitionZones,
     disabled = false,
 }: UseSwapPlanOptions) {
     const swapPlan = useMemo(() => {
@@ -35,12 +38,16 @@ export function useSwapPlan({
             return [] as SwapEntry[];
         }
 
-        // When auto-paint is active and we have computed layers, use those
-        if (paintMode === 'autopaint' && autoPaintResult && autoPaintResult.layers.length > 0) {
+        // When auto-paint is active, build the swap plan from the effective
+        // layer sequence.  patchedTransitionZones (from the multi-head analysis)
+        // takes priority over the original autoPaintResult.layers so that any
+        // reordered windows appear as additional swaps in the instructions.
+        const effectiveLayers = patchedTransitionZones ?? autoPaintResult?.layers;
+        if (paintMode === 'autopaint' && effectiveLayers && effectiveLayers.length > 0) {
             const plan: SwapEntry[] = [];
-            autoPaintResult.layers.forEach(
+            effectiveLayers.forEach(
                 (
-                    layer: { filamentColor: string; startHeight: number; endHeight: number },
+                    layer: { filamentColor: string; startHeight: number },
                     idx: number
                 ) => {
                     const sw: Swatch = { hex: layer.filamentColor, a: 255 };
@@ -113,6 +120,7 @@ export function useSwapPlan({
         paintMode,
         autoPaintResult,
         multiHeadWindows,
+        patchedTransitionZones,
         disabled,
     ]);
 

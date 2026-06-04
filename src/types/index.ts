@@ -1,4 +1,4 @@
-import type { AutoPaintResult } from '../lib/autoPaint';
+import type { AutoPaintResult, TransitionZone } from '../lib/autoPaint';
 import type { WindowResult } from '../lib/multiHeadAnalysis';
 import type { CalibrationResult } from '../lib/calibration';
 
@@ -47,6 +47,8 @@ export interface ThreeDControlsStateShape {
     multiHeadCount?: number; // 2–5 heads
     multiHeadSearchDepth?: 'fast' | 'balanced' | 'thorough';
     multiHeadWindows?: WindowResult[];
+    /** Reordered transition zones derived from the multi-head patched layer stack. */
+    patchedTransitionZones?: TransitionZone[];
     // Auto-paint computed state (only used when paintMode is 'autopaint')
     autoPaintResult?: AutoPaintResult;
     autoPaintSwatches?: Swatch[];
