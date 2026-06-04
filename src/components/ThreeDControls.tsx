@@ -6,7 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Check, RotateCcw, Loader2 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { autoPaintToSliceHeights } from '../lib/autoPaint';
-import { runMultiHeadLayerAnalysis, type WindowResult } from '../lib/multiHeadAnalysis';
+import { runMultiHeadLayerAnalysisColorFirst } from '../lib/multiHeadAnalysisColorFirst';
+import type { WindowResult } from '../lib/multiHeadAnalysis';
 import {
     loadPrintSettingsFromStorage,
     savePrintSettingsToStorage,
@@ -240,14 +241,14 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         if (!onChange) return;
 
         const newMultiHeadWindows = multiHeadMode && paintMode === 'autopaint' && autoPaintResult
-            ? runMultiHeadLayerAnalysis(
+            ? runMultiHeadLayerAnalysisColorFirst(
                 filaments,
                 autoPaintResult,
-                filtered.map((s) => ({ hex: s.hex })),
+                filtered.map((s) => ({ hex: s.hex, count: s.count })),
                 layerHeight,
                 slicerFirstLayerHeight,
                 multiHeadCount
-            )
+            ).windows
             : [];
         setMultiHeadWindows(newMultiHeadWindows);
 

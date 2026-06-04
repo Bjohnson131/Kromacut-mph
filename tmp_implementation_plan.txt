@@ -1,0 +1,472 @@
+Multi-Head Reordered Layer Shipping Plan
+==========================================
+Goal: Take the multi-head iterative analysis result and produce a 3MF that a
+slicer can execute, including additional filament swaps and correctly ordered
+material assignments within each reordered window.
+
+Bird's-eye steps (this document expands each):
+  1. Expose patchedLayers from ColorFirstResult
+  2. patchedLayers → new transition plan (TransitionZone[])
+  3. Swap plan integration
+  4. 3D mesh generation with reordered layers
+  5. 3MF material assignment
+
+Current data flow (for reference):
+  ThreeDControls  → ThreeDControlsStateShape → App
+                                             ↓            ↓
+                                        ThreeDView    useAppHandlers
+                                       (mesh build)   (3MF export)
+
+After this work, the patched result must reach both ThreeDView and
+useAppHandlers so geometry and export agree on the reordered ordering.
+
+
+===========================================================================
+STEP 1 — Expose patchedLayers from ColorFirstResult
+===========================================================================
+
+File: src/lib/multiHeadAnalysisColorFirst.ts
+
+WHY
+---
+The iterative loop in runMultiHeadLayerAnalysisColorFirst patches layers[] in-
+place via applyComboToLayers. After all iterations that array is the authoritative
+record of what the printer will actually do. Currently it is discarded. Everything
+downstream (transition plan, mesh, export) needs it.
+
+CHANGES
+-------
+1a. Add patchedLayers to ColorFirstResult:
+
+    export interface ColorFirstResult {
+        windows: WindowResult[];
+        colorAssignments: Map<string, number[]>[];
+        uniqueLayerCount: number;
+        patchedLayers: PrinterLayer[];   // <-- new
+    }
+
+1b. At the end of runMultiHeadLayerAnalysisColorFirst, before the return,
+    capture a shallow copy of the mutated array so callers cannot accidentally
+    alias the internal buffer:
+
+        return {
+            windows: selectedWindows,
+            colorAssignments: selectedAssignments,
+            uniqueLayerCount: pixels.length,
+            patchedLayers: layers.slice(),   // <-- new
+        };
+
+1c. Update the two empty-result literals that are returned on early exit:
+
+        const empty: ColorFirstResult = {
+            windows: [],
+            colorAssignments: [],
+            uniqueLayerCount: 0,
+            patchedLayers: [],   // <-- new
+        };
+
+1d. Update tests:
+    tests/multiHeadAnalysisColorFirst.test.ts
+    - The two deepEqual checks for the empty return now need patchedLayers: []
+    - Add one test: patchedLayers.length > 0 for a normal run, and that its
+      filamentIdx values are within range [0, filaments.length)
+
+EDGE CASES
+----------
+- If no windows were selected (all errorFactors below threshold), patchedLayers
+  equals the original unexpanded stack — still correct, just unmodified.
+- layers.slice() is O(N) on printer layer count, typically 50-500. Fine.
+
+
+===========================================================================
+STEP 2 — patchedLayers → new TransitionZone[]
+===========================================================================
+
+File: src/lib/patchedLayersToPlan.ts  (new file)
+
+WHY
+---
+The rest of the pipeline (mesh builder, swap plan, export) all speak the
+language of TransitionZone[], which is the shape already used by AutoPaintResult.
+Converting patchedLayers to that shape lets downstream code remain unchanged.
+
+TYPES NEEDED (already defined in autoPaint.ts, import them)
+   TransitionZone { filamentId, filamentColor, filamentTd,
+                    startHeight, endHeight, idealThickness, actualThickness }
+   PrinterLayer   { filamentIdx, filamentRgb, td, thickness, startZ }
+   Filament       { id, color, td, ... }
+
+FUNCTION SIGNATURE
+------------------
+import { buildColorRuns } from './multiHeadAnalysisColorFirst';
+import type { TransitionZone } from './autoPaint';
+import type { PrinterLayer } from './multiHeadAnalysis';
+import type { Filament } from '../types';
+
+export function patchedLayersToPlan(
+    layers: PrinterLayer[],
+    filaments: Filament[]
+): TransitionZone[]
+
+ALGORITHM
+---------
+1. Call buildColorRuns(layers) → ColorRun[]
+   Each run = { filamentIdx, startLayerIdx, endLayerIdx }
+
+2. For each run:
+   a. filament = filaments[run.filamentIdx]  (safe: applyComboToLayers only
+      ever writes valid indices from the original filaments array)
+   b. startHeight = layers[run.startLayerIdx].startZ
+   c. endHeight   = layers[run.endLayerIdx].startZ
+                  + layers[run.endLayerIdx].thickness
+   d. thickness   = endHeight - startHeight
+   e. Emit TransitionZone:
+        {
+            filamentId:       filament.id,
+            filamentColor:    filament.color,
+            filamentTd:       filament.td,
+            startHeight,
+            endHeight,
+            idealThickness:   thickness,
+            actualThickness:  thickness,
+        }
+
+3. Return the array of TransitionZone.
+
+NOTE on idealThickness vs actualThickness: for the multi-head result there is
+no compression step — the printer-layer heights are exact. Both fields carry the
+same value. Callers that display "compression ratio" should be aware.
+
+TESTS
+-----
+tests/patchedLayersToPlan.test.ts  (new file)
+- Zone count equals run count from buildColorRuns on the same layers.
+- Zones are contiguous: zones[i].endHeight === zones[i+1].startHeight.
+- filamentId and filamentColor round-trip back to the correct filament.
+- Heights are non-negative and monotonically increasing.
+- Zero-length input returns [].
+
+
+===========================================================================
+STEP 3 — Swap plan integration
+===========================================================================
+
+Files:
+  src/hooks/useSwapPlan.ts     (modify)
+  src/types/index.ts           (modify)
+  src/components/ThreeDControls.tsx  (modify)
+
+WHY
+---
+useSwapPlan currently generates swap instructions from autoPaintResult.layers.
+After multi-head reordering the effective layer plan has additional swaps
+inside what were previously single-filament zones. We need those extra swaps
+to appear in the printed instructions the user reads.
+
+CHANGES
+-------
+
+3a. Add patchedTransitionZones to ThreeDControlsStateShape (types/index.ts):
+
+    interface ThreeDControlsStateShape {
+        ...
+        multiHeadWindows?:         WindowResult[];
+        patchedTransitionZones?:   TransitionZone[];  // <-- new
+        ...
+    }
+
+3b. Propagate from ThreeDControls.tsx:
+    - Import patchedLayersToPlan from lib/patchedLayersToPlan.
+    - In handleApply, after runMultiHeadLayerAnalysisColorFirst:
+
+        const cfResult = runMultiHeadLayerAnalysisColorFirst(...);
+        const newMultiHeadWindows = cfResult.windows;
+        const patchedTransitionZones =
+            cfResult.patchedLayers.length > 0
+                ? patchedLayersToPlan(cfResult.patchedLayers, filaments)
+                : undefined;
+
+    - Include patchedTransitionZones in both onChange({ ... }) calls.
+
+3c. Add patchedTransitionZones to UseSwapPlanOptions (useSwapPlan.ts):
+
+    interface UseSwapPlanOptions {
+        ...
+        patchedTransitionZones?: TransitionZone[];  // <-- new
+    }
+
+3d. In the useMemo body of useSwapPlan, when paintMode === 'autopaint':
+    - Use patchedTransitionZones in preference to autoPaintResult.transitionZones
+      when it is present.
+    - The existing zone → swap-entry logic already iterates TransitionZone[]
+      in startHeight order, so no structural change is needed — just swap the
+      source array.
+
+    Concretely, replace:
+        autoPaintResult.layers.forEach((layer, idx) => { ... })
+    with logic that runs over (patchedTransitionZones ?? autoPaintResult.transitionZones)
+    converting each zone to a SwapEntry using the same height → layer-number
+    formula that already exists in the hook.
+
+SWAP COUNT IMPACT
+-----------------
+Original auto-paint with N filaments → N-1 swaps.
+After multi-head reordering with W windows, each window of N runs adds up to
+N-1 extra swaps within the window. Total worst-case swaps = original + W*(N-1).
+For a typical 4-head model with 2 windows: 3 + 2*3 = 9 swaps. Still manageable.
+
+EDGE CASES
+----------
+- If patchedLayers is empty (analysis ran but found nothing), patchedTransitionZones
+  is undefined and useSwapPlan falls back to the original autoPaintResult zones.
+- Zone heights from patchedLayersToPlan may be slightly different from the
+  autoPaintResult zones because they are derived from discrete printer-layer
+  boundaries rather than the ideal float heights. The layer-number calculation
+  in useSwapPlan already rounds, so this is safe.
+
+
+===========================================================================
+STEP 4 — 3D mesh generation with reordered layers
+===========================================================================
+
+Files:
+  src/lib/patchedLayersToPlan.ts    (add second export)
+  src/types/index.ts                (extend ThreeDControlsStateShape)
+  src/components/ThreeDControls.tsx (propagate new field)
+  src/components/ThreeDView.tsx     (consume new field)
+
+WHY
+---
+ThreeDView builds a mesh per color slice using colorOrder (swatch indices) and
+colorSliceHeights (thicknesses). After multi-head reordering, some of those
+slices have the wrong filament color, and slices within windows may need to be
+split. The cleanest solution: derive a replacement colorOrder + colorSliceHeights
++ swatches triple from the patched run sequence, and feed it to ThreeDView
+alongside the original data.
+
+GEOMETRY DOES NOT CHANGE. Only the per-slice material color changes. The pixel
+height map (which pixels are active at which Z) stays identical because it is
+derived from image luminance, not from filament colors.
+
+NEW EXPORT in patchedLayersToPlan.ts
+-------------------------------------
+export interface PatchedSliceData {
+    colorOrder:        number[];          // 0..N-1 for N runs (identity mapping)
+    colorSliceHeights: number[];          // thickness of each run in mm
+    swatches:          { hex: string; a: number }[];  // filament color per run
+}
+
+export function patchedLayersToSliceData(
+    layers:    PrinterLayer[],
+    filaments: Filament[],
+    firstLayerHeight: number
+): PatchedSliceData
+
+ALGORITHM
+---------
+1. runs = buildColorRuns(layers)
+2. For each run i:
+   a. hex = '#' + filaments[run.filamentIdx].color (ensure # prefix)
+   b. thickness:
+        if i === 0: max(run thickness, firstLayerHeight)  — matches ThreeDView's
+                                                            existing first-layer logic
+        else:       layers[run.startLayerIdx..run.endLayerIdx] thickness sum
+                    = layers[run.endLayerIdx].startZ + layers[run.endLayerIdx].thickness
+                    - layers[run.startLayerIdx].startZ
+3. colorOrder = [0, 1, 2, ..., runs.length-1]  (identity; each run is its own slice)
+4. colorSliceHeights = indexed by run index (not by swatchIdx like the original)
+5. swatches = [{hex, a:255}, ...]  one per run
+
+STATE FIELD
+-----------
+Add to ThreeDControlsStateShape (types/index.ts):
+
+    patchedSliceData?: PatchedSliceData;  // <-- new
+
+Propagate in ThreeDControls.tsx handleApply:
+
+    const patchedSliceData =
+        cfResult.patchedLayers.length > 0
+            ? patchedLayersToSliceData(cfResult.patchedLayers, filaments, slicerFirstLayerHeight)
+            : undefined;
+
+Include in both onChange calls.
+
+THREEVIEW CHANGES
+-----------------
+ThreeDView.tsx already receives swatches, colorOrder, colorSliceHeights as
+props. It also receives the full ThreeDControlsStateShape (via the parent's
+onChange output). The cleanest approach: add patchedSliceData as a prop.
+
+In the autopaint mesh build block (currently keyed on autoPaintResult being
+set), add a branch:
+
+    if (paintMode === 'autopaint' && autoPaintResult && patchedSliceData) {
+        // Use patchedSliceData.colorOrder / colorSliceHeights / swatches
+        // instead of the autoPaintSliceData equivalents.
+        // Geometry (pixelHeightMap) is identical — only per-slice color changes.
+    }
+
+Because the geometry (pixelHeightMap) is unchanged, the only difference in the
+mesh loop is:
+  - colorOrder comes from patchedSliceData.colorOrder
+  - colorSliceHeights comes from patchedSliceData.colorSliceHeights
+  - swatches comes from patchedSliceData.swatches
+  - filamentSwatches is not needed (swatches already carry the correct
+    physical filament colors)
+
+EDGE CASES
+----------
+- If patchedSliceData is undefined (multi-head analysis found nothing or was
+  not run), ThreeDView falls back to the original autoPaintSliceData path.
+  No regression.
+- Slice count may differ from original colorOrder.length because one original
+  auto-paint zone may now be represented as multiple printer-layer runs after
+  a window is applied. This is intentional.
+- The first layer thickness clamping (max(h, slicerFirstLayerHeight)) must be
+  preserved in patchedLayersToSliceData for the layered mesh builder to produce
+  a watertight base.
+
+
+===========================================================================
+STEP 5 — 3MF material assignment
+===========================================================================
+
+Files:
+  src/hooks/useAppHandlers.ts    (modify)
+  src/lib/export3mf.ts           (no change needed)
+
+WHY
+---
+export3mf.ts already has layerFilamentColors?: string[] in Export3MFOptions.
+This array is indexed by mesh-object index and overrides the per-object material
+color. Currently nothing populates it for multi-head models.
+
+After step 4, each mesh object corresponds to one run from patchedSliceData.
+layerFilamentColors must therefore have one hex string per run, in the same
+order as patchedSliceData.colorOrder.
+
+CHANGES
+-------
+
+5a. In useAppHandlers.ts, in the export-3MF handler, after the threeObject
+    is ready, check if patchedSliceData is in scope (passed through state):
+
+    const layerFilamentColors: string[] | undefined =
+        patchedSliceData
+            ? patchedSliceData.swatches.map((s) => s.hex)
+            : undefined;
+
+5b. Pass layerFilamentColors into exportObjectTo3MFBlob:
+
+    const blob = await exportObjectTo3MFBlob(
+        threeObject,
+        { layerFilamentColors, ...progressReporter },
+        (meta) => updateZipStep(meta.percent)
+    );
+
+HOW THE 3MF USES IT
+--------------------
+export3mf.ts line ~229:
+    const overrideHex = options?.layerFilamentColors?.[i];
+This replaces the per-object color with the run's actual filament color, so
+the slicer's material list reflects the reordered ordering rather than the
+original auto-paint ordering.
+
+The slicer reads the per-object extruder assignment from the <metadata
+key="extruder"> tag. The export already writes a 1-based colorIdx per component
+(line ~715). That colorIdx is derived from the mesh object's material, which is
+now overridden by layerFilamentColors. Verify that the material-to-extruder
+mapping in the generated 3MF config remains correct after the override — it
+should because the override only changes the color string, not the material
+index itself.
+
+EDGE CASES
+----------
+- If patchedSliceData is undefined, layerFilamentColors is undefined and the
+  existing export path runs unchanged.
+- The filament colour list in the 3MF's project settings (filament_colour array)
+  is derived from the materials present. With the reordered layers, the colour
+  list may change order or include duplicates vs the original. Verify that
+  BambuStudio / PrusaSlicer handle this gracefully.
+- Some slicers require the number of distinct filament entries to match the
+  printer's loaded filament count. If a window re-uses a filament that is
+  already in the list, de-duplicate before writing filament_colour.
+
+
+===========================================================================
+DATA FLOW AFTER ALL STEPS
+===========================================================================
+
+ThreeDControls.handleApply
+  └─ runMultiHeadLayerAnalysisColorFirst(...)
+       └─ ColorFirstResult { windows, colorAssignments, uniqueLayerCount,
+                             patchedLayers }
+            ├─ patchedLayersToPlan(patchedLayers, filaments)
+            │    └─ TransitionZone[]  → stored as patchedTransitionZones
+            └─ patchedLayersToSliceData(patchedLayers, filaments, firstLayerH)
+                 └─ PatchedSliceData  → stored as patchedSliceData
+
+onChange({ ..., patchedTransitionZones, patchedSliceData })
+  ├─ App state
+  ├─ ThreeDView  ← receives patchedSliceData → drives mesh geometry colours
+  ├─ useSwapPlan ← receives patchedTransitionZones → prints correct swap steps
+  └─ useAppHandlers (export) ← derives layerFilamentColors from patchedSliceData
+
+
+===========================================================================
+TESTING PLAN
+===========================================================================
+
+Unit tests
+----------
+- patchedLayersToPlan: zone continuity, filament round-trip, monotone heights
+- patchedLayersToSliceData: slice count = run count, first-layer height clamp,
+  identity colorOrder, hex format
+- ColorFirstResult.patchedLayers: non-empty after a run that finds windows,
+  filamentIdx in valid range, length matches printer layer count
+
+Integration / visual
+--------------------
+- Load a 4-filament image, enable multi-head mode, click Build 3D Model.
+  Verify the 3D preview shows the reordered filament colours in the windows.
+- Export the 3MF. Open in BambuStudio / PrusaSlicer and confirm:
+    a. The number of colour swaps in the slicer preview matches the swap plan.
+    b. The per-layer material assignment matches the console log from
+       runMultiHeadLayerAnalysisColorFirst.
+- Verify fallback: with multi-head mode off, the mesh and export are
+  byte-for-byte identical to a build with the existing code.
+
+Regression
+----------
+- All existing tests continue to pass (npm test).
+- The standard (non-multi-head) autopaint path is gated behind
+  `patchedSliceData !== undefined` checks and must not be affected.
+
+
+===========================================================================
+OPEN QUESTIONS / RISKS
+===========================================================================
+
+Q1. Slicer extruder-count mismatch
+    Some slicers reject a 3MF whose filament list has more entries than the
+    printer profile allows. After multi-head reordering, the effective number
+    of distinct filaments is still ≤ N (the head count). Verify this holds
+    and add a de-duplication pass if needed.
+
+Q2. Filament swap feasibility
+    The reordered plan may require physically swapping filaments mid-print at
+    heights that the printer cannot pause at (e.g., inside a bridging span).
+    This is a UX / documentation issue, not a code bug, but worth noting in
+    the UI.
+
+Q3. colorSliceHeights indexing convention
+    ThreeDView expects colorSliceHeights indexed by swatch index (not by
+    position). PatchedSliceData uses an identity colorOrder so index == position,
+    but double-check every callsite in ThreeDView that does
+    colorSliceHeights[colorOrder[i]] vs colorSliceHeights[i].
+
+Q4. smoothMeshing with patched slices
+    The marching-squares path in ThreeDView may have separate assumptions about
+    how many slices there are. Confirm it works with a higher-than-usual run
+    count (e.g., 20 runs instead of 4 swatches).

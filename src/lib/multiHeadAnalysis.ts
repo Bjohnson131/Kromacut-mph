@@ -84,7 +84,7 @@ export interface WindowResult {
 }
 
 /** Expand transition zones into individual printer-layer entries. */
-function expandZonesToPrinterLayers(
+export function expandZonesToPrinterLayers(
     result: AutoPaintResult,
     filaments: Filament[],
     layerHeight: number,
@@ -150,7 +150,7 @@ export function buildLUT(windowSize: number, filamentCount: number): number[][] 
 }
 
 /** Return the index of the last printer layer whose startZ ≤ h. */
-function findLayerIdxAtHeight(layers: PrinterLayer[], h: number): number {
+export function findLayerIdxAtHeight(layers: PrinterLayer[], h: number): number {
     let idx = 0;
     for (let i = 0; i < layers.length; i++) {
         if (layers[i].startZ <= h) idx = i;
