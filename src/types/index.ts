@@ -1,5 +1,6 @@
 import type { AutoPaintResult, TransitionZone } from '../lib/autoPaint';
 import type { WindowResult } from '../lib/multiHeadAnalysis';
+import type { PatchedSliceData } from '../lib/patchedLayersToPlan';
 import type { CalibrationResult } from '../lib/calibration';
 
 export type Swatch = { hex: string; a: number };
@@ -49,6 +50,8 @@ export interface ThreeDControlsStateShape {
     multiHeadWindows?: WindowResult[];
     /** Reordered transition zones derived from the multi-head patched layer stack. */
     patchedTransitionZones?: TransitionZone[];
+    /** Slice data for ThreeDView mesh generation derived from the patched layer stack. */
+    patchedSliceData?: PatchedSliceData;
     // Auto-paint computed state (only used when paintMode is 'autopaint')
     autoPaintResult?: AutoPaintResult;
     autoPaintSwatches?: Swatch[];

@@ -528,11 +528,21 @@ function App(): React.ReactElement | null {
                                         baseSliceHeight={0}
                                         layerHeight={threeDState.layerHeight}
                                         slicerFirstLayerHeight={threeDState.slicerFirstLayerHeight}
-                                        colorSliceHeights={threeDState.colorSliceHeights}
-                                        colorOrder={threeDState.colorOrder}
-                                        swatches={threeDState.filteredSwatches}
+                                        colorSliceHeights={
+                                            threeDState.patchedSliceData?.colorSliceHeights
+                                            ?? threeDState.colorSliceHeights
+                                        }
+                                        colorOrder={
+                                            threeDState.patchedSliceData?.colorOrder
+                                            ?? threeDState.colorOrder
+                                        }
+                                        swatches={
+                                            threeDState.paintMode === 'autopaint' && threeDState.patchedSliceData
+                                                ? threeDState.patchedSliceData.swatches
+                                                : threeDState.filteredSwatches
+                                        }
                                         filamentSwatches={
-                                            threeDState.paintMode === 'autopaint'
+                                            threeDState.paintMode === 'autopaint' && !threeDState.patchedSliceData
                                                 ? threeDState.autoPaintFilamentSwatches
                                                 : undefined
                                         }

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { generateAutoLayers } from '../src/lib/autoPaint.ts';
 import { expandZonesToPrinterLayers } from '../src/lib/multiHeadAnalysis.ts';
 import { runMultiHeadLayerAnalysisColorFirst } from '../src/lib/multiHeadAnalysisColorFirst.ts';
-import { patchedLayersToPlan } from '../src/lib/patchedLayersToPlan.ts';
+import { patchedLayersToPlan, patchedLayersToSliceData } from '../src/lib/patchedLayersToPlan.ts';
 import type { Filament } from '../src/types/index.ts';
 
 const LAYER_HEIGHT = 0.12;
@@ -154,5 +154,74 @@ test('patchedLayersToPlan — all zone filamentIds are valid after iterative reo
     for (const z of zones) {
         assert.ok(knownIds.has(z.filamentId),
             `reordered zone has unknown filamentId "${z.filamentId}"`);
+    }
+});
+
+// ---------------------------------------------------------------------------
+// patchedLayersToSliceData
+// ---------------------------------------------------------------------------
+
+test('patchedLayersToSliceData — returns empty triple for empty input', () => {
+    const result = patchedLayersToSliceData([], FOUR_FILAMENTS, FIRST_LAYER_HEIGHT);
+    assert.deepEqual(result, { colorOrder: [], colorSliceHeights: [], swatches: [] });
+});
+
+test('patchedLayersToSliceData — colorOrder is the identity mapping', () => {
+    const swatches = gradient(20);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const layers = expandZonesToPrinterLayers(result, FOUR_FILAMENTS, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { colorOrder } = patchedLayersToSliceData(layers, FOUR_FILAMENTS, FIRST_LAYER_HEIGHT);
+    assert.deepEqual(colorOrder, Array.from({ length: colorOrder.length }, (_, i) => i));
+});
+
+test('patchedLayersToSliceData — all three arrays have the same length', () => {
+    const swatches = gradient(20);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const layers = expandZonesToPrinterLayers(result, FOUR_FILAMENTS, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { colorOrder, colorSliceHeights, swatches: sw } = patchedLayersToSliceData(
+        layers, FOUR_FILAMENTS, FIRST_LAYER_HEIGHT
+    );
+    assert.equal(colorSliceHeights.length, colorOrder.length);
+    assert.equal(sw.length, colorOrder.length);
+});
+
+test('patchedLayersToSliceData — first slice height is at least firstLayerHeight', () => {
+    const swatches = gradient(20);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const layers = expandZonesToPrinterLayers(result, FOUR_FILAMENTS, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { colorSliceHeights } = patchedLayersToSliceData(layers, FOUR_FILAMENTS, FIRST_LAYER_HEIGHT);
+    assert.ok(
+        colorSliceHeights[0] >= FIRST_LAYER_HEIGHT,
+        `first slice height ${colorSliceHeights[0]} < firstLayerHeight ${FIRST_LAYER_HEIGHT}`
+    );
+});
+
+test('patchedLayersToSliceData — cumulative heights match total model height', () => {
+    const swatches = gradient(20);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const layers = expandZonesToPrinterLayers(result, FOUR_FILAMENTS, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { colorSliceHeights } = patchedLayersToSliceData(layers, FOUR_FILAMENTS, FIRST_LAYER_HEIGHT);
+
+    const lastLayer = layers.at(-1)!;
+    const expectedTotal = lastLayer.startZ + lastLayer.thickness;
+    const actualTotal = colorSliceHeights.reduce((s, h) => s + h, 0);
+
+    assert.ok(
+        Math.abs(actualTotal - expectedTotal) < 1e-6,
+        `cumulative height ${actualTotal.toFixed(4)} !== expected ${expectedTotal.toFixed(4)}`
+    );
+});
+
+test('patchedLayersToSliceData — swatches have valid hex colors and alpha 255', () => {
+    const swatches = gradient(20);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const layers = expandZonesToPrinterLayers(result, FOUR_FILAMENTS, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { swatches: sw } = patchedLayersToSliceData(layers, FOUR_FILAMENTS, FIRST_LAYER_HEIGHT);
+
+    const knownColors = new Set(FOUR_FILAMENTS.map((f) => f.color.startsWith('#') ? f.color : `#${f.color}`));
+    for (const s of sw) {
+        assert.ok(s.hex.startsWith('#'), `hex "${s.hex}" missing # prefix`);
+        assert.equal(s.a, 255);
+        assert.ok(knownColors.has(s.hex), `swatch hex "${s.hex}" not a known filament color`);
     }
 });

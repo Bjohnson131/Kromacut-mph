@@ -7,7 +7,7 @@ import { Check, RotateCcw, Loader2 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { autoPaintToSliceHeights } from '../lib/autoPaint';
 import { runMultiHeadLayerAnalysisColorFirst } from '../lib/multiHeadAnalysisColorFirst';
-import { patchedLayersToPlan } from '../lib/patchedLayersToPlan';
+import { patchedLayersToPlan, patchedLayersToSliceData } from '../lib/patchedLayersToPlan';
 import type { WindowResult } from '../lib/multiHeadAnalysis';
 import {
     loadPrintSettingsFromStorage,
@@ -256,6 +256,9 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         const patchedTransitionZones = cfResult && cfResult.patchedLayers.length > 0
             ? patchedLayersToPlan(cfResult.patchedLayers, filaments)
             : undefined;
+        const patchedSliceData = cfResult && cfResult.patchedLayers.length > 0
+            ? patchedLayersToSliceData(cfResult.patchedLayers, filaments, slicerFirstLayerHeight)
+            : undefined;
         setMultiHeadWindows(newMultiHeadWindows);
 
         if (paintMode === 'autopaint' && autoPaintSliceData && autoPaintResult) {
@@ -285,6 +288,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 multiHeadSearchDepth,
                 multiHeadWindows: newMultiHeadWindows,
                 patchedTransitionZones,
+                patchedSliceData,
             });
         } else {
             onChange({
@@ -306,6 +310,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 multiHeadSearchDepth,
                 multiHeadWindows: newMultiHeadWindows,
                 patchedTransitionZones,
+                patchedSliceData,
             });
         }
     }, [
