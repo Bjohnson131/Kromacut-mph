@@ -545,6 +545,7 @@ export async function generateSmoothMesh(
     heightScale: number,
     options?: MeshYieldOptions
 ): Promise<MeshData> {
+    const skipBottomCap = options?.skipBottomCap ?? false;
     const positions: number[] = [];
     const indices: number[] = [];
 
@@ -745,11 +746,13 @@ export async function generateSmoothMesh(
 
         for (const [a, b, c] of faces) {
             indices.push(baseVert + a, baseVert + b, baseVert + c);
-            indices.push(
-                baseVert + topVertexCount + a,
-                baseVert + topVertexCount + c,
-                baseVert + topVertexCount + b
-            );
+            if (!skipBottomCap) {
+                indices.push(
+                    baseVert + topVertexCount + a,
+                    baseVert + topVertexCount + c,
+                    baseVert + topVertexCount + b
+                );
+            }
         }
 
         let loopOffset = 0;
@@ -796,6 +799,11 @@ export async function generateSmoothMesh(
 interface MeshYieldOptions {
     yieldIntervalMs?: number;
     onYield?: () => Promise<void>;
+    skipBottomCap?: boolean;
+    // When a layer is split into multiple per-color group meshes, skip the
+    // binary corner-contact repair to avoid adding pixels that belong to an
+    // adjacent group, which would create coplanar overlapping faces (Z-fighting).
+    skipRepair?: boolean;
 }
 
 /**
@@ -826,7 +834,10 @@ export async function generateGreedyMesh(
     heightScale: number,
     options?: MeshYieldOptions
 ): Promise<MeshData> {
-    const meshingPixels = repairBinaryCornerContacts(activePixels, width, height);
+    const skipBottomCap = options?.skipBottomCap ?? false;
+    const meshingPixels = (options?.skipRepair ?? false)
+        ? activePixels
+        : repairBinaryCornerContacts(activePixels, width, height);
     const positions: number[] = [];
     const indices: number[] = [];
     let vertCount = 0;
@@ -1053,7 +1064,9 @@ export async function generateGreedyMesh(
 
         for (const [a, b, c] of faces) {
             indices.push(topLoop[a], topLoop[b], topLoop[c]);
-            indices.push(bottomLoop[a], bottomLoop[c], bottomLoop[b]);
+            if (!skipBottomCap) {
+                indices.push(bottomLoop[a], bottomLoop[c], bottomLoop[b]);
+            }
         }
 
         await maybeYield();

@@ -52,6 +52,12 @@ export interface ThreeDControlsStateShape {
     patchedTransitionZones?: TransitionZone[];
     /** Slice data for ThreeDView mesh generation derived from the patched layer stack. */
     patchedSliceData?: PatchedSliceData;
+    /**
+     * Per image-colour blended colour per printer layer (keys = image palette hex).
+     * Drives per-pixel filament mixing in the 3D render: a pixel of colour `hex`
+     * shows perColorLayerColors.get(hex)[layerIdx] at each layer.
+     */
+    perColorLayerColors?: Map<string, string[]>;
     // Auto-paint computed state (only used when paintMode is 'autopaint')
     autoPaintResult?: AutoPaintResult;
     autoPaintSwatches?: Swatch[];

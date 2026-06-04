@@ -34,6 +34,10 @@ interface ThreeDViewProps {
     heightDithering?: boolean; // Floyd-Steinberg error diffusion on height map
     ditherLineWidth?: number; // Minimum dot size in mm for dithering
     smoothMeshing?: boolean; // Use marching squares for smooth edges
+    // Multi-head per-pixel colour mixing: image-palette hex -> blended colour per layer.
+    // When present (auto-paint mode), each layer band is split per pixel colour so
+    // different pixels at the same height can show different filament colours.
+    perColorLayerColors?: Map<string, string[]>;
 }
 
 // Convert hex color to RGB tuple
@@ -286,6 +290,7 @@ export default function ThreeDView({
     heightDithering = false,
     ditherLineWidth = 0.42,
     smoothMeshing = false,
+    perColorLayerColors,
 }: ThreeDViewProps) {
     const mountRef = useRef<HTMLDivElement | null>(null);
     const [isBuilding, setIsBuilding] = useState(false);
@@ -484,6 +489,11 @@ export default function ThreeDView({
             heightDithering,
             ditherLineWidth,
             smoothMeshing,
+            // Signature for the per-pixel colour map (keys + first colour array)
+            // so a new multi-head result forces a rebuild.
+            perColorLayerColors: perColorLayerColors
+                ? `${perColorLayerColors.size}:${[...perColorLayerColors.values()][0]?.join('') ?? ''}`
+                : null,
         });
         if (paramsKey === lastParamsKeyRef.current) return; // nothing changed logically
         lastParamsKeyRef.current = paramsKey;
@@ -1052,14 +1062,39 @@ export default function ThreeDView({
                         }
                     }
 
+                    // Multi-head per-pixel colour: classify each pixel to its nearest
+                    // image-palette colour once, so layer bands can be split by the
+                    // per-colour blended colour at that layer.
+                    let pixelColorSeq: (string[] | null)[] | null = null;
+                    if (perColorLayerColors && perColorLayerColors.size > 0) {
+                        const paletteHexes = [...perColorLayerColors.keys()];
+                        const paletteRGB = paletteHexes.map(hexToRGB);
+                        const paletteSeqs = paletteHexes.map((h) => perColorLayerColors.get(h)!);
+                        pixelColorSeq = new Array(boxW * boxH).fill(null);
+                        for (let y = 0; y < boxH; y++) {
+                            for (let x = 0; x < boxW; x++) {
+                                const idx = ((minY + y) * fullW + (minX + x)) * 4;
+                                if (data[idx + 3] === 0) continue;
+                                let best = 0;
+                                let bestD = Infinity;
+                                for (let p = 0; p < paletteRGB.length; p++) {
+                                    const dr = data[idx] - paletteRGB[p][0];
+                                    const dg = data[idx + 1] - paletteRGB[p][1];
+                                    const db = data[idx + 2] - paletteRGB[p][2];
+                                    const d = dr * dr + dg * dg + db * db;
+                                    if (d < bestD) { bestD = d; best = p; }
+                                }
+                                pixelColorSeq[(boxH - 1 - y) * boxW + x] = paletteSeqs[best];
+                            }
+                        }
+                    }
+
                     // Build each layer once; smooth meshing does not run overhang repair passes.
                     const layerBuildOrder = Array.from(
                         { length: colorOrder.length },
                         (_, layerIndex) => layerIndex
                     );
-                    const builtLayerMeshes: Array<THREE.Mesh | undefined> = new Array(
-                        colorOrder.length
-                    );
+                    const builtLayerMeshes: THREE.Mesh[] = [];
 
                     for (
                         let buildLayerIndex = 0;
@@ -1117,37 +1152,58 @@ export default function ThreeDView({
 
                         if (activeCount === 0) continue;
 
-                        // Generate mesh for this layer
-                        const generatedMesh = await (
-                            smoothMeshing ? generateSmoothMesh : generateGreedyMesh
-                        )(activePixels, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
-                            yieldIntervalMs: 8,
-                        });
-
-                        const geom = createFlatShadedGeometry(
-                            generatedMesh.positions,
-                            generatedMesh.indices,
-                            {
-                                activePixels,
-                                width: boxW,
-                                height: boxH,
-                                pixelSize,
-                                topZ: (baseZ + thickness) * heightScale,
+                        // Partition this layer's active pixels by the colour each
+                        // pixel shows at layer i. In multi-head per-pixel mode that
+                        // splits the band into several colour groups; otherwise it is
+                        // a single group with the band's blended colour.
+                        const groups = new Map<string, Uint8Array>();
+                        if (pixelColorSeq) {
+                            for (let mi = 0; mi < activePixels.length; mi++) {
+                                if (!activePixels[mi]) continue;
+                                const seq = pixelColorSeq[mi];
+                                const hex = (seq && seq[i]) || colorHex;
+                                let mask = groups.get(hex);
+                                if (!mask) { mask = new Uint8Array(boxW * boxH); groups.set(hex, mask); }
+                                mask[mi] = 1;
                             }
-                        );
-                        const mat = new THREE.MeshStandardMaterial({
-                            color: colorHex,
-                            side: THREE.FrontSide,
-                            metalness: 0,
-                            roughness: 0.7,
-                            flatShading: true,
-                        });
+                        } else {
+                            groups.set(colorHex, activePixels);
+                        }
 
-                        const mesh = new THREE.Mesh(geom, mat);
-                        // Store layer Z range for preview slider
-                        mesh.userData.baseZ = baseZ;
-                        mesh.userData.topZ = topZ;
-                        builtLayerMeshes[i] = mesh;
+                        for (const [groupHex, groupMask] of groups) {
+                            const generatedMesh = await (
+                                smoothMeshing ? generateSmoothMesh : generateGreedyMesh
+                            )(groupMask, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
+                                yieldIntervalMs: 8,
+                                skipBottomCap: i > 0,
+                                skipRepair: groups.size > 1,
+                            });
+
+                            const geom = createFlatShadedGeometry(
+                                generatedMesh.positions,
+                                generatedMesh.indices,
+                                {
+                                    activePixels: groupMask,
+                                    width: boxW,
+                                    height: boxH,
+                                    pixelSize,
+                                    topZ: (baseZ + thickness) * heightScale,
+                                }
+                            );
+                            const mat = new THREE.MeshStandardMaterial({
+                                color: groupHex,
+                                side: THREE.FrontSide,
+                                metalness: 0,
+                                roughness: 0.7,
+                                flatShading: true,
+                            });
+
+                            const mesh = new THREE.Mesh(geom, mat);
+                            // Store layer Z range for preview slider
+                            mesh.userData.baseZ = baseZ;
+                            mesh.userData.topZ = topZ;
+                            builtLayerMeshes.push(mesh);
+                        }
 
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
@@ -1157,9 +1213,7 @@ export default function ThreeDView({
                     }
 
                     for (const mesh of builtLayerMeshes) {
-                        if (mesh) {
-                            modelGroup.add(mesh);
-                        }
+                        modelGroup.add(mesh);
                     }
                 } else {
                     // === STANDARD MODE ===
@@ -1284,6 +1338,7 @@ export default function ThreeDView({
                             smoothMeshing ? generateSmoothMesh : generateGreedyMesh
                         )(activePixels, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
                             yieldIntervalMs: 8,
+                            skipBottomCap: i > 0,
                         });
 
                         const geom = createFlatShadedGeometry(
@@ -1488,6 +1543,7 @@ export default function ThreeDView({
         heightDithering,
         ditherLineWidth,
         smoothMeshing,
+        perColorLayerColors,
         cameraRef,
         controlsRef,
         materialRef,

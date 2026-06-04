@@ -549,6 +549,11 @@ function App(): React.ReactElement | null {
                                         }
                                         pixelSize={threeDState.pixelSize}
                                         rebuildSignal={threeDBuildSignal}
+                                        perColorLayerColors={
+                                            threeDState.paintMode === 'autopaint'
+                                                ? threeDState.perColorLayerColors
+                                                : undefined
+                                        }
                                         autoPaintEnabled={threeDState.paintMode === 'autopaint'}
                                         autoPaintTotalHeight={
                                             threeDState.autoPaintResult?.totalHeight
