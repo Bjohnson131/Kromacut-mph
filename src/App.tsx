@@ -314,7 +314,8 @@ function App(): React.ReactElement | null {
                     firstLayerHeight: threeDState.slicerFirstLayerHeight,
                     layerFilamentColors:
                         threeDState.paintMode === 'autopaint'
-                            ? threeDState.autoPaintFilamentSwatches?.map((s) => s.hex)
+                            ? (threeDState.patchedSliceData?.swatches
+                                ?? threeDState.autoPaintFilamentSwatches)?.map((s) => s.hex)
                             : undefined,
                     onProgress,
                     onZipProgress,
