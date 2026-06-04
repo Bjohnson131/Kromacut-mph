@@ -218,11 +218,11 @@ test('runMultiHeadLayerAnalysisColorFirst — returns empty for insufficient dat
     const result = generateAutoLayers([BLACK, WHITE], gradient(10), LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
     assert.deepEqual(
         runMultiHeadLayerAnalysisColorFirst([BLACK], result, gradient(10), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2),
-        { windows: [], colorAssignments: [], uniqueLayerCount: 0, patchedLayers: [] }
+        { windows: [], colorAssignments: [], uniqueLayerCount: 0, patchedLayers: [], colorLayerFilaments: new Map() }
     );
     assert.deepEqual(
         runMultiHeadLayerAnalysisColorFirst([BLACK, WHITE], result, [], LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2),
-        { windows: [], colorAssignments: [], uniqueLayerCount: 0, patchedLayers: [] }
+        { windows: [], colorAssignments: [], uniqueLayerCount: 0, patchedLayers: [], colorLayerFilaments: new Map() }
     );
 });
 
@@ -296,6 +296,65 @@ test('runMultiHeadLayerAnalysisColorFirst — uniqueLayerCount is less than swat
     );
     assert.ok(uniqueLayerCount < swatches.length,
         `expected fewer unique layers than swatches (200), got ${uniqueLayerCount}`);
+});
+
+// ---------------------------------------------------------------------------
+// colorLayerFilaments + non-overlapping windows
+// ---------------------------------------------------------------------------
+
+test('runMultiHeadLayerAnalysisColorFirst — selected windows never overlap', () => {
+    const swatches = gradient(40);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { windows } = runMultiHeadLayerAnalysisColorFirst(
+        FOUR_FILAMENTS, result, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    const sorted = [...windows].sort((a, b) => a.windowStart - b.windowStart);
+    for (let i = 1; i < sorted.length; i++) {
+        assert.ok(
+            sorted[i].windowStart > sorted[i - 1].windowEnd,
+            `windows overlap: [${sorted[i - 1].windowStart}-${sorted[i - 1].windowEnd}] and ` +
+            `[${sorted[i].windowStart}-${sorted[i].windowEnd}]`
+        );
+    }
+});
+
+test('runMultiHeadLayerAnalysisColorFirst — colorLayerFilaments has one entry per input colour', () => {
+    const swatches = gradient(40);
+    const knownHexes = new Set(swatches.map((s) => s.hex));
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { colorLayerFilaments } = runMultiHeadLayerAnalysisColorFirst(
+        FOUR_FILAMENTS, result, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    for (const hex of colorLayerFilaments.keys()) {
+        assert.ok(knownHexes.has(hex), `colorLayerFilaments has unknown hex "${hex}"`);
+    }
+    assert.ok(colorLayerFilaments.size > 0, 'expected at least one colour mapping');
+});
+
+test('runMultiHeadLayerAnalysisColorFirst — every colour sequence has length = patchedLayers and valid indices', () => {
+    const swatches = gradient(40);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { colorLayerFilaments, patchedLayers } = runMultiHeadLayerAnalysisColorFirst(
+        FOUR_FILAMENTS, result, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    for (const [hex, seq] of colorLayerFilaments) {
+        assert.equal(seq.length, patchedLayers.length, `seq length mismatch for "${hex}"`);
+        for (const fi of seq) {
+            assert.ok(fi >= 0 && fi < FOUR_FILAMENTS.length, `filamentIdx ${fi} out of range for "${hex}"`);
+        }
+    }
+});
+
+test('runMultiHeadLayerAnalysisColorFirst — at least two colours differ somewhere in their layer sequences', () => {
+    const swatches = gradient(40);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { colorLayerFilaments, windows } = runMultiHeadLayerAnalysisColorFirst(
+        FOUR_FILAMENTS, result, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    if (windows.length === 0) return; // nothing to mix
+    const seqs = [...colorLayerFilaments.values()].map((s) => s.join(','));
+    const distinct = new Set(seqs).size;
+    assert.ok(distinct > 1, 'expected per-colour variety in filament sequences, all were identical');
 });
 
 // ---------------------------------------------------------------------------

@@ -425,10 +425,19 @@ export interface ColorFirstResult {
      * applied.  Each entry's filamentIdx, filamentRgb, and td reflect the
      * consensus-optimal assignment chosen by the iterative loop.
      *
-     * Use this as the source of truth for downstream steps (transition plan,
-     * mesh generation, 3MF export).  Empty when no windows were applied.
+     * Use this as the source of truth for the swap plan and 3MF export.
+     * Empty when no windows were applied.
      */
     patchedLayers: PrinterLayer[];
+    /**
+     * Per image-colour filament-per-layer sequence (length = patchedLayers.length).
+     * colorLayerFilaments.get(hex)[layerIdx] is the palette filament index a pixel
+     * of colour `hex` uses at that printer layer.  Outside selected windows every
+     * colour shares the global (consensus) stack; inside a window each colour uses
+     * its own optimal assignment.  This is what lets the renderer mix filaments
+     * across pixels within a single height band.  Empty when no windows applied.
+     */
+    colorLayerFilaments: Map<string, number[]>;
 }
 
 /**
@@ -448,7 +457,7 @@ export function runMultiHeadLayerAnalysisColorFirst(
     n: number
 ): ColorFirstResult {
     const N = Math.min(n, filaments.length);
-    const empty: ColorFirstResult = { windows: [], colorAssignments: [], uniqueLayerCount: 0, patchedLayers: [] };
+    const empty: ColorFirstResult = { windows: [], colorAssignments: [], uniqueLayerCount: 0, patchedLayers: [], colorLayerFilaments: new Map() };
 
     if (N < 2 || result.transitionZones.length === 0 || imageSwatches.length === 0) {
         console.log('[MultiHead ColorFirst] Insufficient data (need ≥2 filaments and image swatches).');
@@ -487,6 +496,12 @@ export function runMultiHeadLayerAnalysisColorFirst(
 
     const selectedWindows: WindowResult[] = [];
     const selectedAssignments: Map<string, number[]>[] = [];
+    // Per selected window: the run decomposition + unique filament indices, used
+    // after the loop to build the per-colour filament-per-layer map.
+    const windowRunInfo: { runs: ColorRun[]; uniqueIndices: number[] }[] = [];
+    // Layers already claimed by a selected window — windows must not overlap so
+    // that each layer has exactly one per-colour assignment source.
+    const layerUsed: boolean[] = new Array(layers.length).fill(false);
     const heads = filaments.slice(0, N).map((f, i) => `[${i}] ${f.name ?? f.color}`).join('  ');
     const MIN_IMPROVEMENT = 1e-4;
     // Upper bound: at most floor(runs/N) non-overlapping windows.
@@ -521,6 +536,13 @@ export function runMultiHeadLayerAnalysisColorFirst(
             if (wStart === 0) continue; // skip foundation
 
             const wEnd = windowRuns[N - 1].endLayerIdx;
+
+            // Skip windows overlapping a layer already claimed by a prior window.
+            let overlaps = false;
+            for (let i = wStart; i <= wEnd; i++) {
+                if (layerUsed[i]) { overlaps = true; break; }
+            }
+            if (overlaps) continue;
 
             // Read current filament assignment from the (possibly patched) layers.
             const uniqueIndices = [...new Set(
@@ -588,8 +610,12 @@ export function runMultiHeadLayerAnalysisColorFirst(
         // stack for window selection.
         applyComboToLayers(layers, bestWindowRuns, bestEntry, bestUniqueIndices, filaments);
 
+        // Claim this window's layers so later iterations cannot overlap them.
+        for (let i = wStart; i <= wEnd; i++) layerUsed[i] = true;
+
         selectedWindows.push(w);
         selectedAssignments.push(colorMap);
+        windowRunInfo.push({ runs: bestWindowRuns, uniqueIndices: bestUniqueIndices });
 
         console.log(
             `  ★ iter ${iter + 1}  W[${String(wStart).padStart(3)}–${String(wEnd).padStart(3)}]` +
@@ -603,5 +629,32 @@ export function runMultiHeadLayerAnalysisColorFirst(
     console.log(`  Total: ${selectedWindows.length} window(s) applied.`);
     console.groupEnd();
 
-    return { windows: selectedWindows, colorAssignments: selectedAssignments, uniqueLayerCount: pixels.length, patchedLayers: layers.slice() };
+    // Build the per-colour filament-per-layer map the renderer consumes.
+    // Default every colour to the global (consensus) stack, then overwrite the
+    // layers of each non-overlapping window with that colour's own assignment.
+    const globalSeq = layers.map((l) => l.filamentIdx);
+    const colorLayerFilaments = new Map<string, number[]>();
+    for (const hex of hexToGroupIdx.keys()) {
+        const seq = globalSeq.slice();
+        for (let wi = 0; wi < selectedWindows.length; wi++) {
+            const slots = selectedAssignments[wi].get(hex);
+            if (!slots) continue;
+            const { runs: wRuns, uniqueIndices } = windowRunInfo[wi];
+            for (let r = 0; r < wRuns.length; r++) {
+                const filamentIdx = uniqueIndices[slots[r]];
+                for (let i = wRuns[r].startLayerIdx; i <= wRuns[r].endLayerIdx; i++) {
+                    seq[i] = filamentIdx;
+                }
+            }
+        }
+        colorLayerFilaments.set(hex, seq);
+    }
+
+    return {
+        windows: selectedWindows,
+        colorAssignments: selectedAssignments,
+        uniqueLayerCount: pixels.length,
+        patchedLayers: layers.slice(),
+        colorLayerFilaments,
+    };
 }
