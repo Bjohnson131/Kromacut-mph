@@ -8,11 +8,14 @@
  */
 
 import type { TransitionZone } from './autoPaint.ts';
-import { rgbToHex } from './autoPaint.ts';
+import { rgbToHex, hexToRgb } from './autoPaint.ts';
 import type { PrinterLayer } from './multiHeadAnalysis.ts';
 import { buildColorStack } from './multiHeadAnalysis.ts';
 import type { Filament } from '../types';
 import { buildColorRuns } from './multiHeadAnalysisColorFirst.ts';
+
+/** Frontlit TD scaling — must match the value used in the analysis pipeline. */
+const FRONTLIT_TD_SCALE = 0.1;
 
 // ---------------------------------------------------------------------------
 // Slice data — ThreeDView mesh generation
@@ -69,6 +72,48 @@ export function patchedLayersToSliceData(
     }
 
     return { colorOrder, colorSliceHeights, swatches };
+}
+
+// ---------------------------------------------------------------------------
+// Per-colour layer colours — per-pixel mesh rendering
+// ---------------------------------------------------------------------------
+
+/**
+ * For each image colour, compute the Beer-Lambert blended colour at every printer
+ * layer following that colour's own filament path (from colorLayerFilaments).
+ *
+ * Two pixels of different colour at the same height can therefore show different
+ * colours, which is what makes the reordered "mixed" window layers visible.
+ *
+ * @returns Map keyed by image-colour hex → array (length = layers.length) of
+ *          blended colour hex strings, one per printer layer.
+ */
+export function buildPerColorLayerColors(
+    layers: PrinterLayer[],
+    colorLayerFilaments: Map<string, number[]>,
+    filaments: Filament[]
+): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    if (layers.length === 0) return out;
+
+    // Pre-resolve each palette filament's rgb + frontlit-scaled TD.
+    const palette = filaments.map((f) => ({
+        rgb: hexToRgb(f.color),
+        td: f.td * FRONTLIT_TD_SCALE,
+    }));
+
+    for (const [hex, seq] of colorLayerFilaments) {
+        // Build a per-colour printer-layer stack: same geometry as `layers`, but
+        // each layer's filament comes from this colour's path.
+        const colorLayers: PrinterLayer[] = layers.map((l, i) => {
+            const p = palette[seq[i]] ?? { rgb: l.filamentRgb, td: l.td };
+            return { ...l, filamentIdx: seq[i], filamentRgb: p.rgb, td: p.td };
+        });
+        const stack = buildColorStack(colorLayers);
+        out.set(hex, stack.map(rgbToHex));
+    }
+
+    return out;
 }
 
 /**

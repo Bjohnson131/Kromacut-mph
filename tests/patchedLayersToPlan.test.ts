@@ -3,7 +3,7 @@ import test from 'node:test';
 import { generateAutoLayers } from '../src/lib/autoPaint.ts';
 import { expandZonesToPrinterLayers } from '../src/lib/multiHeadAnalysis.ts';
 import { runMultiHeadLayerAnalysisColorFirst } from '../src/lib/multiHeadAnalysisColorFirst.ts';
-import { patchedLayersToPlan, patchedLayersToSliceData } from '../src/lib/patchedLayersToPlan.ts';
+import { patchedLayersToPlan, patchedLayersToSliceData, buildPerColorLayerColors } from '../src/lib/patchedLayersToPlan.ts';
 import type { Filament } from '../src/types/index.ts';
 
 const LAYER_HEIGHT = 0.12;
@@ -246,4 +246,67 @@ test('patchedLayersToSliceData — foundation slice colour equals the foundation
     // Layer 0 is the opaque foundation — its blended colour is the raw filament.
     const foundationFilament = FOUR_FILAMENTS[layers[0].filamentIdx];
     assert.equal(sw[0].hex.toLowerCase(), foundationFilament.color.toLowerCase());
+});
+
+// ---------------------------------------------------------------------------
+// buildPerColorLayerColors
+// ---------------------------------------------------------------------------
+
+test('buildPerColorLayerColors — returns empty for empty layers', () => {
+    const out = buildPerColorLayerColors([], new Map(), FOUR_FILAMENTS);
+    assert.equal(out.size, 0);
+});
+
+test('buildPerColorLayerColors — one colour-array per colour, length = layer count', () => {
+    const swatches = gradient(40);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { patchedLayers, colorLayerFilaments } = runMultiHeadLayerAnalysisColorFirst(
+        FOUR_FILAMENTS, result, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    if (patchedLayers.length === 0) return;
+
+    const perColor = buildPerColorLayerColors(patchedLayers, colorLayerFilaments, FOUR_FILAMENTS);
+    assert.equal(perColor.size, colorLayerFilaments.size);
+    for (const [hex, colors] of perColor) {
+        assert.equal(colors.length, patchedLayers.length, `wrong length for "${hex}"`);
+        for (const c of colors) {
+            assert.ok(/^#[0-9a-fA-F]{6}$/.test(c), `invalid blended hex "${c}" for "${hex}"`);
+        }
+    }
+});
+
+test('buildPerColorLayerColors — foundation layer colour is the foundation filament for every colour', () => {
+    const swatches = gradient(40);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { patchedLayers, colorLayerFilaments } = runMultiHeadLayerAnalysisColorFirst(
+        FOUR_FILAMENTS, result, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    if (patchedLayers.length === 0) return;
+
+    const perColor = buildPerColorLayerColors(patchedLayers, colorLayerFilaments, FOUR_FILAMENTS);
+    const foundationColor = FOUR_FILAMENTS[patchedLayers[0].filamentIdx].color.toLowerCase();
+    for (const [hex, colors] of perColor) {
+        assert.equal(colors[0].toLowerCase(), foundationColor, `foundation mismatch for "${hex}"`);
+    }
+});
+
+test('buildPerColorLayerColors — at least two colours differ in their blended top colour', () => {
+    const swatches = gradient(40);
+    const result = generateAutoLayers(FOUR_FILAMENTS, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const { patchedLayers, colorLayerFilaments, windows } = runMultiHeadLayerAnalysisColorFirst(
+        FOUR_FILAMENTS, result, swatches, LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    if (windows.length === 0 || patchedLayers.length === 0) return;
+
+    const perColor = buildPerColorLayerColors(patchedLayers, colorLayerFilaments, FOUR_FILAMENTS);
+    // Across all layers, there should be at least one layer index where two
+    // colours produce different blended colours (i.e. mixing is visible).
+    const L = patchedLayers.length;
+    let foundDivergence = false;
+    for (let i = 0; i < L && !foundDivergence; i++) {
+        const seen = new Set<string>();
+        for (const colors of perColor.values()) seen.add(colors[i]);
+        if (seen.size > 1) foundDivergence = true;
+    }
+    assert.ok(foundDivergence, 'expected at least one layer where colours diverge');
 });
