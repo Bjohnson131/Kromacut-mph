@@ -18,9 +18,11 @@ This page collects controls that affect the whole app or are easy to miss.
 | Discord      | Opens the community link.                                 |
 | GitHub       | Opens the project page.                                   |
 | Support me   | Opens the support link.                                   |
-| Theme button | Switches between dark and light mode.                     |
+| Settings     | Opens the settings dialog, including the theme selector.  |
 
-The theme choice is saved for later sessions.
+The theme selector offers **System**, **Dark**, and **Light**. **System** follows the operating system or browser color-scheme preference and updates when that preference changes. The theme choice is saved for later sessions.
+
+The settings dialog also shows the current Kromacut version.
 
 ## Workspace Modes
 

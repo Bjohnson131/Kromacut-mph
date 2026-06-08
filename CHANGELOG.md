@@ -8,6 +8,8 @@ All notable changes to Kromacut are documented in this file.
 
 ### Changed
 
+- **Header settings dialog** - Replaced the standalone theme toggle with a centered settings dialog that contains compact System, Dark, and Light theme options plus the current app version.
+
 ### Fixed
 
 ## v3.0.0 - 2026-06-01
