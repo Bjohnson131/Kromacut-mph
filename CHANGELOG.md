@@ -6,6 +6,8 @@ All notable changes to Kromacut are documented in this file.
 
 ### Added
 
+- **Desktop update settings** - Added desktop-only settings to manually check for updates and control whether update notices run on startup.
+
 ### Changed
 
 - **Header settings dialog** - Replaced the standalone theme toggle with a centered settings dialog that contains compact System, Dark, and Light theme options plus the current app version.
