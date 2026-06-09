@@ -556,7 +556,11 @@ function App(): React.ReactElement | null {
                                         }
                                         autoPaintEnabled={threeDState.paintMode === 'autopaint'}
                                         autoPaintTotalHeight={
-                                            threeDState.autoPaintResult?.totalHeight
+                                            (threeDState.multiHeadMode &&
+                                             threeDState.multiHeadOptimizationMode === 'spatial-variance' &&
+                                             threeDState.spatialVarianceTotalHeight)
+                                                ? threeDState.spatialVarianceTotalHeight
+                                                : threeDState.autoPaintResult?.totalHeight
                                         }
                                         autoPaintFilamentOrder={
                                             threeDState.autoPaintResult?.filamentOrder

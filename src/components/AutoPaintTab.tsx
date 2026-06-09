@@ -91,6 +91,8 @@ interface AutoPaintTabProps {
     setMultiHeadCount: (v: number) => void;
     multiHeadSearchDepth: 'fast' | 'balanced' | 'thorough';
     setMultiHeadSearchDepth: (v: 'fast' | 'balanced' | 'thorough') => void;
+    multiHeadOptimizationMode: 'color-accuracy' | 'spatial-variance';
+    setMultiHeadOptimizationMode: (v: 'color-accuracy' | 'spatial-variance') => void;
 }
 
 export default function AutoPaintTab({
@@ -142,6 +144,8 @@ export default function AutoPaintTab({
     setMultiHeadCount,
     multiHeadSearchDepth,
     setMultiHeadSearchDepth,
+    multiHeadOptimizationMode,
+    setMultiHeadOptimizationMode,
 }: AutoPaintTabProps) {
     const [localDitherLineWidth, setLocalDitherLineWidth] = React.useState(
         ditherLineWidth.toString()
@@ -720,6 +724,27 @@ export default function AutoPaintTab({
                                                 </SelectItem>
                                                 <SelectItem value="thorough" className="text-xs">
                                                     Thorough (all pixel groups)
+                                                </SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Label htmlFor="multi-head-optimization-mode" className="text-xs text-muted-foreground whitespace-nowrap">
+                                            Optimize for
+                                        </Label>
+                                        <Select
+                                            value={multiHeadOptimizationMode}
+                                            onValueChange={(v) => setMultiHeadOptimizationMode(v as 'color-accuracy' | 'spatial-variance')}
+                                        >
+                                            <SelectTrigger id="multi-head-optimization-mode" className="h-7 text-xs flex-1">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="color-accuracy" className="text-xs">
+                                                    Color accuracy
+                                                </SelectItem>
+                                                <SelectItem value="spatial-variance" className="text-xs">
+                                                    Spatial variance
                                                 </SelectItem>
                                             </SelectContent>
                                         </Select>
