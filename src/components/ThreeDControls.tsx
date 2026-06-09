@@ -42,7 +42,7 @@ interface ThreeDControlsProps {
 
 export default function ThreeDControls({ swatches, imageDimensions, onChange, onSettingsChange, persisted }: ThreeDControlsProps) {
     // --- Filaments ---
-    const { filaments, setFilaments, addFilament, removeFilament, updateFilament } = useFilaments({
+    const { filaments, setFilaments, addFilament, addFilamentWithProps, removeFilament, updateFilament } = useFilaments({
         initial: persisted?.filaments?.length ? persisted.filaments : undefined,
     });
 
@@ -342,6 +342,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 <AutoPaintTab
                     filaments={filaments}
                     addFilament={addFilament}
+                    addFilamentWithProps={addFilamentWithProps}
                     removeFilament={removeFilament}
                     updateFilament={updateFilament}
                     profiles={profileManager.profiles}
@@ -368,6 +369,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                     calibrationLayerHeight={calibrationLayerHeight}
                     setCalibrationLayerHeight={setCalibrationLayerHeight}
                     filteredCount={filtered.length}
+                    imageSwatches={filtered}
                     enhancedColorMatch={enhancedColorMatch}
                     setEnhancedColorMatch={handleEnhancedColorMatchChange}
                     allowRepeatedSwaps={allowRepeatedSwaps}

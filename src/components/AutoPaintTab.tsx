@@ -21,6 +21,8 @@ import type { CalibrationResult } from '../lib/calibration';
 import FilamentRow from './FilamentRow';
 import { FilamentCalibrationWizard } from './FilamentCalibrationWizard';
 import { getConfidenceLabel, getConfidenceColor } from '../lib/calibration';
+import { nextBestColor } from '../lib/nextBestColor';
+import type { NextBestColorResult } from '../lib/nextBestColor';
 
 interface AutoPaintSliceData {
     virtualSwatches: Swatch[];
@@ -33,6 +35,7 @@ interface AutoPaintTabProps {
     // Filament state
     filaments: Filament[];
     addFilament: () => void;
+    addFilamentWithProps: (props: { color: string; td: number; name: string }) => void;
     removeFilament: (id: string) => void;
     updateFilament: (id: string, updates: Partial<Omit<Filament, 'id'>>) => void;
 
@@ -65,6 +68,7 @@ interface AutoPaintTabProps {
 
     // Image colors
     filteredCount: number;
+    imageSwatches: Array<{ hex: string; count?: number }>;
 
     // Enhanced matching options
     enhancedColorMatch: boolean;
@@ -88,6 +92,7 @@ interface AutoPaintTabProps {
 export default function AutoPaintTab({
     filaments,
     addFilament,
+    addFilamentWithProps,
     removeFilament,
     updateFilament,
     profiles,
@@ -114,6 +119,7 @@ export default function AutoPaintTab({
     calibrationLayerHeight,
     setCalibrationLayerHeight: _setCalibrationLayerHeight,
     filteredCount,
+    imageSwatches,
     enhancedColorMatch,
     setEnhancedColorMatch,
     allowRepeatedSwaps,
@@ -129,6 +135,8 @@ export default function AutoPaintTab({
     regionWeightingMode,
     setRegionWeightingMode,
 }: AutoPaintTabProps) {
+    const [nextBestResult, setNextBestResult] = React.useState<NextBestColorResult | null>(null);
+    const suggestionCountRef = React.useRef(0);
     const [localDitherLineWidth, setLocalDitherLineWidth] = React.useState(
         ditherLineWidth.toString()
     );
@@ -818,6 +826,86 @@ export default function AutoPaintTab({
                                         )}
                                     </div>
                                 </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Next-best-color suggestion */}
+                    {autoPaintResult && imageSwatches.length > 0 && (
+                        <div className="mt-3 space-y-2">
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                className="w-full h-7 text-xs"
+                                onClick={() =>
+                                    setNextBestResult(nextBestColor(filaments, imageSwatches))
+                                }
+                            >
+                                <Sparkles className="w-3 h-3 mr-1.5" />
+                                Suggest next filament
+                            </Button>
+                            {nextBestResult?.candidate && (
+                                <div className="p-2.5 rounded-md border border-border/50 bg-muted/30 space-y-1.5">
+                                    <div className="flex items-center gap-2">
+                                        <span
+                                            className="w-5 h-5 rounded border border-border/50 flex-shrink-0"
+                                            style={{ backgroundColor: nextBestResult.candidate.hex }}
+                                        />
+                                        <span className="text-xs font-mono font-semibold flex-1">
+                                            {nextBestResult.candidate.hex.toUpperCase()}
+                                        </span>
+                                        <span className="text-xs font-semibold text-green-600 dark:text-green-400">
+                                            +{nextBestResult.candidate.improvementPct.toFixed(1)}%
+                                        </span>
+                                    </div>
+                                    <div className="grid grid-cols-3 gap-1.5 text-[10px] text-muted-foreground">
+                                        <span>
+                                            TD:{' '}
+                                            <span className="font-semibold text-foreground">
+                                                {nextBestResult.candidate.td.toFixed(2)}
+                                            </span>
+                                        </span>
+                                        <span>
+                                            Captures:{' '}
+                                            <span className="font-semibold text-foreground">
+                                                {(
+                                                    (nextBestResult.candidate.pixelsCaptured /
+                                                        nextBestResult.totalPixels) *
+                                                    100
+                                                ).toFixed(1)}
+                                                %
+                                            </span>
+                                        </span>
+                                        <span>
+                                            Isolation:{' '}
+                                            <span className="font-semibold text-foreground">
+                                                {nextBestResult.candidate.isolationScore.toFixed(2)}
+                                            </span>
+                                        </span>
+                                    </div>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="w-full h-7 text-xs mt-0.5"
+                                        onClick={() => {
+                                            suggestionCountRef.current += 1;
+                                            const nn = String(suggestionCountRef.current).padStart(2, '0');
+                                            addFilamentWithProps({
+                                                color: nextBestResult.candidate!.hex,
+                                                td: nextBestResult.candidate!.td,
+                                                name: `Kromacut-Suggestion-${nn}`,
+                                            });
+                                        }}
+                                    >
+                                        <Plus className="w-3 h-3 mr-1.5" />
+                                        Add to filaments
+                                    </Button>
+                                </div>
+                            )}
+                            {nextBestResult && !nextBestResult.candidate && (
+                                <p className="text-[10px] text-muted-foreground text-center">
+                                    Current filament set already covers all image colors well.
+                                </p>
                             )}
                         </div>
                     )}
