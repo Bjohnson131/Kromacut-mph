@@ -100,6 +100,14 @@ After Auto-paint computes a result, Kromacut can show:
 
 Low confidence usually means you should calibrate filaments, add a missing filament color, or loosen a restrictive max height.
 
+## Preview Controls
+
+The toolbar in the top-right corner of the 3D preview contains controls for the active view:
+
+- **Camera toggle** — switches between perspective and orthographic projection. Perspective gives a natural depth effect; orthographic removes foreshortening and is useful for checking layer alignment. The button icon reflects the current mode, and the camera position is preserved when toggling.
+- **Undo / Redo** — steps through changes to the 3D settings.
+- **Download** — exports the current model as a .stl or a .3mf.
+
 ## Layer Preview
 
 After building, the bottom **Layer Preview** bar lets you show only a height range of the model. Drag the lower and upper handles to inspect how the print builds.
