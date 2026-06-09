@@ -34,7 +34,8 @@ import { UpdateChecker } from './components/UpdateChecker';
 import ProgressOverlay from './components/ProgressOverlay';
 import DocsPage from './components/docs/DocsPage';
 import { defaultDocSlug } from './docs';
-import { buildDocsHash, parseDocsHash } from './lib/docs/navigation';
+import { buildDocsPath, parseDocsLocation } from './lib/docs/navigation';
+import { applyHomeSeo } from './lib/seo';
 import {
     AlertDialog,
     AlertDialogContent,
@@ -197,7 +198,7 @@ function App(): React.ReactElement | null {
     const [adjustmentsEpoch, setAdjustmentsEpoch] = useState(0);
     // UI mode toggles (2D / 3D) - UI only for now
     const [mode, setMode] = useState<'2d' | '3d'>('2d');
-    const [docsOpen, setDocsOpen] = useState(() => parseDocsHash(window.location.hash) !== null);
+    const [docsOpen, setDocsOpen] = useState(() => parseDocsLocation(window.location) !== null);
     const [exportingSTL, setExportingSTL] = useState(false);
     const [exportProgress, setExportProgress] = useState(0); // 0..1
     const [exportStep, setExportStep] = useState<ExportProgressStep>({
@@ -279,22 +280,28 @@ function App(): React.ReactElement | null {
     }, [imageSrc]);
 
     useEffect(() => {
-        const syncDocsHash = () => {
-            const target = parseDocsHash(window.location.hash);
+        const syncDocsLocation = () => {
+            const target = parseDocsLocation(window.location);
             setDocsOpen(target !== null);
         };
-        window.addEventListener('hashchange', syncDocsHash);
-        return () => window.removeEventListener('hashchange', syncDocsHash);
+        window.addEventListener('hashchange', syncDocsLocation);
+        window.addEventListener('popstate', syncDocsLocation);
+        return () => {
+            window.removeEventListener('hashchange', syncDocsLocation);
+            window.removeEventListener('popstate', syncDocsLocation);
+        };
     }, []);
+
+    useEffect(() => {
+        if (!docsOpen) {
+            applyHomeSeo();
+        }
+    }, [docsOpen]);
 
     const backToApp = () => {
         setDocsOpen(false);
-        if (parseDocsHash(window.location.hash)) {
-            window.history.pushState(
-                null,
-                '',
-                `${window.location.pathname}${window.location.search}`
-            );
+        if (parseDocsLocation(window.location)) {
+            window.history.pushState(null, '', '/');
         }
     };
 
@@ -305,8 +312,8 @@ function App(): React.ReactElement | null {
         }
 
         setDocsOpen(true);
-        if (!parseDocsHash(window.location.hash)) {
-            window.history.pushState(null, '', buildDocsHash(defaultDocSlug));
+        if (!parseDocsLocation(window.location)) {
+            window.history.pushState(null, '', buildDocsPath(defaultDocSlug));
         }
     };
 
@@ -428,12 +435,8 @@ function App(): React.ReactElement | null {
                     invalidate();
                     setImage(tdTestImg, true);
                     setMode('2d');
-                    if (parseDocsHash(window.location.hash)) {
-                        window.history.pushState(
-                            null,
-                            '',
-                            `${window.location.pathname}${window.location.search}`
-                        );
+                    if (parseDocsLocation(window.location)) {
+                        window.history.pushState(null, '', '/');
                     }
                     setDocsOpen(false);
                 }}

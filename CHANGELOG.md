@@ -9,6 +9,7 @@ All notable changes to Kromacut are documented in this file.
 ### Changed
 
 - **Header settings dialog** - Replaced the standalone theme toggle with a centered settings dialog that contains compact System, Dark, and Light theme options plus the current app version.
+- **SEO-friendly docs URLs** - Documentation now uses real `/docs/...` URLs with per-page metadata, generated static HTML pages, a sitemap, and robots.txt output.
 
 ### Fixed
 

@@ -30,6 +30,8 @@ Use the **2D** and **3D** buttons to switch between image preparation and model 
 
 The vertical splitter between the controls panel and preview can be dragged. Make the left panel wider when working with detailed settings, or make the preview wider when inspecting the image or model.
 
+Documentation pages use shareable `/docs/...` links. Opening one of those links takes you directly to the matching guide.
+
 ## Saved Print Settings
 
 Kromacut remembers print settings such as **Pixel Size (XY)**, **Layer Height**, **First Layer Height**, and **Smooth Meshing** in the browser.
