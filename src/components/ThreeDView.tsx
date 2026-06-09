@@ -14,7 +14,7 @@ import {
     layeredBuildScanProgress,
     progressInSpan,
 } from '../lib/progress';
-import { Layers } from 'lucide-react';
+import { Layers, Box } from 'lucide-react';
 import ProgressOverlay from './ProgressOverlay';
 
 interface ThreeDViewProps {
@@ -323,10 +323,15 @@ export default function ThreeDView({
         xPercent: number;
     } | null>(null);
     const previewTrackRef = useRef<HTMLDivElement | null>(null);
-    const { cameraRef, controlsRef, modelGroupRef, materialRef, requestRender } = useThreeScene(
+    const { cameraRef, controlsRef, modelGroupRef, materialRef, requestRender, switchCamera } = useThreeScene(
         mountRef,
         setIsBuilding
     );
+    const [isOrtho, setIsOrtho] = useState(false);
+
+    useEffect(() => {
+        switchCamera(isOrtho);
+    }, [isOrtho, switchCamera]);
 
     const progressRef = useRef(0);
     const progressLastUpdateRef = useRef(0);
@@ -1511,17 +1516,34 @@ export default function ThreeDView({
                     if (camera && controls) {
                         const sphere = new THREE.Sphere();
                         box.getBoundingSphere(sphere);
-                        // ... same framing logic ...
-                        const fov = (camera.fov * Math.PI) / 180;
-                        const distance = sphere.radius / Math.sin(fov / 2);
                         const dir = new THREE.Vector3(0.9, 0.8, 1).normalize();
-                        const camPos = sphere.center
-                            .clone()
-                            .add(dir.multiplyScalar(distance * 1.35));
-                        camera.position.copy(camPos);
-                        controls.target.copy(sphere.center);
-                        camera.near = Math.max(0.01, sphere.radius * 0.01);
-                        camera.far = sphere.radius * 20;
+                        if (camera instanceof THREE.PerspectiveCamera) {
+                            const fov = (camera.fov * Math.PI) / 180;
+                            const distance = sphere.radius / Math.sin(fov / 2);
+                            const camPos = sphere.center
+                                .clone()
+                                .add(dir.multiplyScalar(distance * 1.35));
+                            camera.position.copy(camPos);
+                            controls.target.copy(sphere.center);
+                            camera.near = Math.max(0.01, sphere.radius * 0.01);
+                            camera.far = sphere.radius * 20;
+                        } else if (camera instanceof THREE.OrthographicCamera) {
+                            const distance = sphere.radius * 2.5;
+                            const camPos = sphere.center
+                                .clone()
+                                .add(dir.multiplyScalar(distance));
+                            camera.position.copy(camPos);
+                            controls.target.copy(sphere.center);
+                            camera.near = 0.01;
+                            camera.far = sphere.radius * 20;
+                            // Expand frustum to fit the sphere
+                            const viewH = sphere.radius * 2.5;
+                            const aspect = (camera.right - camera.left) / (camera.top - camera.bottom);
+                            camera.top = viewH / 2;
+                            camera.bottom = -viewH / 2;
+                            camera.left = -(viewH * aspect) / 2;
+                            camera.right = (viewH * aspect) / 2;
+                        }
                         camera.updateProjectionMatrix();
                         controls.update();
                     }
@@ -1646,15 +1668,29 @@ export default function ThreeDView({
                     progress={buildProgress}
                 />
             )}
-            {modelDimensions && (
-                <div
-                    className="absolute top-2 left-2 px-2 py-1 rounded-full bg-primary/10 text-primary text-xs font-mono font-semibold z-10"
-                    aria-hidden
+            <div className="absolute top-2 left-2 z-10 flex flex-col items-start gap-1">
+                {modelDimensions && (
+                    <div
+                        className="px-2 py-1 rounded-full bg-primary/10 text-primary text-xs font-mono font-semibold"
+                        aria-hidden
+                    >
+                        Model: {modelDimensions.width.toFixed(1)}×{modelDimensions.height.toFixed(1)}×
+                        {modelDimensions.depth.toFixed(1)} mm
+                    </div>
+                )}
+                <button
+                    className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold transition-colors ${
+                        isOrtho
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-primary/10 text-primary hover:bg-primary/20'
+                    }`}
+                    title={isOrtho ? 'Switch to perspective camera' : 'Switch to orthographic camera'}
+                    onClick={() => setIsOrtho((v) => !v)}
                 >
-                    Model: {modelDimensions.width.toFixed(1)}×{modelDimensions.height.toFixed(1)}×
-                    {modelDimensions.depth.toFixed(1)} mm
-                </div>
-            )}
+                    <Box className="w-3 h-3" />
+                    {isOrtho ? 'Ortho' : 'Persp'}
+                </button>
+            </div>
             {/* Layer Preview Slider */}
             {!isBuilding && maxModelHeight > 0 && previewHeight !== null && (
                 <div className="absolute bottom-2 left-4 right-4 bg-background/90 backdrop-blur-sm border border-border/50 rounded-md px-3 py-1.5 shadow-lg z-10">
