@@ -14,7 +14,7 @@ import {
     layeredBuildScanProgress,
     progressInSpan,
 } from '../lib/progress';
-import { Layers, Box } from 'lucide-react';
+import { Layers } from 'lucide-react';
 import ProgressOverlay from './ProgressOverlay';
 
 interface ThreeDViewProps {
@@ -39,6 +39,7 @@ interface ThreeDViewProps {
     heightDithering?: boolean; // Floyd-Steinberg error diffusion on height map
     ditherLineWidth?: number; // Minimum dot size in mm for dithering
     smoothMeshing?: boolean; // Smooth connected boundaries using welded grid topology
+    isOrtho?: boolean;
 }
 
 // Convert hex color to RGB tuple
@@ -304,6 +305,7 @@ export default function ThreeDView({
     heightDithering = false,
     ditherLineWidth = 0.42,
     smoothMeshing = false,
+    isOrtho = false,
 }: ThreeDViewProps) {
     const mountRef = useRef<HTMLDivElement | null>(null);
     const [isBuilding, setIsBuilding] = useState(false);
@@ -327,8 +329,6 @@ export default function ThreeDView({
         mountRef,
         setIsBuilding
     );
-    const [isOrtho, setIsOrtho] = useState(false);
-
     useEffect(() => {
         switchCamera(isOrtho);
     }, [isOrtho, switchCamera]);
@@ -1668,29 +1668,15 @@ export default function ThreeDView({
                     progress={buildProgress}
                 />
             )}
-            <div className="absolute top-2 left-2 z-10 flex flex-col items-start gap-1">
-                {modelDimensions && (
-                    <div
-                        className="px-2 py-1 rounded-full bg-primary/10 text-primary text-xs font-mono font-semibold"
-                        aria-hidden
-                    >
-                        Model: {modelDimensions.width.toFixed(1)}×{modelDimensions.height.toFixed(1)}×
-                        {modelDimensions.depth.toFixed(1)} mm
-                    </div>
-                )}
-                <button
-                    className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold transition-colors ${
-                        isOrtho
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-primary/10 text-primary hover:bg-primary/20'
-                    }`}
-                    title={isOrtho ? 'Switch to perspective camera' : 'Switch to orthographic camera'}
-                    onClick={() => setIsOrtho((v) => !v)}
+            {modelDimensions && (
+                <div
+                    className="absolute top-2 left-2 px-2 py-1 rounded-full bg-primary/10 text-primary text-xs font-mono font-semibold z-10"
+                    aria-hidden
                 >
-                    <Box className="w-3 h-3" />
-                    {isOrtho ? 'Ortho' : 'Persp'}
-                </button>
-            </div>
+                    Model: {modelDimensions.width.toFixed(1)}×{modelDimensions.height.toFixed(1)}×
+                    {modelDimensions.depth.toFixed(1)} mm
+                </div>
+            )}
             {/* Layer Preview Slider */}
             {!isBuilding && maxModelHeight > 0 && previewHeight !== null && (
                 <div className="absolute bottom-2 left-4 right-4 bg-background/90 backdrop-blur-sm border border-border/50 rounded-md px-3 py-1.5 shadow-lg z-10">
