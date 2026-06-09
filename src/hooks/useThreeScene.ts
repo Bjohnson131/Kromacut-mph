@@ -110,7 +110,7 @@ export function useThreeScene(
                 const viewH = 2 * dist * Math.tan(fovRad / 2);
                 const viewW = viewH * aspect;
                 const ortho = new THREE.OrthographicCamera(
-                    -viewW / 2, viewW / 2, viewH / 2, -viewH / 2, 0.01, 2000
+                    -viewW / 2, viewW / 2, viewH / 2, -viewH / 2, cam.near, cam.far
                 );
                 ortho.position.copy(cam.position);
                 ortho.quaternion.copy(cam.quaternion);
@@ -120,6 +120,8 @@ export function useThreeScene(
             } else if (!isOrtho && cam instanceof THREE.OrthographicCamera) {
                 persp.position.copy(cam.position);
                 persp.quaternion.copy(cam.quaternion);
+                persp.near = cam.near;
+                persp.far = cam.far;
                 persp.aspect = aspect;
                 persp.updateProjectionMatrix();
                 cameraRef.current = persp;
