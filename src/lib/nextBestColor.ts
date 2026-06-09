@@ -220,9 +220,13 @@ export function nextBestColor(
     const seen = new Set<string>();
     const pool: LabCandidate[] = [];
 
-    const addCandidate = (lab: Lab, hex: string) => {
+    const addCandidate = (hex: string) => {
         if (seen.has(hex)) return;
-        // Skip if this color is already well-covered by an existing filament.
+        // Round-trip through hex so the Lab used for scoring and filtering always
+        // matches the actual representable color. labToHex clamps out-of-gamut
+        // extrapolations, so using the raw extrapolated Lab would score a phantom
+        // color and return an inconsistent hex (the original bug).
+        const lab = rgbToLab(hexToRgb(hex));
         for (const fLab of filamentLabs) {
             if (deltaELab(lab, fLab) < COVERAGE_THRESHOLD) return;
         }
@@ -234,13 +238,12 @@ export function nextBestColor(
         if (currentReachable[c] < p75Threshold) continue;
 
         // The swatch color itself.
-        addCandidate(swatchLabs[c], imageSwatches[c].hex);
+        addCandidate(imageSwatches[c].hex);
 
         // Extrapolated: color that, blended with each filament at ratio t, hits this swatch.
         for (const fLab of filamentLabs) {
             for (const t of EXTRAP_BLEND_RATIOS) {
-                const extrapLab = extrapolateLab(swatchLabs[c], fLab, t);
-                addCandidate(extrapLab, labToHex(extrapLab));
+                addCandidate(labToHex(extrapolateLab(swatchLabs[c], fLab, t)));
             }
         }
     }
