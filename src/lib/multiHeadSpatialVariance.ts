@@ -154,7 +154,13 @@ export function runMultiHeadSpatialVarianceOptimization(
     // 2. Initial band assignment: consecutive N-sized groups of the
     //    luminance-sorted colour list → band index = floor(i / N).
     // ------------------------------------------------------------------
+    // Single-head baseline: every colour at its own unique height level.
+    const singleHeadBands: number[] = uniqueColors.map((_, i) => i);
+    const varSingleHead = varianceProxy(uniqueColors, singleHeadBands);
+
+    // Initial multi-head assignment: consecutive N-sized luminance groups.
     const bands: number[] = uniqueColors.map((_, i) => Math.floor(i / N));
+    const varInitial = varianceProxy(uniqueColors, bands);
 
     // ------------------------------------------------------------------
     // 3. Local-search refinement (plan §3.3 tryMoveOrSwap).
@@ -288,10 +294,31 @@ export function runMultiHeadSpatialVarianceOptimization(
         };
     });
 
-    console.log(
+    const varAfter = varianceProxy(uniqueColors, bands);
+
+    // Reduction vs single-head baseline (the meaningful improvement).
+    const pctVsSingle = varSingleHead > 0
+        ? ((varSingleHead - varAfter) / varSingleHead * 100).toFixed(1)
+        : '0.0';
+    // Additional improvement from local search on top of the initial bands.
+    const pctLocalSearch = varInitial > 0
+        ? ((varInitial - varAfter) / varInitial * 100).toFixed(1)
+        : '0.0';
+
+    console.group(
         `[SpatialVariance] K=${K} colours → M=${M} phases × N=${N} heads` +
         ` | totalHeight=${spatialVarianceTotalHeight.toFixed(3)} mm`
     );
+    console.log(`  Single-head baseline  (K=${K} heights): ${varSingleHead.toFixed(2)}`);
+    console.log(`  Multi-head optimized  (M=${M} heights): ${varAfter.toFixed(2)}` +
+        `  (${pctVsSingle}% reduction vs single-head)`);
+    if (pctLocalSearch !== '0.0') {
+        console.log(`  Local-search refinement: ${pctLocalSearch}% additional improvement`);
+    }
+    console.log(`  Swaps (M−1): ${M - 1}  |  Phase sizes: ${Array.from({ length: M }, (_, j) =>
+        phaseColors[j].length
+    ).join(', ')}`);
+    console.groupEnd();
 
     return {
         windows,
