@@ -1,7 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nextBestColor } from '../src/lib/nextBestColor.ts';
+import { nextBestColor, hexToLab, labToHex } from '../src/lib/nextBestColor.ts';
 import type { Filament } from '../src/types/index.ts';
+
+/**
+ * Linearly blend two hex colors in Lab space at ratio t and return the
+ * resulting hex.  The result lies exactly on the segment A↔B in Lab space,
+ * which is the model nextBestColor uses for blend coverage.
+ */
+function blendHex(hexA: string, hexB: string, t: number): string {
+    const a = hexToLab(hexA);
+    const b = hexToLab(hexB);
+    return labToHex({
+        L: a.L * (1 - t) + b.L * t,
+        a: a.a * (1 - t) + b.a * t,
+        b: a.b * (1 - t) + b.b * t,
+    });
+}
 
 function filament(id: string, color: string, td: number): Filament {
     return { id, color, td };
@@ -10,6 +25,7 @@ function filament(id: string, color: string, td: number): Filament {
 const BLACK = filament('black', '#000000', 1.0);
 const WHITE = filament('white', '#ffffff', 2.0);
 const RED   = filament('red',   '#ff0000', 1.5);
+const BLUE  = filament('blue',  '#0000ff', 2.5);
 
 // ---------------------------------------------------------------------------
 // Edge cases
@@ -29,6 +45,40 @@ test('returns null candidate for empty swatches', () => {
 test('returns null candidate when all swatches are already covered', () => {
     // Swatch exactly matches an existing filament — ΔE < 3, so it is skipped.
     const r = nextBestColor([BLACK], [{ hex: '#000000', count: 100 }]);
+    assert.equal(r.candidate, null);
+});
+
+test('blend triangle: inner swatches simulated by Lab blending of outer filaments return null', () => {
+    // Outer triangle: 3 muted filaments (not pure primaries — pure red+blue blends
+    // go out of the sRGB gamut in Lab, causing clamping errors > COVERAGE_FLOOR).
+    // Inner swatches: Lab-linear blends of filament pairs at t ∈ {0.25, 0.5, 0.75}.
+    // Every inner swatch lies on a filament↔filament segment, so blend-aware scoring
+    // gives effectiveReachable = 0 for all swatches and no candidate is needed.
+    const GREEN = filament('green', '#33cc33', 1.5);
+    const MBLUE = filament('blue',  '#3333cc', 1.5);
+    const MRED  = '#cc3333';
+
+    const pairs: [string, string][] = [
+        [MRED,   '#33cc33'],
+        ['#33cc33', '#3333cc'],
+        [MRED,   '#3333cc'],
+    ];
+    const swatches = pairs.flatMap(([a, b]) => [0.25, 0.5, 0.75].map(t => ({ hex: blendHex(a, b, t), count: 100 })));
+
+    const r = nextBestColor([filament('red', MRED, 1.5), GREEN, MBLUE], swatches);
+    assert.equal(r.candidate, null, `expected null but got ${r.candidate?.hex}`);
+});
+
+test('returns null candidate when image palette exactly matches the filament set', () => {
+    // Every image swatch is one of the existing filaments — nothing to add.
+    const r = nextBestColor(
+        [BLACK, WHITE, RED],
+        [
+            { hex: '#000000', count: 300 },
+            { hex: '#ffffff', count: 300 },
+            { hex: '#ff0000', count: 300 },
+        ]
+    );
     assert.equal(r.candidate, null);
 });
 
@@ -84,6 +134,52 @@ test('pixel count weighting: common color beats rare one when blend segments div
     );
     assert.ok(r.candidate !== null);
     assert.equal(r.candidate.hex, '#ff6666');
+});
+
+// ---------------------------------------------------------------------------
+// Underserved-color weighting (p90 = 2×, p100 = 3×)
+// ---------------------------------------------------------------------------
+
+test('p100 weighting tips ranking: rare maximally-underserved color beats common moderate one', () => {
+    // BLACK + WHITE cover the L-axis.  Two chromatic candidates in opposite hue
+    // directions so their C↔filament blend segments don't reach each other:
+    //   #ff8888 (desaturated red) count=5  — moderate distance (~49 ΔE), high raw gain
+    //   #0000ff (blue)            count=1  — maximum distance (~134 ΔE), p100 → 3× weight
+    //
+    // Without weighting blue's raw gain (134) < red's (247), red would win.
+    // With 3× p100 weight blue's weighted gain (402) > red's (255), blue wins.
+    const r = nextBestColor(
+        [BLACK, WHITE],
+        [
+            { hex: '#606060', count: 1 },   // grey — covered by L-axis blend
+            { hex: '#808080', count: 1 },   // grey — covered
+            { hex: '#a0a0a0', count: 1 },   // grey — covered
+            { hex: '#c0c0c0', count: 1 },   // grey — covered
+            { hex: '#ff8888', count: 5 },   // desaturated red — moderate distance
+            { hex: '#0000ff', count: 1 },   // blue — maximum distance (p100)
+        ]
+    );
+    assert.ok(r.candidate !== null);
+    assert.equal(r.candidate.hex, '#0000ff');
+});
+
+test('improvementPct stays ≤ 100 when p100 weighting selects the winner', () => {
+    // weightedGain drives ranking but improvementPct is computed from rawGain
+    // so it stays a meaningful percentage of the unweighted baseline error.
+    const r = nextBestColor(
+        [BLACK, WHITE],
+        [
+            { hex: '#606060', count: 1 },
+            { hex: '#808080', count: 1 },
+            { hex: '#a0a0a0', count: 1 },
+            { hex: '#c0c0c0', count: 1 },
+            { hex: '#ff8888', count: 5 },
+            { hex: '#0000ff', count: 1 },
+        ]
+    );
+    assert.ok(r.candidate !== null);
+    assert.ok(r.candidate.improvementPct <= 100,
+        `expected ≤ 100, got ${r.candidate.improvementPct}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -204,31 +300,34 @@ test('pixelsCaptured does not exceed totalPixels', () => {
 // ---------------------------------------------------------------------------
 
 test('recommended TD comes from the nearest existing filament', () => {
-    // BLACK (td=1.0) and WHITE (td=2.0). Candidate is mid-grey — closer to BLACK.
+    // RED (td=1.5) and BLUE (td=2.5). Orange #ff4400 is not on the RED↔BLUE blend
+    // line (which passes through purple/magenta) and is much closer to RED than BLUE
+    // in Lab space, so the suggested candidate should inherit RED's td.
     const r = nextBestColor(
-        [BLACK, WHITE],
+        [RED, BLUE],
         [
-            { hex: '#000000', count: 100 },
-            { hex: '#333333', count: 100 }, // dark grey — nearest filament is BLACK
-            { hex: '#ffffff', count: 100 },
+            { hex: '#ff0000', count: 10 }, // covered — on RED
+            { hex: '#0000ff', count: 10 }, // covered — on BLUE
+            { hex: '#ff4400', count: 100 }, // uncovered orange, nearest filament is RED
         ]
     );
     assert.ok(r.candidate !== null);
-    // Mid-grey candidate is closer to black → td should be 1.0 (BLACK's td)
-    assert.equal(r.candidate.td, BLACK.td);
+    assert.equal(r.candidate.td, RED.td);
 });
 
 test('light candidate gets WHITE td when WHITE is nearest', () => {
+    // RED (td=1.5) and BLUE (td=2.5). Sky blue #00aaff is not on the RED↔BLUE blend
+    // line and is closer to BLUE than RED in Lab space.
     const r = nextBestColor(
-        [BLACK, WHITE],
+        [RED, BLUE],
         [
-            { hex: '#000000', count: 100 },
-            { hex: '#ffffff', count: 100 },
-            { hex: '#dddddd', count: 200 }, // light — nearest filament is WHITE
+            { hex: '#ff0000', count: 10 }, // covered — on RED
+            { hex: '#0000ff', count: 10 }, // covered — on BLUE
+            { hex: '#00aaff', count: 200 }, // uncovered sky-blue, nearest filament is BLUE
         ]
     );
     assert.ok(r.candidate !== null);
-    assert.equal(r.candidate.td, WHITE.td);
+    assert.equal(r.candidate.td, BLUE.td);
 });
 
 // ---------------------------------------------------------------------------

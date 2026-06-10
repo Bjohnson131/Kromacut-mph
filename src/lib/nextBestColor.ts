@@ -96,6 +96,13 @@ function deltaELab(a: Lab, b: Lab): number {
     return Math.sqrt((a.L - b.L) ** 2 + (a.a - b.a) ** 2 + (a.b - b.b) ** 2);
 }
 
+/** Convert a hex color string to its CIE L*a*b* representation. */
+export function hexToLab(hex: string): Lab {
+    return rgbToLab(hexToRgb(hex));
+}
+
+export { labToHex };
+
 /**
  * CIE76 distance from Lab point P to the nearest point on segment A↔B.
  * In Beer-Lambert blending, any mix of filaments A and B lies on the straight
@@ -201,7 +208,15 @@ export function nextBestColor(
     });
 
     const totalPixels = counts.reduce((s, c) => s + c, 0);
-    const baselineTotal = currentReachable.reduce((s, e, i) => s + e * counts[i], 0);
+
+    // Residual error below 1 ΔE is below the just-noticeable difference and is
+    // treated as fully covered.  This absorbs Lab↔hex quantisation noise so that
+    // blend-line midpoints (which land within ~0.5 ΔE of their segment) don't
+    // show up as a meaningful gap.
+    const COVERAGE_FLOOR = 1.0;
+    const effectiveReachable = currentReachable.map(e => e >= COVERAGE_FLOOR ? e : 0);
+
+    const baselineTotal = effectiveReachable.reduce((s, e, i) => s + e * counts[i], 0);
     const baselineAvgDeltaE = totalPixels > 0 ? baselineTotal / totalPixels : 0;
 
     if (baselineAvgDeltaE === 0) return { candidate: null, baselineAvgDeltaE: 0, totalPixels };
@@ -213,8 +228,10 @@ export function nextBestColor(
     // -------------------------------------------------------------------------
     const COVERAGE_THRESHOLD = 3.0; // ΔE — skip near-duplicates of existing filaments
 
-    const sortedReachable = [...currentReachable].sort((a, b) => a - b);
+    const sortedReachable = [...effectiveReachable].sort((a, b) => a - b);
     const p75Threshold = sortedReachable[Math.floor(sortedReachable.length * 0.75)];
+    const p90Threshold = sortedReachable[Math.floor(sortedReachable.length * 0.90)];
+    const maxReachable  = sortedReachable[sortedReachable.length - 1];
 
     interface LabCandidate { lab: Lab; hex: string }
     const seen = new Set<string>();
@@ -235,7 +252,7 @@ export function nextBestColor(
     };
 
     for (let c = 0; c < swatchLabs.length; c++) {
-        if (currentReachable[c] < p75Threshold) continue;
+        if (effectiveReachable[c] < p75Threshold) continue;
 
         // The swatch color itself.
         addCandidate(imageSwatches[c].hex);
@@ -253,7 +270,7 @@ export function nextBestColor(
     // -------------------------------------------------------------------------
     // Score every candidate.
     // -------------------------------------------------------------------------
-    interface CandidateScore { lab: Lab; hex: string; gain: number; nearestFilamentDE: number }
+    interface CandidateScore { lab: Lab; hex: string; weightedGain: number; rawGain: number; nearestFilamentDE: number }
     const scores: CandidateScore[] = [];
 
     for (const { lab, hex } of pool) {
@@ -262,18 +279,25 @@ export function nextBestColor(
             nearestFilamentDE = Math.min(nearestFilamentDE, deltaELab(lab, fLab));
         }
 
-        let gain = 0;
+        let weightedGain = 0;
+        let rawGain = 0;
         for (let i = 0; i < swatchLabs.length; i++) {
             let newReachable = currentReachable[i];
             newReachable = Math.min(newReachable, deltaELab(swatchLabs[i], lab));
             for (const fLab of filamentLabs) {
                 newReachable = Math.min(newReachable, distToSegment(swatchLabs[i], lab, fLab));
             }
-            const improvement = currentReachable[i] - newReachable;
-            if (improvement > 0) gain += improvement * counts[i];
+            const improvement = effectiveReachable[i] - newReachable;
+            if (improvement > 0) {
+                const w = effectiveReachable[i] >= maxReachable ? 3.0
+                        : effectiveReachable[i] >= p90Threshold ? 2.0
+                        : 1.0;
+                weightedGain += improvement * counts[i] * w;
+                rawGain      += improvement * counts[i];
+            }
         }
 
-        scores.push({ lab, hex, gain, nearestFilamentDE });
+        scores.push({ lab, hex, weightedGain, rawGain, nearestFilamentDE });
     }
 
     if (scores.length === 0) return { candidate: null, baselineAvgDeltaE, totalPixels };
@@ -282,8 +306,8 @@ export function nextBestColor(
     // candidates (longer C↔F segments cover more Lab space).
     const maxIsolation = Math.max(...scores.map((s) => s.nearestFilamentDE));
 
-    // Pick winner by blend-aware gain.
-    const winner = scores.reduce((best, s) => s.gain > best.gain ? s : best, scores[0]);
+    // Rank by weighted gain; report improvement from unweighted gain so improvementPct ∈ [0,100].
+    const winner = scores.reduce((best, s) => s.weightedGain > best.weightedGain ? s : best, scores[0]);
 
     // -------------------------------------------------------------------------
     // Build the result for the winning candidate.
@@ -292,12 +316,13 @@ export function nextBestColor(
     // Pixel capture: swatches whose blend-aware reachable error improves with the winner.
     let pixelsCaptured = 0;
     for (let i = 0; i < swatchLabs.length; i++) {
-        let newReachable = currentReachable[i];
+        if (effectiveReachable[i] === 0) continue;
+        let newReachable = effectiveReachable[i];
         newReachable = Math.min(newReachable, deltaELab(swatchLabs[i], winner.lab));
         for (const fLab of filamentLabs) {
             newReachable = Math.min(newReachable, distToSegment(swatchLabs[i], winner.lab, fLab));
         }
-        if (newReachable < currentReachable[i]) pixelsCaptured += counts[i];
+        if (newReachable < effectiveReachable[i]) pixelsCaptured += counts[i];
     }
 
     // TD: borrow from nearest existing filament by ΔE.
@@ -310,7 +335,7 @@ export function nextBestColor(
     const recommendedTd = filaments[nearestFilamentIdx].td;
 
     const isolationScore = winner.nearestFilamentDE / maxIsolation;
-    const improvementPct = (winner.gain / baselineTotal) * 100;
+    const improvementPct = (winner.rawGain / baselineTotal) * 100;
 
     console.group(
         `[NextBestColor] ${filaments.length} filament${filaments.length !== 1 ? 's' : ''} → ` +
