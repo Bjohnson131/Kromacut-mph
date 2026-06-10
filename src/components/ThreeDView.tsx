@@ -39,6 +39,7 @@ interface ThreeDViewProps {
     heightDithering?: boolean; // Floyd-Steinberg error diffusion on height map
     ditherLineWidth?: number; // Minimum dot size in mm for dithering
     smoothMeshing?: boolean; // Smooth connected boundaries using welded grid topology
+    isOrtho?: boolean;
 }
 
 // Convert hex color to RGB tuple
@@ -304,6 +305,7 @@ export default function ThreeDView({
     heightDithering = false,
     ditherLineWidth = 0.42,
     smoothMeshing = false,
+    isOrtho = false,
 }: ThreeDViewProps) {
     const mountRef = useRef<HTMLDivElement | null>(null);
     const [isBuilding, setIsBuilding] = useState(false);
@@ -323,10 +325,13 @@ export default function ThreeDView({
         xPercent: number;
     } | null>(null);
     const previewTrackRef = useRef<HTMLDivElement | null>(null);
-    const { cameraRef, controlsRef, modelGroupRef, materialRef, requestRender } = useThreeScene(
+    const { cameraRef, controlsRef, modelGroupRef, materialRef, requestRender, switchCamera } = useThreeScene(
         mountRef,
         setIsBuilding
     );
+    useEffect(() => {
+        switchCamera(isOrtho);
+    }, [isOrtho, switchCamera]);
 
     const progressRef = useRef(0);
     const progressLastUpdateRef = useRef(0);
@@ -1511,17 +1516,34 @@ export default function ThreeDView({
                     if (camera && controls) {
                         const sphere = new THREE.Sphere();
                         box.getBoundingSphere(sphere);
-                        // ... same framing logic ...
-                        const fov = (camera.fov * Math.PI) / 180;
-                        const distance = sphere.radius / Math.sin(fov / 2);
                         const dir = new THREE.Vector3(0.9, 0.8, 1).normalize();
-                        const camPos = sphere.center
-                            .clone()
-                            .add(dir.multiplyScalar(distance * 1.35));
-                        camera.position.copy(camPos);
-                        controls.target.copy(sphere.center);
-                        camera.near = Math.max(0.01, sphere.radius * 0.01);
-                        camera.far = sphere.radius * 20;
+                        if (camera instanceof THREE.PerspectiveCamera) {
+                            const fov = (camera.fov * Math.PI) / 180;
+                            const distance = sphere.radius / Math.sin(fov / 2);
+                            const camPos = sphere.center
+                                .clone()
+                                .add(dir.multiplyScalar(distance * 1.35));
+                            camera.position.copy(camPos);
+                            controls.target.copy(sphere.center);
+                            camera.near = Math.max(0.01, sphere.radius * 0.01);
+                            camera.far = sphere.radius * 20;
+                        } else if (camera instanceof THREE.OrthographicCamera) {
+                            const distance = sphere.radius * 2.5;
+                            const camPos = sphere.center
+                                .clone()
+                                .add(dir.multiplyScalar(distance));
+                            camera.position.copy(camPos);
+                            controls.target.copy(sphere.center);
+                            camera.near = 0.01;
+                            camera.far = sphere.radius * 20;
+                            // Expand frustum to fit the sphere
+                            const viewH = sphere.radius * 2.5;
+                            const aspect = (camera.right - camera.left) / (camera.top - camera.bottom);
+                            camera.top = viewH / 2;
+                            camera.bottom = -viewH / 2;
+                            camera.left = -(viewH * aspect) / 2;
+                            camera.right = (viewH * aspect) / 2;
+                        }
                         camera.updateProjectionMatrix();
                         controls.update();
                     }

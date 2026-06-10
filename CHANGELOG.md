@@ -6,6 +6,7 @@ All notable changes to Kromacut are documented in this file.
 
 ### Added
 
+- **Orthographic camera toggle** - Added a camera toggle button to the 3D preview toolbar that switches between perspective and orthographic projection. The button shows the current mode and preserves the camera position and depth range when toggling.
 - **Desktop update settings** - Added desktop-only settings to manually check for updates and control whether update notices run on startup.
 
 ### Changed

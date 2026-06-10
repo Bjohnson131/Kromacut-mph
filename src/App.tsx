@@ -199,6 +199,7 @@ function App(): React.ReactElement | null {
     // UI mode toggles (2D / 3D) - UI only for now
     const [mode, setMode] = useState<'2d' | '3d'>('2d');
     const [docsOpen, setDocsOpen] = useState(() => parseDocsLocation(window.location) !== null);
+    const [isOrtho, setIsOrtho] = useState(false);
     const [exportingSTL, setExportingSTL] = useState(false);
     const [exportProgress, setExportProgress] = useState(0); // 0..1
     const [exportStep, setExportStep] = useState<ExportProgressStep>({
@@ -674,6 +675,7 @@ function App(): React.ReactElement | null {
                                             heightDithering={threeDState.heightDithering}
                                             ditherLineWidth={threeDState.ditherLineWidth}
                                             smoothMeshing={threeDState.smoothMeshing}
+                                            isOrtho={isOrtho}
                                         />
                                         {exportingSTL && (
                                             <ProgressOverlay
@@ -717,6 +719,8 @@ function App(): React.ReactElement | null {
                                     onExportImage={onExportImage}
                                     onExportStl={onExportStl}
                                     onExport3MF={onExport3MF}
+                                    isOrtho={isOrtho}
+                                    onToggleCamera={() => setIsOrtho((v) => !v)}
                                 />
                             </div>
                         </main>
