@@ -79,6 +79,7 @@ type AutoPaintPersisted = Pick<
     | 'allowRepeatedSwaps'
     | 'heightDithering'
     | 'ditherLineWidth'
+    | 'flatPaint'
 >;
 
 const loadAutoPaintPersisted = (): AutoPaintPersisted | null => {
@@ -105,6 +106,7 @@ const loadAutoPaintPersisted = (): AutoPaintPersisted | null => {
             allowRepeatedSwaps: parsed.allowRepeatedSwaps ?? false,
             heightDithering: parsed.heightDithering ?? false,
             ditherLineWidth: parsed.ditherLineWidth,
+            flatPaint: parsed.flatPaint ?? false,
         };
     } catch {
         return null;
@@ -213,11 +215,15 @@ function App(): React.ReactElement | null {
         threeDState,
         setThreeDState,
         threeDBuildSignal,
+        builtThreeDState,
+        builtFlatPaint,
         buildWarning,
         handleThreeDStateChange,
         confirmBuild,
         cancelBuild,
     } = useBuildWarning({ imageSrc });
+    const builtModelState = builtThreeDState ?? threeDState;
+    const builtModelAutoPaint = builtModelState.paintMode === 'autopaint';
 
     // Hydrate threeDState once with persisted autopaint data
     const [autopaintHydrated] = useState(() => {
@@ -238,6 +244,7 @@ function App(): React.ReactElement | null {
                 allowRepeatedSwaps: autopaintHydrated.allowRepeatedSwaps ?? prev.allowRepeatedSwaps,
                 heightDithering: autopaintHydrated.heightDithering ?? prev.heightDithering,
                 ditherLineWidth: autopaintHydrated.ditherLineWidth ?? prev.ditherLineWidth,
+                flatPaint: autopaintHydrated.flatPaint ?? prev.flatPaint,
             }));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -256,6 +263,7 @@ function App(): React.ReactElement | null {
             allowRepeatedSwaps: threeDState.allowRepeatedSwaps,
             heightDithering: threeDState.heightDithering,
             ditherLineWidth: threeDState.ditherLineWidth,
+            flatPaint: threeDState.flatPaint,
         });
     }, [
         threeDState.filaments,
@@ -267,6 +275,7 @@ function App(): React.ReactElement | null {
         threeDState.allowRepeatedSwaps,
         threeDState.heightDithering,
         threeDState.ditherLineWidth,
+        threeDState.flatPaint,
     ]);
 
     // No auto-build on tab switch — the user must click "Build 3D Model" / "Apply Changes".
@@ -411,11 +420,11 @@ function App(): React.ReactElement | null {
             exportObjectToStlBlob,
             exportObjectTo3MFBlob: (obj, onProgress, onZipProgress) =>
                 exportObjectTo3MFBlob(obj, {
-                    layerHeight: threeDState.layerHeight,
-                    firstLayerHeight: threeDState.slicerFirstLayerHeight,
+                    layerHeight: builtModelState.layerHeight,
+                    firstLayerHeight: builtModelState.slicerFirstLayerHeight,
                     layerFilamentColors:
-                        threeDState.paintMode === 'autopaint'
-                            ? threeDState.autoPaintFilamentSwatches?.map((s) => s.hex)
+                        builtModelAutoPaint
+                            ? builtModelState.autoPaintFilamentSwatches?.map((s) => s.hex)
                             : undefined,
                     onProgress,
                     onZipProgress,
@@ -604,6 +613,8 @@ function App(): React.ReactElement | null {
                                     <ThreeDControls
                                         swatches={swatches}
                                         imageDimensions={imageDimensions}
+                                        builtState={builtThreeDState}
+                                        builtFlatPaint={builtFlatPaint}
                                         onChange={handleThreeDStateChange}
                                         onSettingsChange={(partial) =>
                                             setThreeDState((prev) => ({ ...prev, ...partial }))
@@ -650,32 +661,33 @@ function App(): React.ReactElement | null {
                                         <ThreeDView
                                             imageSrc={imageSrc}
                                             baseSliceHeight={0}
-                                            layerHeight={threeDState.layerHeight}
+                                            layerHeight={builtModelState.layerHeight}
                                             slicerFirstLayerHeight={
-                                                threeDState.slicerFirstLayerHeight
+                                                builtModelState.slicerFirstLayerHeight
                                             }
-                                            colorSliceHeights={threeDState.colorSliceHeights}
-                                            colorOrder={threeDState.colorOrder}
-                                            swatches={threeDState.filteredSwatches}
+                                            colorSliceHeights={builtModelState.colorSliceHeights}
+                                            colorOrder={builtModelState.colorOrder}
+                                            swatches={builtModelState.filteredSwatches}
                                             filamentSwatches={
-                                                threeDState.paintMode === 'autopaint'
-                                                    ? threeDState.autoPaintFilamentSwatches
+                                                builtModelAutoPaint
+                                                    ? builtModelState.autoPaintFilamentSwatches
                                                     : undefined
                                             }
-                                            pixelSize={threeDState.pixelSize}
+                                            pixelSize={builtModelState.pixelSize}
                                             rebuildSignal={threeDBuildSignal}
-                                            autoPaintEnabled={threeDState.paintMode === 'autopaint'}
+                                            autoPaintEnabled={builtModelAutoPaint}
                                             autoPaintTotalHeight={
-                                                threeDState.autoPaintResult?.totalHeight
+                                                builtModelState.autoPaintResult?.totalHeight
                                             }
                                             autoPaintFilamentOrder={
-                                                threeDState.autoPaintResult?.filamentOrder
+                                                builtModelState.autoPaintResult?.filamentOrder
                                             }
-                                            enhancedColorMatch={threeDState.enhancedColorMatch}
-                                            heightDithering={threeDState.heightDithering}
-                                            ditherLineWidth={threeDState.ditherLineWidth}
-                                            smoothMeshing={threeDState.smoothMeshing}
+                                            enhancedColorMatch={builtModelState.enhancedColorMatch}
+                                            heightDithering={builtModelState.heightDithering}
+                                            ditherLineWidth={builtModelState.ditherLineWidth}
+                                            smoothMeshing={builtModelState.smoothMeshing}
                                             isOrtho={isOrtho}
+                                            flatPaint={builtFlatPaint}
                                         />
                                         {exportingSTL && (
                                             <ProgressOverlay
@@ -719,6 +731,7 @@ function App(): React.ReactElement | null {
                                     onExportImage={onExportImage}
                                     onExportStl={onExportStl}
                                     onExport3MF={onExport3MF}
+                                    flatPaintModel={builtFlatPaint}
                                     isOrtho={isOrtho}
                                     onToggleCamera={() => setIsOrtho((v) => !v)}
                                 />

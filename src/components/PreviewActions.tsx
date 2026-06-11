@@ -38,6 +38,8 @@ export interface PreviewActionsProps {
     onExportImage: () => Promise<void>;
     onExportStl: () => Promise<void>;
     onExport3MF: () => Promise<void>;
+    /** The currently built model is a Flat Paint slab — STL export is useless for it */
+    flatPaintModel?: boolean;
     isOrtho?: boolean;
     onToggleCamera?: () => void;
 }
@@ -62,6 +64,7 @@ export const PreviewActions: React.FC<PreviewActionsProps> = ({
     onExportImage,
     onExportStl,
     onExport3MF,
+    flatPaintModel = false,
     isOrtho = false,
     onToggleCamera,
 }) => {
@@ -170,16 +173,20 @@ export const PreviewActions: React.FC<PreviewActionsProps> = ({
                         </Button>
                     </PopoverTrigger>
                     <PopoverContent align="end" className="w-48 p-1 flex flex-col gap-1">
-                        <Button
-                            variant="ghost"
-                            onClick={onExportStl}
-                            data-testid="download-stl"
-                            disabled={exportingSTL}
-                            className="justify-start gap-2 h-9 px-2 font-normal"
-                        >
-                            <FileBox className="w-4 h-4 text-muted-foreground" />
-                            <span>Download STL</span>
-                        </Button>
+                        {/* Flat Paint slabs carry their colors as per-filament 3MF
+                            objects; a single-geometry STL of the slab is useless */}
+                        {!flatPaintModel && (
+                            <Button
+                                variant="ghost"
+                                onClick={onExportStl}
+                                data-testid="download-stl"
+                                disabled={exportingSTL}
+                                className="justify-start gap-2 h-9 px-2 font-normal"
+                            >
+                                <FileBox className="w-4 h-4 text-muted-foreground" />
+                                <span>Download STL</span>
+                            </Button>
+                        )}
                         <Button
                             variant="ghost"
                             onClick={onExport3MF}

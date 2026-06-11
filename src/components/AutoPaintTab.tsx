@@ -92,6 +92,10 @@ interface AutoPaintTabProps {
     ditherLineWidth: number;
     setDitherLineWidth: (v: number) => void;
 
+    // Flat Paint (flat face-down print)
+    flatPaint: boolean;
+    setFlatPaint: (v: boolean) => void;
+
     // Optimizer options
     optimizerAlgorithm: 'exhaustive' | 'simulated-annealing' | 'genetic' | 'auto';
     setOptimizerAlgorithm: (v: 'exhaustive' | 'simulated-annealing' | 'genetic' | 'auto') => void;
@@ -142,6 +146,8 @@ export default function AutoPaintTab({
     setHeightDithering,
     ditherLineWidth,
     setDitherLineWidth,
+    flatPaint,
+    setFlatPaint,
     optimizerAlgorithm,
     setOptimizerAlgorithm,
     optimizerSeed,
@@ -593,6 +599,27 @@ export default function AutoPaintTab({
                                     </Button>
                                 </div>
                             )}
+                        </div>
+                    )}
+
+                    {/* Flat Paint */}
+                    {filaments.length > 0 && (
+                        <div className="space-y-3 pt-2">
+                            <div className="h-px bg-border/50" />
+                            <div className="flex items-center justify-between">
+                                <Label
+                                    htmlFor="flat-paint"
+                                    className="text-xs font-medium text-foreground cursor-pointer"
+                                >
+                                    Flat Paint
+                                </Label>
+                                <Switch
+                                    id="flat-paint"
+                                    data-testid="autopaint-flat-paint"
+                                    checked={flatPaint}
+                                    onCheckedChange={setFlatPaint}
+                                />
+                            </div>
                         </div>
                     )}
 
