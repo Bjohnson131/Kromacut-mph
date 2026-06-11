@@ -9,7 +9,9 @@ import type { CanvasPreviewHandle } from './components/CanvasPreview';
 import { SwatchesPanel } from './components/SwatchesPanel';
 import AdjustmentsPanel from './components/AdjustmentsPanel';
 import DeditherPanel from './components/DeditherPanel';
+import ImageResizePanel from './components/ImageResizePanel';
 import { ADJUSTMENT_DEFAULTS } from './lib/applyAdjustments';
+import { calculateImageResizeDimensions } from './lib/imageResize';
 import SLIDER_DEFS from './components/sliderDefs';
 import { useSwatches } from './hooks/useSwatches';
 import type { SwatchEntry } from './hooks/useSwatches';
@@ -30,6 +32,10 @@ import { ControlsPanel } from './components/ControlsPanel';
 import { usePaletteManager } from './hooks/usePaletteManager';
 import { UpdateChecker } from './components/UpdateChecker';
 import ProgressOverlay from './components/ProgressOverlay';
+import DocsPage from './components/docs/DocsPage';
+import { defaultDocSlug } from './docs';
+import { buildDocsPath, parseDocsLocation } from './lib/docs/navigation';
+import { applyHomeSeo } from './lib/seo';
 import {
     AlertDialog,
     AlertDialogContent,
@@ -138,7 +144,8 @@ function App(): React.ReactElement | null {
         logo,
         undefined
     );
-    const { swatches, swatchesLoading, imageDimensions, invalidate, immediateOverride } = useSwatches(imageSrc);
+    const { swatches, swatchesLoading, imageDimensions, invalidate, immediateOverride } =
+        useSwatches(imageSrc);
     // adjustments managed locally inside AdjustmentsPanel now
     // initial selectedPalette derived from initial weight above
     const inputRef = useRef<HTMLInputElement | null>(null);
@@ -191,6 +198,8 @@ function App(): React.ReactElement | null {
     const [adjustmentsEpoch, setAdjustmentsEpoch] = useState(0);
     // UI mode toggles (2D / 3D) - UI only for now
     const [mode, setMode] = useState<'2d' | '3d'>('2d');
+    const [docsOpen, setDocsOpen] = useState(() => parseDocsLocation(window.location) !== null);
+    const [isOrtho, setIsOrtho] = useState(false);
     const [exportingSTL, setExportingSTL] = useState(false);
     const [exportProgress, setExportProgress] = useState(0); // 0..1
     const [exportStep, setExportStep] = useState<ExportProgressStep>({
@@ -223,7 +232,8 @@ function App(): React.ReactElement | null {
                 paintMode: autopaintHydrated.paintMode ?? prev.paintMode,
                 optimizerAlgorithm: autopaintHydrated.optimizerAlgorithm ?? prev.optimizerAlgorithm,
                 optimizerSeed: autopaintHydrated.optimizerSeed ?? prev.optimizerSeed,
-                regionWeightingMode: autopaintHydrated.regionWeightingMode ?? prev.regionWeightingMode,
+                regionWeightingMode:
+                    autopaintHydrated.regionWeightingMode ?? prev.regionWeightingMode,
                 enhancedColorMatch: autopaintHydrated.enhancedColorMatch ?? prev.enhancedColorMatch,
                 allowRepeatedSwaps: autopaintHydrated.allowRepeatedSwaps ?? prev.allowRepeatedSwaps,
                 heightDithering: autopaintHydrated.heightDithering ?? prev.heightDithering,
@@ -270,6 +280,44 @@ function App(): React.ReactElement | null {
         canvasPreviewRef.current?.redraw();
     }, [imageSrc]);
 
+    useEffect(() => {
+        const syncDocsLocation = () => {
+            const target = parseDocsLocation(window.location);
+            setDocsOpen(target !== null);
+        };
+        window.addEventListener('hashchange', syncDocsLocation);
+        window.addEventListener('popstate', syncDocsLocation);
+        return () => {
+            window.removeEventListener('hashchange', syncDocsLocation);
+            window.removeEventListener('popstate', syncDocsLocation);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!docsOpen) {
+            applyHomeSeo();
+        }
+    }, [docsOpen]);
+
+    const backToApp = () => {
+        setDocsOpen(false);
+        if (parseDocsLocation(window.location)) {
+            window.history.pushState(null, '', '/');
+        }
+    };
+
+    const toggleDocs = () => {
+        if (docsOpen) {
+            backToApp();
+            return;
+        }
+
+        setDocsOpen(true);
+        if (!parseDocsLocation(window.location)) {
+            window.history.pushState(null, '', buildDocsPath(defaultDocSlug));
+        }
+    };
+
     const handleFiles = (file?: File) => {
         if (!file) return;
         if (!file.type.startsWith('image/')) {
@@ -286,6 +334,59 @@ function App(): React.ReactElement | null {
     const clear = () => {
         clearCurrent();
         if (inputRef.current) inputRef.current.value = '';
+    };
+
+    const resizeCurrentImage = async (percent: number) => {
+        if (!canvasPreviewRef.current || !imageSrc) return;
+
+        let sourceUrl: string | null = null;
+        try {
+            const sourceBlob = await canvasPreviewRef.current.exportImageBlob();
+            if (!sourceBlob) return;
+
+            sourceUrl = URL.createObjectURL(sourceBlob);
+            const imageUrl = sourceUrl;
+            const img = await new Promise<HTMLImageElement | null>((resolve) => {
+                const image = new Image();
+                image.onload = () => resolve(image);
+                image.onerror = () => resolve(null);
+                image.src = imageUrl;
+            });
+
+            if (!img) return;
+
+            const target = calculateImageResizeDimensions(
+                img.naturalWidth,
+                img.naturalHeight,
+                percent
+            );
+
+            if (target.width >= img.naturalWidth && target.height >= img.naturalHeight) return;
+
+            const canvas = document.createElement('canvas');
+            canvas.width = target.width;
+            canvas.height = target.height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
+
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, 0, 0, target.width, target.height);
+
+            const resizedBlob = await new Promise<Blob | null>((resolve) =>
+                canvas.toBlob((blob) => resolve(blob), 'image/png')
+            );
+            if (!resizedBlob) return;
+
+            const url = URL.createObjectURL(resizedBlob);
+            invalidate();
+            setImage(url, true);
+        } catch (error) {
+            console.warn('Image resize failed', error);
+            alert('Image resize failed. See console for details.');
+        } finally {
+            if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+        }
     };
 
     // splitter & layout management preserved below
@@ -328,274 +429,302 @@ function App(): React.ReactElement | null {
     return (
         <div className="box-border text-inherit font-sans flex flex-col flex-1 min-w-0 max-w-full min-h-0 h-screen w-full">
             <Header
+                docsOpen={docsOpen}
+                onBackToApp={backToApp}
+                onToggleDocs={toggleDocs}
                 onLoadTest={() => {
                     invalidate();
                     setImage(tdTestImg, true);
+                    setMode('2d');
+                    if (parseDocsLocation(window.location)) {
+                        window.history.pushState(null, '', '/');
+                    }
+                    setDocsOpen(false);
                 }}
             />
-            <div className="flex flex-1 min-h-0 w-full" ref={layoutRef}>
-                <ResizableSplitter defaultSize={30} minSize={20} maxSize={50}>
-                    <aside className="w-full bg-card border-r border-border flex flex-col min-h-0">
-                        <ModeTabs mode={mode} onChange={setMode} />
-                        <div className="flex-1 overflow-y-auto overflow-x-auto p-4">
-                            {mode === '2d' ? (
-                                <>
-                                    <input
-                                        ref={inputRef}
-                                        type="file"
-                                        accept="image/*"
-                                        data-testid="image-file-input"
-                                        onChange={(e) => {
-                                            if (e.target.files && e.target.files[0])
-                                                handleFiles(e.target.files[0]);
-                                        }}
-                                        className="hidden-file-input"
-                                    />
-                                    {/* file input stays here (hidden); uploader buttons moved to preview actions */}
-                                    <div className="space-y-4">
-                                        <AdjustmentsPanel
-                                            key={adjustmentsEpoch}
-                                            defs={SLIDER_DEFS}
-                                            initial={ADJUSTMENT_DEFAULTS}
-                                            onCommit={(vals) => {
-                                                setAdjustments(vals);
-                                                // schedule a redraw
-                                                requestAnimationFrame(() =>
-                                                    canvasPreviewRef.current?.redraw()
-                                                );
+            {docsOpen && (
+                <div className="flex flex-1 min-h-0 w-full">
+                    <DocsPage />
+                </div>
+            )}
+            <div
+                className={`${docsOpen ? 'hidden' : 'flex'} flex-1 min-h-0 w-full`}
+                ref={layoutRef}
+            >
+                    <ResizableSplitter defaultSize={30} minSize={20} maxSize={50}>
+                        <aside className="w-full bg-card border-r border-border flex flex-col min-h-0">
+                            <ModeTabs mode={mode} onChange={setMode} />
+                            <div className="flex-1 overflow-y-auto overflow-x-auto p-4">
+                                {mode === '2d' ? (
+                                    <>
+                                        <input
+                                            ref={inputRef}
+                                            type="file"
+                                            accept="image/*"
+                                            data-testid="image-file-input"
+                                            onChange={(e) => {
+                                                if (e.target.files && e.target.files[0])
+                                                    handleFiles(e.target.files[0]);
                                             }}
-                                            onBake={async () => {
-                                                if (!canvasPreviewRef.current) return;
-                                                try {
-                                                    const blob =
-                                                        await canvasPreviewRef.current.exportAdjustedImageBlob?.();
-                                                    if (!blob) return;
-                                                    const url = URL.createObjectURL(blob);
+                                            className="hidden-file-input"
+                                        />
+                                        {/* file input stays here (hidden); uploader buttons moved to preview actions */}
+                                        <div className="space-y-4">
+                                            <AdjustmentsPanel
+                                                key={adjustmentsEpoch}
+                                                defs={SLIDER_DEFS}
+                                                initial={ADJUSTMENT_DEFAULTS}
+                                                onCommit={(vals) => {
+                                                    setAdjustments(vals);
+                                                    // schedule a redraw
+                                                    requestAnimationFrame(() =>
+                                                        canvasPreviewRef.current?.redraw()
+                                                    );
+                                                }}
+                                                onBake={async () => {
+                                                    if (!canvasPreviewRef.current) return;
+                                                    try {
+                                                        const blob =
+                                                            await canvasPreviewRef.current.exportAdjustedImageBlob?.();
+                                                        if (!blob) return;
+                                                        const url = URL.createObjectURL(blob);
+                                                        invalidate();
+                                                        setImage(url, true);
+                                                        // After baking, reset adjustments state to defaults
+                                                        setAdjustments(ADJUSTMENT_DEFAULTS);
+                                                        setAdjustmentsEpoch((e) => e + 1);
+                                                    } catch (e) {
+                                                        console.warn('Bake adjustments failed', e);
+                                                    }
+                                                }}
+                                            />
+                                            <ImageResizePanel
+                                                imageDimensions={imageDimensions}
+                                                disabled={!imageSrc || isCropMode}
+                                                onApply={resizeCurrentImage}
+                                            />
+                                            <DeditherPanel
+                                                canvasRef={canvasPreviewRef}
+                                                onApplyResult={(url) => {
                                                     invalidate();
                                                     setImage(url, true);
-                                                    // After baking, reset adjustments state to defaults
-                                                    setAdjustments(ADJUSTMENT_DEFAULTS);
-                                                    setAdjustmentsEpoch((e) => e + 1);
-                                                } catch (e) {
-                                                    console.warn('Bake adjustments failed', e);
-                                                }
-                                            }}
-                                        />
-                                        <DeditherPanel
-                                            canvasRef={canvasPreviewRef}
-                                            onApplyResult={(url) => {
-                                                invalidate();
-                                                setImage(url, true);
-                                            }}
-                                            onWorkingChange={(working) => {
-                                                setIsDedithering(working);
-                                                if (working) {
-                                                    setProcessingLabel('Dedithering...');
+                                                }}
+                                                onWorkingChange={(working) => {
+                                                    setIsDedithering(working);
+                                                    if (working) {
+                                                        setProcessingLabel('Dedithering...');
+                                                        setProcessingStep({
+                                                            stepIndex: 1,
+                                                            stepCount: 1,
+                                                            label: 'Dedithering pass 1',
+                                                            stepProgress: 0,
+                                                        });
+                                                        setProcessingProgress(0);
+                                                        setProcessingIndeterminate(false);
+                                                    }
+                                                }}
+                                                onStepChange={setProcessingStep}
+                                                onProgress={(value) => {
+                                                    setProcessingProgress(clampProgress(value));
+                                                }}
+                                            />
+                                            <ControlsPanel
+                                                // finalColors controls postprocessing result count
+                                                finalColors={finalColors}
+                                                onFinalColorsChange={(n) => {
+                                                    setFinalColors(n);
+                                                    // changing the final colors should switch to auto palette
+                                                    setSelectedPalette('auto');
+                                                }}
+                                                // weight remains the algorithm parameter
+                                                weight={weight}
+                                                onWeightChange={(n) => {
+                                                    setWeight(n);
+                                                }}
+                                                algorithm={algorithm}
+                                                setAlgorithm={setAlgorithm}
+                                                onApply={async () => {
+                                                    if (isQuantizing) return;
+                                                    setIsQuantizing(true);
+                                                    setProcessingLabel('Quantizing...');
                                                     setProcessingStep({
                                                         stepIndex: 1,
-                                                        stepCount: 1,
-                                                        label: 'Dedithering pass 1',
+                                                        stepCount: 5,
+                                                        label: 'Loading image data',
                                                         stepProgress: 0,
                                                     });
                                                     setProcessingProgress(0);
                                                     setProcessingIndeterminate(false);
-                                                }
-                                            }}
-                                            onStepChange={setProcessingStep}
-                                            onProgress={(value) => {
-                                                setProcessingProgress(clampProgress(value));
-                                            }}
-                                        />
-                                        <ControlsPanel
-                                            // finalColors controls postprocessing result count
-                                            finalColors={finalColors}
-                                            onFinalColorsChange={(n) => {
-                                                setFinalColors(n);
-                                                // changing the final colors should switch to auto palette
-                                                setSelectedPalette('auto');
-                                            }}
-                                            // weight remains the algorithm parameter
-                                            weight={weight}
-                                            onWeightChange={(n) => {
-                                                setWeight(n);
-                                            }}
-                                            algorithm={algorithm}
-                                            setAlgorithm={setAlgorithm}
-                                            onApply={async () => {
-                                                if (isQuantizing) return;
-                                                setIsQuantizing(true);
-                                                setProcessingLabel('Quantizing...');
-                                                setProcessingStep({
-                                                    stepIndex: 1,
-                                                    stepCount: 5,
-                                                    label: 'Loading image data',
-                                                    stepProgress: 0,
-                                                });
-                                                setProcessingProgress(0);
-                                                setProcessingIndeterminate(false);
-                                                await new Promise((r) => requestAnimationFrame(r));
-                                                try {
-                                                    await applyQuantize(canvasPreviewRef);
-                                                } finally {
-                                                    setIsQuantizing(false);
-                                                    setProcessingProgress(1);
-                                                    setProcessingIndeterminate(false);
-                                                }
-                                            }}
-                                            disabled={!imageSrc || isCropMode}
-                                            applying={isQuantizing}
-                                            weightDisabled={algorithm === 'none'}
-                                            selectedPalette={selectedPalette}
-                                            onPaletteSelect={(id, size) => {
-                                                setSelectedPalette(id);
-                                                // set the postprocess target to the palette size, but do not lock it
-                                                if (id !== 'auto') setFinalColors(size);
-                                            }}
-                                            onReset={() => {
-                                                setFinalColors(16);
-                                                setWeight(128);
-                                                setAlgorithm('kmeans');
-                                                setSelectedPalette('auto');
-                                            }}
-                                            allPalettes={allPalettes}
-                                            customPalettes={customPalettes}
-                                            importFeedback={paletteImportFeedback}
-                                            importInputRef={paletteImportInputRef}
-                                            onCreatePalette={handleCreatePalette}
-                                            onUpdatePalette={handleUpdatePalette}
-                                            onDeletePalette={handleDeletePalette}
-                                            onExportPalette={handleExportPalette}
-                                            onImportPaletteFile={handleImportPaletteFile}
-                                        />
-                                        <SwatchesPanel
-                                            swatches={swatches}
-                                            loading={swatchesLoading}
-                                            cap={SWATCH_CAP}
-                                            onSwatchDelete={onSwatchDelete}
-                                            onSwatchApply={onSwatchApply}
-                                        />
-                                    </div>
-                                </>
-                            ) : (
-                                <ThreeDControls
-                                    swatches={swatches}
-                                    imageDimensions={imageDimensions}
-                                    onChange={handleThreeDStateChange}
-                                    onSettingsChange={(partial) =>
-                                        setThreeDState((prev) => ({ ...prev, ...partial }))
-                                    }
-                                    persisted={threeDState}
-                                />
-                            )}
-                        </div>
-                    </aside>
-                    <main className="h-full w-full bg-background flex flex-col min-h-0">
-                        <div
-                            className={`flex-1 relative min-h-0 w-full ${dropzone.dragOver ? 'bg-primary/20' : ''}`}
-                            onDrop={dropzone.onDrop}
-                            onDragOver={dropzone.onDragOver}
-                            onDragLeave={dropzone.onDragLeave}
-                        >
-                            {mode === '2d' ? (
-                                <>
-                                    <CanvasPreview
-                                        ref={canvasPreviewRef}
-                                        imageSrc={imageSrc}
-                                        isCropMode={isCropMode}
-                                        showCheckerboard={showCheckerboard}
-                                        adjustments={adjustments}
-                                        onCropSelectionChange={setHasValidCropSelection}
+                                                    await new Promise((r) =>
+                                                        requestAnimationFrame(r)
+                                                    );
+                                                    try {
+                                                        await applyQuantize(canvasPreviewRef);
+                                                    } finally {
+                                                        setIsQuantizing(false);
+                                                        setProcessingProgress(1);
+                                                        setProcessingIndeterminate(false);
+                                                    }
+                                                }}
+                                                disabled={!imageSrc || isCropMode}
+                                                applying={isQuantizing}
+                                                weightDisabled={algorithm === 'none'}
+                                                selectedPalette={selectedPalette}
+                                                onPaletteSelect={(id, size) => {
+                                                    setSelectedPalette(id);
+                                                    // set the postprocess target to the palette size, but do not lock it
+                                                    if (id !== 'auto') setFinalColors(size);
+                                                }}
+                                                onReset={() => {
+                                                    setFinalColors(16);
+                                                    setWeight(128);
+                                                    setAlgorithm('kmeans');
+                                                    setSelectedPalette('auto');
+                                                }}
+                                                allPalettes={allPalettes}
+                                                customPalettes={customPalettes}
+                                                importFeedback={paletteImportFeedback}
+                                                importInputRef={paletteImportInputRef}
+                                                onCreatePalette={handleCreatePalette}
+                                                onUpdatePalette={handleUpdatePalette}
+                                                onDeletePalette={handleDeletePalette}
+                                                onExportPalette={handleExportPalette}
+                                                onImportPaletteFile={handleImportPaletteFile}
+                                            />
+                                            <SwatchesPanel
+                                                swatches={swatches}
+                                                loading={swatchesLoading}
+                                                cap={SWATCH_CAP}
+                                                onSwatchDelete={onSwatchDelete}
+                                                onSwatchApply={onSwatchApply}
+                                            />
+                                        </div>
+                                    </>
+                                ) : (
+                                    <ThreeDControls
+                                        swatches={swatches}
+                                        imageDimensions={imageDimensions}
+                                        onChange={handleThreeDStateChange}
+                                        onSettingsChange={(partial) =>
+                                            setThreeDState((prev) => ({ ...prev, ...partial }))
+                                        }
+                                        persisted={threeDState}
                                     />
-                                    {processingActive && (
-                                        <ProgressOverlay
-                                            title={progressOperationTitle()}
-                                            stepLabel={
-                                                processingStep.label ??
-                                                progressStepName(processingLabel)
+                                )}
+                            </div>
+                        </aside>
+                        <main className="h-full w-full bg-background flex flex-col min-h-0">
+                            <div
+                                className={`flex-1 relative min-h-0 w-full ${dropzone.dragOver ? 'bg-primary/20' : ''}`}
+                                onDrop={dropzone.onDrop}
+                                onDragOver={dropzone.onDragOver}
+                                onDragLeave={dropzone.onDragLeave}
+                            >
+                                {mode === '2d' ? (
+                                    <>
+                                        <CanvasPreview
+                                            ref={canvasPreviewRef}
+                                            imageSrc={imageSrc}
+                                            isCropMode={isCropMode}
+                                            showCheckerboard={showCheckerboard}
+                                            adjustments={adjustments}
+                                            onCropSelectionChange={setHasValidCropSelection}
+                                        />
+                                        {processingActive && (
+                                            <ProgressOverlay
+                                                title={progressOperationTitle()}
+                                                stepLabel={
+                                                    processingStep.label ??
+                                                    progressStepName(processingLabel)
+                                                }
+                                                stepIndex={processingStep.stepIndex}
+                                                stepCount={processingStep.stepCount}
+                                                stepProgress={processingStep.stepProgress}
+                                                progress={processingProgress}
+                                                indeterminate={processingIndeterminate}
+                                            />
+                                        )}
+                                    </>
+                                ) : (
+                                    <>
+                                        <ThreeDView
+                                            imageSrc={imageSrc}
+                                            baseSliceHeight={0}
+                                            layerHeight={threeDState.layerHeight}
+                                            slicerFirstLayerHeight={
+                                                threeDState.slicerFirstLayerHeight
                                             }
-                                            stepIndex={processingStep.stepIndex}
-                                            stepCount={processingStep.stepCount}
-                                            stepProgress={processingStep.stepProgress}
-                                            progress={processingProgress}
-                                            indeterminate={processingIndeterminate}
+                                            colorSliceHeights={threeDState.colorSliceHeights}
+                                            colorOrder={threeDState.colorOrder}
+                                            swatches={threeDState.filteredSwatches}
+                                            filamentSwatches={
+                                                threeDState.paintMode === 'autopaint'
+                                                    ? threeDState.autoPaintFilamentSwatches
+                                                    : undefined
+                                            }
+                                            pixelSize={threeDState.pixelSize}
+                                            rebuildSignal={threeDBuildSignal}
+                                            autoPaintEnabled={threeDState.paintMode === 'autopaint'}
+                                            autoPaintTotalHeight={
+                                                threeDState.autoPaintResult?.totalHeight
+                                            }
+                                            autoPaintFilamentOrder={
+                                                threeDState.autoPaintResult?.filamentOrder
+                                            }
+                                            enhancedColorMatch={threeDState.enhancedColorMatch}
+                                            heightDithering={threeDState.heightDithering}
+                                            ditherLineWidth={threeDState.ditherLineWidth}
+                                            smoothMeshing={threeDState.smoothMeshing}
+                                            isOrtho={isOrtho}
                                         />
-                                    )}
-                                </>
-                            ) : (
-                                <>
-                                    <ThreeDView
-                                        imageSrc={imageSrc}
-                                        baseSliceHeight={0}
-                                        layerHeight={threeDState.layerHeight}
-                                        slicerFirstLayerHeight={threeDState.slicerFirstLayerHeight}
-                                        colorSliceHeights={threeDState.colorSliceHeights}
-                                        colorOrder={threeDState.colorOrder}
-                                        swatches={threeDState.filteredSwatches}
-                                        filamentSwatches={
-                                            threeDState.paintMode === 'autopaint'
-                                                ? threeDState.autoPaintFilamentSwatches
-                                                : undefined
-                                        }
-                                        pixelSize={threeDState.pixelSize}
-                                        rebuildSignal={threeDBuildSignal}
-                                        autoPaintEnabled={threeDState.paintMode === 'autopaint'}
-                                        autoPaintTotalHeight={
-                                            threeDState.autoPaintResult?.totalHeight
-                                        }
-                                        autoPaintFilamentOrder={
-                                            threeDState.autoPaintResult?.filamentOrder
-                                        }
-                                        enhancedColorMatch={threeDState.enhancedColorMatch}
-                                        heightDithering={threeDState.heightDithering}
-                                        ditherLineWidth={threeDState.ditherLineWidth}
-                                        smoothMeshing={threeDState.smoothMeshing}
-                                    />
-                                    {exportingSTL && (
-                                        <ProgressOverlay
-                                            title={exportStep.title}
-                                            stepLabel={exportStep.stepLabel}
-                                            stepIndex={exportStep.stepIndex}
-                                            stepCount={exportStep.stepCount}
-                                            stepProgress={exportStep.stepProgress}
-                                            progress={exportProgress}
-                                            indeterminate={exportProgress <= 0}
-                                        />
-                                    )}
-                                </>
-                            )}
-                            <PreviewActions
-                                mode={mode}
-                                canUndo={canUndo}
-                                canRedo={canRedo}
-                                isCropMode={isCropMode}
-                                imageAvailable={!!imageSrc}
-                                hasValidCropSelection={hasValidCropSelection}
-                                exportingSTL={exportingSTL}
-                                exportProgress={exportProgress}
-                                onUndo={undo}
-                                onRedo={redo}
-                                onEnterCrop={() => imageSrc && setIsCropMode(true)}
-                                onSaveCrop={async () => {
-                                    if (!canvasPreviewRef.current) return;
-                                    const blob =
-                                        await canvasPreviewRef.current.exportCroppedImage();
-                                    if (!blob) return;
-                                    const url = URL.createObjectURL(blob);
-                                    invalidate();
-                                    setImage(url, true);
-                                    setIsCropMode(false);
-                                }}
-                                onCancelCrop={() => setIsCropMode(false)}
-                                onToggleCheckerboard={() => setShowCheckerboard((s) => !s)}
-                                onPickFile={() => inputRef.current?.click()}
-                                onClear={clear}
-                                onExportImage={onExportImage}
-                                onExportStl={onExportStl}
-                                onExport3MF={onExport3MF}
-                            />
-                        </div>
-                    </main>
-                </ResizableSplitter>
+                                        {exportingSTL && (
+                                            <ProgressOverlay
+                                                title={exportStep.title}
+                                                stepLabel={exportStep.stepLabel}
+                                                stepIndex={exportStep.stepIndex}
+                                                stepCount={exportStep.stepCount}
+                                                stepProgress={exportStep.stepProgress}
+                                                progress={exportProgress}
+                                                indeterminate={exportProgress <= 0}
+                                            />
+                                        )}
+                                    </>
+                                )}
+                                <PreviewActions
+                                    mode={mode}
+                                    canUndo={canUndo}
+                                    canRedo={canRedo}
+                                    isCropMode={isCropMode}
+                                    imageAvailable={!!imageSrc}
+                                    hasValidCropSelection={hasValidCropSelection}
+                                    exportingSTL={exportingSTL}
+                                    exportProgress={exportProgress}
+                                    onUndo={undo}
+                                    onRedo={redo}
+                                    onEnterCrop={() => imageSrc && setIsCropMode(true)}
+                                    onSaveCrop={async () => {
+                                        if (!canvasPreviewRef.current) return;
+                                        const blob =
+                                            await canvasPreviewRef.current.exportCroppedImage();
+                                        if (!blob) return;
+                                        const url = URL.createObjectURL(blob);
+                                        invalidate();
+                                        setImage(url, true);
+                                        setIsCropMode(false);
+                                    }}
+                                    onCancelCrop={() => setIsCropMode(false)}
+                                    onToggleCheckerboard={() => setShowCheckerboard((s) => !s)}
+                                    onPickFile={() => inputRef.current?.click()}
+                                    onClear={clear}
+                                    onExportImage={onExportImage}
+                                    onExportStl={onExportStl}
+                                    onExport3MF={onExport3MF}
+                                    isOrtho={isOrtho}
+                                    onToggleCamera={() => setIsOrtho((v) => !v)}
+                                />
+                            </div>
+                        </main>
+                    </ResizableSplitter>
             </div>
 
             {/* Build warning dialog */}

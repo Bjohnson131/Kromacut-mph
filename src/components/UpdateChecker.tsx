@@ -9,48 +9,55 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Download, X } from 'lucide-react';
-
-declare global {
-    interface Window {
-        __TAURI__?: {
-            core: {
-                invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-            };
-        };
-    }
-}
-
-interface VersionInfo {
-    version: string;
-    download_url?: string;
-    release_notes?: string;
-}
+import {
+    checkForDesktopUpdates,
+    isDesktopUpdateSupported,
+    openDesktopReleasesPage,
+    type VersionInfo,
+} from '@/lib/desktopUpdates';
+import {
+    getUpdateCheckOnStartup,
+    subscribeToUpdateCheckOnStartup,
+} from '@/lib/updatePreferences';
 
 export function UpdateChecker() {
     const [updateAvailable, setUpdateAvailable] = useState<VersionInfo | null>(null);
     const [dismissed, setDismissed] = useState(false);
     const [checking, setChecking] = useState(false);
+    const [checkOnStartup, setCheckOnStartup] = useState(() => getUpdateCheckOnStartup());
 
     useEffect(() => {
-        // Only check for updates in Tauri environment
-        if (!window.__TAURI__) return;
+        if (!isDesktopUpdateSupported()) return;
+
+        return subscribeToUpdateCheckOnStartup(setCheckOnStartup);
+    }, []);
+
+    useEffect(() => {
+        if (!checkOnStartup) {
+            setUpdateAvailable(null);
+            setChecking(false);
+        }
+    }, [checkOnStartup]);
+
+    useEffect(() => {
+        if (!isDesktopUpdateSupported() || !checkOnStartup) return;
+
+        let active = true;
 
         const checkForUpdates = async () => {
             setChecking(true);
             try {
-                const currentVersion = await window.__TAURI__!.core.invoke<string>('get_app_version');
-                const updateInfo = await window.__TAURI__!.core.invoke<VersionInfo | null>(
-                    'check_for_updates',
-                    { currentVersion }
-                );
+                const updateInfo = await checkForDesktopUpdates();
 
-                if (updateInfo) {
+                if (active) {
                     setUpdateAvailable(updateInfo);
                 }
             } catch (error) {
                 console.error('Failed to check for updates:', error);
             } finally {
-                setChecking(false);
+                if (active) {
+                    setChecking(false);
+                }
             }
         };
 
@@ -60,24 +67,27 @@ export function UpdateChecker() {
         // Check periodically (every 4 hours)
         const interval = setInterval(checkForUpdates, 4 * 60 * 60 * 1000);
 
-        return () => clearInterval(interval);
-    }, []);
+        return () => {
+            active = false;
+            clearInterval(interval);
+        };
+    }, [checkOnStartup]);
 
-    if (!window.__TAURI__ || !updateAvailable || dismissed || checking) {
+    if (!isDesktopUpdateSupported() || !checkOnStartup || !updateAvailable || dismissed || checking) {
         return null;
     }
 
-    const handleDownload = () => {
-        if (updateAvailable.download_url) {
-            window.open(updateAvailable.download_url, '_blank');
-        } else {
-            window.open('https://github.com/vycdev/Kromacut/releases', '_blank');
+    const handleDownload = async () => {
+        try {
+            await openDesktopReleasesPage();
+        } catch (error) {
+            console.error('Failed to open releases page:', error);
         }
     };
 
     return (
         <div className="fixed bottom-4 right-4 z-50 animate-in slide-in-from-bottom-5">
-            <Card className="p-4 shadow-lg border-primary/50 bg-gradient-to-br from-primary/5 to-primary/10 max-w-sm">
+            <Card className="max-w-sm overflow-hidden border-primary/60 bg-card p-4 shadow-2xl shadow-black/30">
                 <div className="flex items-start gap-3">
                     <div className="flex-shrink-0">
                         <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center">

@@ -1,9 +1,9 @@
 [package]
 name = "kromacut"
-version = "2.6.0"
+version = "3.1.0"
 description = "Kromacut - Multi-color lithophane 3D print generator"
 authors = ["vycdev"]
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/vycdev/Kromacut"
 edition = "2021"
 rust-version = "1.77.2"

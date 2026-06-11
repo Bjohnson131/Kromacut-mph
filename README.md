@@ -2,7 +2,7 @@
 
 # Kromacut
 
-[![Patreon](https://img.shields.io/badge/Patreon-Support-orange?logo=patreon&logoColor=white)](https://www.patreon.com/cw/vycdev) [![Discord](https://img.shields.io/badge/Discord-Join%20Chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/nU63sFMcnX) [![YouTube](https://img.shields.io/badge/YouTube-@vycdev-red?logo=youtube&logoColor=white)](https://www.youtube.com/@vycdev)
+[![Patreon](https://img.shields.io/badge/Patreon-Support-orange?logo=patreon&logoColor=white)](https://www.patreon.com/cw/vycdev) [![Discord](https://img.shields.io/badge/Discord-Join%20Chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/nU63sFMcnX) [![YouTube](https://img.shields.io/badge/YouTube-@vycdev-red?logo=youtube&logoColor=white)](https://www.youtube.com/@vycdev) [![Release](https://img.shields.io/github/v/release/vycdev/kromacut)](https://github.com/vycdev/Kromacut/releases/latest) [![Repo size](https://img.shields.io/github/repo-size/vycdev/kromacut)](https://github.com/vycdev/Kromacut) [![Total downloads](https://img.shields.io/github/downloads/vycdev/Kromacut/total?label=total%20downloads)](https://github.com/vycdev/Kromacut/releases) [![Latest downloads](https://img.shields.io/github/downloads/vycdev/Kromacut/latest/total)](https://github.com/vycdev/Kromacut/releases/latest)
 
 Open-source HueForge-style tool for converting images into stacked, color-layered 3D prints.
 
@@ -187,8 +187,9 @@ Auto-paint configurations (filament lists) can be saved, loaded, and shared as *
 
 - **Save / Save New** — Persist the current filament set under a name. Overwrite an existing profile or create a new one.
 - **Load** — Select a saved profile from the dropdown to restore its filaments.
-- **Export** — Download the current filaments as a `.kapp` file (JSON) to share with others.
-- **Import** — Load a `.kapp` or `.json` profile file from disk.
+- **Rename** — Change the selected profile name without changing its filaments.
+- **Export** — Download the current filaments as a `.kfil` file (JSON) to share with others.
+- **Import** — Load a `.kfil`, legacy `.kapp`, or `.json` profile file from disk.
 - **Delete** — Remove a saved profile.
 
 Profiles are stored in browser `localStorage` and persist across sessions.
@@ -351,4 +352,6 @@ Contributions welcome. Open issues or PRs for bugs, improvements, or feature sug
 
 ## License
 
-This project is open-source — see the `LICENSE` file in the repository.
+Kromacut is free software licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See the `LICENSE` file in the repository.
+
+Copyright (C) 2025 vycdev. Redistribution and modified versions must preserve the copyright and license notices. Modified desktop distributions must provide the corresponding source under the AGPL, and modified hosted/network versions must also offer source access to their users.

@@ -8,6 +8,7 @@ interface PrintSettingsCardProps {
     layerHeight: number;
     slicerFirstLayerHeight: number;
     pixelSize: number;
+    modelSizeEstimate?: { width: number; height: number; depth: number } | null;
     smoothMeshing: boolean;
     onLayerHeightChange: (v: number) => void;
     onSlicerFirstLayerHeightChange: (v: number) => void;
@@ -38,6 +39,11 @@ function parseDraftNumber(value: string) {
 
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function formatModelDimension(value: number) {
+    if (!Number.isFinite(value)) return '0.0';
+    return value.toFixed(1);
 }
 
 function useDraftNumberInput(
@@ -94,6 +100,7 @@ export default function PrintSettingsCard({
     layerHeight,
     slicerFirstLayerHeight,
     pixelSize,
+    modelSizeEstimate,
     smoothMeshing,
     onLayerHeightChange,
     onSlicerFirstLayerHeightChange,
@@ -150,16 +157,34 @@ export default function PrintSettingsCard({
                                 mm/pixel
                             </span>
                         </div>
-                        <Input
-                            data-testid="print-pixel-size"
-                            type="text"
-                            inputMode="decimal"
-                            value={pixelSizeInput.value}
-                            className={pixelSizeInput.error ? 'border-red-500 focus-visible:ring-red-500' : ''}
-                            onChange={(e) => pixelSizeInput.onChange(e.target.value)}
-                            onFocus={pixelSizeInput.onFocus}
-                            onBlur={pixelSizeInput.onBlur}
-                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Input
+                                data-testid="print-pixel-size"
+                                type="text"
+                                inputMode="decimal"
+                                value={pixelSizeInput.value}
+                                className={`min-w-32 flex-1 ${
+                                    pixelSizeInput.error
+                                        ? 'border-red-500 focus-visible:ring-red-500'
+                                        : ''
+                                }`}
+                                onChange={(e) => pixelSizeInput.onChange(e.target.value)}
+                                onFocus={pixelSizeInput.onFocus}
+                                onBlur={pixelSizeInput.onBlur}
+                            />
+                            {modelSizeEstimate && (
+                                <span
+                                    className="inline-flex h-9 min-w-0 max-w-full flex-1 basis-44 items-center justify-start rounded-md border border-primary/20 bg-primary/10 px-3 text-xs font-semibold text-primary"
+                                    title="Estimated model size before building"
+                                >
+                                    <span className="truncate">
+                                        Model: {formatModelDimension(modelSizeEstimate.width)}×
+                                        {formatModelDimension(modelSizeEstimate.height)}×
+                                        {formatModelDimension(modelSizeEstimate.depth)} mm
+                                    </span>
+                                </span>
+                            )}
+                        </div>
                         {pixelSizeInput.error && (
                             <span className="text-xs text-red-500">{pixelSizeInput.error}</span>
                         )}
@@ -223,7 +248,7 @@ export default function PrintSettingsCard({
                     <div>
                         <span className="font-semibold text-foreground">Smooth Meshing</span>
                         <p className="text-xs text-muted-foreground">
-                            Use marching squares for smoother color boundary edges
+                            Smooth connected color boundary edges with fast welded topology
                         </p>
                     </div>
                     <Switch

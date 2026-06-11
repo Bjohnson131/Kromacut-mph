@@ -1,4 +1,4 @@
-import type { CustomPalette } from '@/types';
+import type { CustomPalette } from '../types';
 
 export const CURRENT_PALETTE_VERSION = 1;
 

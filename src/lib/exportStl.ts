@@ -12,6 +12,7 @@ type ExportGeometrySource = {
     height?: number;
     pixelSize?: number;
     topZ?: number;
+    compactHeightfield?: boolean;
 };
 
 type CompactStlStats = {
@@ -175,6 +176,7 @@ function buildKromacutHeightfieldQuads(meshes: THREE.Mesh[]): CompactHeightfield
         const source = getKromacutExportGeometry(mesh.geometry);
 
         if (
+            source?.compactHeightfield === false ||
             !source?.activePixels ||
             source.width === undefined ||
             source.height === undefined ||

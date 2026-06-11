@@ -39,6 +39,7 @@ export function useColorSlicing({
     const prevSlicerFirstLayerHeightRef = useRef<number | null>(null);
     const displayOrderRef = useRef<number[]>([]);
     const layerHeightRef = useRef<number>(layerHeight);
+    const filteredCount = filtered.length;
 
     // guard so we only emit immediately after hydration if needed
     const hydratedRef = useRef<boolean>(false);
@@ -52,15 +53,15 @@ export function useColorSlicing({
     useEffect(() => {
         if (prevLayerHeightRef.current !== null && prevLayerHeightRef.current !== layerHeight) {
             // Layer height changed: reset all color heights to new layer height
-            if (filtered.length > 0) {
-                const resetHeights = filtered.map(() =>
+            if (filteredCount > 0) {
+                const resetHeights = Array.from({ length: filteredCount }, () =>
                     Number(Math.max(layerHeight, Math.min(10, layerHeight)).toFixed(8))
                 );
                 setColorSliceHeights(resetHeights);
             }
         }
         prevLayerHeightRef.current = layerHeight;
-    }, [layerHeight, filtered.length]);
+    }, [layerHeight, filteredCount]);
 
     // When slicerFirstLayerHeight changes, update the first color's slice height to match the new minimum
     useEffect(() => {
@@ -99,17 +100,18 @@ export function useColorSlicing({
             }
         }
 
+        const currentLayerHeight = layerHeightRef.current;
         const nextHeights = filtered.map((s) => {
             const key = s.hex + ':' + s.a;
             const existing = heightMap.get(key);
             const isValid = typeof existing === 'number' && isFinite(existing) && existing >= 0;
-            const base = isValid ? existing : layerHeight;
-            const clamped = Math.max(layerHeight, Math.min(10, base));
-            if (!layerHeight || !isFinite(layerHeight) || layerHeight <= 0) {
+            const base = isValid ? existing : currentLayerHeight;
+            const clamped = Math.max(currentLayerHeight, Math.min(10, base));
+            if (!currentLayerHeight || !isFinite(currentLayerHeight) || currentLayerHeight <= 0) {
                 return isValid ? base : 0.2;
             }
-            const multiple = Math.round(clamped / layerHeight) * layerHeight;
-            const snapped = Math.max(layerHeight, Math.min(10, multiple));
+            const multiple = Math.round(clamped / currentLayerHeight) * currentLayerHeight;
+            const snapped = Math.max(currentLayerHeight, Math.min(10, multiple));
             return Number(snapped.toFixed(8));
         });
         setColorSliceHeights(nextHeights);
@@ -249,7 +251,8 @@ export function useColorSlicing({
         // compare heights
         for (let idx = 0; idx < lumOrder.length; idx++) {
             const fi = lumOrder[idx];
-            const expected = idx === 0 ? Math.max(layerHeight, slicerFirstLayerHeight) : layerHeight;
+            const expected =
+                idx === 0 ? Math.max(layerHeight, slicerFirstLayerHeight) : layerHeight;
             const actual = colorSliceHeights[fi] ?? layerHeight;
             if (Math.abs(actual - expected) > 1e-6) return false;
         }

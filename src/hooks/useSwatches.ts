@@ -8,10 +8,18 @@ export interface SwatchEntry {
     count: number;
     isTransparent?: boolean;
 }
+
+export interface ImageDimensions {
+    width: number;
+    height: number;
+    opaqueWidth: number;
+    opaqueHeight: number;
+}
+
 export function useSwatches(imageSrc: string | null) {
     const [swatches, setSwatches] = useState<SwatchEntry[]>([]);
     const [loading, setLoading] = useState(false);
-    const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null);
+    const [imageDimensions, setImageDimensions] = useState<ImageDimensions | null>(null);
     const runRef = useRef(0);
     const SWATCH_CAP = 2 ** 14; // matches previous constant
 
@@ -49,7 +57,7 @@ export function useSwatches(imageSrc: string | null) {
                 if (runId !== runRef.current || cancelled) return;
                 const w = img.naturalWidth;
                 const h = img.naturalHeight;
-                setImageDimensions({ width: w, height: h });
+                setImageDimensions({ width: w, height: h, opaqueWidth: w, opaqueHeight: h });
                 const TILE = 1024;
                 const map = new Map<number, number>();
                 const tile = document.createElement('canvas');
@@ -61,6 +69,10 @@ export function useSwatches(imageSrc: string | null) {
                     return;
                 }
                 let transparentCount = 0;
+                let minOpaqueX = w;
+                let minOpaqueY = h;
+                let maxOpaqueX = -1;
+                let maxOpaqueY = -1;
                 for (let y = 0; y < h; y += TILE) {
                     for (let x = 0; x < w; x += TILE) {
                         const sw = Math.min(TILE, w - x);
@@ -77,6 +89,13 @@ export function useSwatches(imageSrc: string | null) {
                                 transparentCount++;
                                 continue;
                             }
+                            const pixelOffset = i / 4;
+                            const px = x + (pixelOffset % sw);
+                            const py = y + Math.floor(pixelOffset / sw);
+                            if (px < minOpaqueX) minOpaqueX = px;
+                            if (py < minOpaqueY) minOpaqueY = py;
+                            if (px > maxOpaqueX) maxOpaqueX = px;
+                            if (py > maxOpaqueY) maxOpaqueY = py;
                             // include alpha in the key so semi-transparent colors are preserved
                             const r = data[i];
                             const g = data[i + 1];
@@ -115,6 +134,13 @@ export function useSwatches(imageSrc: string | null) {
                 // Present colors from darkest to lightest (reverse the previous ordering)
                 top.reverse();
                 if (runId === runRef.current && !cancelled) {
+                    const hasOpaquePixels = maxOpaqueX >= minOpaqueX && maxOpaqueY >= minOpaqueY;
+                    setImageDimensions({
+                        width: w,
+                        height: h,
+                        opaqueWidth: hasOpaquePixels ? maxOpaqueX - minOpaqueX + 1 : w,
+                        opaqueHeight: hasOpaquePixels ? maxOpaqueY - minOpaqueY + 1 : h,
+                    });
                     const result = top.map((t) => ({
                         hex: t.hex,
                         a: typeof t.a === 'number' ? t.a : 255,
