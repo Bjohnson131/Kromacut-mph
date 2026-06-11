@@ -2,6 +2,12 @@
 
 All notable changes to Kromacut are documented in this file.
 
+## Unreleased
+
+### Added
+
+- **Next-best-color suggestion** — "Suggest next filament" button in the Auto-paint panel runs a blend-aware analysis and recommends the single filament addition that would most reduce the average color error (ΔE) across the image. The result card shows the suggested hex color, a recommended starting TD (borrowed from the nearest existing filament by ΔE), an estimated ΔE improvement percentage, the proportion of image pixels that benefit, and an isolation score indicating how far the suggestion sits from existing filaments in perceptual color space. Clicking "Add to filaments" inserts the suggestion directly into the filament list with a `Kromacut-Suggestion-NN` name. The algorithm accounts for Beer-Lambert blend lines between existing filaments and uses extrapolation to find colors that, when blended with an existing filament, reach underserved image colors — often outperforming the raw swatch color as a candidate.
+
 ## v2.6.0 - 2026-05-17
 
 ### Added

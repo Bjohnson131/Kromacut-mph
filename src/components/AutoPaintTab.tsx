@@ -854,18 +854,24 @@ export default function AutoPaintTab({
                                         <span className="text-xs font-mono font-semibold flex-1">
                                             {nextBestResult.candidate.hex.toUpperCase()}
                                         </span>
-                                        <span className="text-xs font-semibold text-green-600 dark:text-green-400">
-                                            +{nextBestResult.candidate.improvementPct.toFixed(1)}%
+                                        <span
+                                            className="text-xs font-semibold cursor-default"
+                                            title="Estimated reduction in blend-aware average color error (ΔE) across the image if this filament is added. Higher is better, but this is a rough estimate, not a confidence rating."
+                                        >
+                                            Est. ΔE{' '}
+                                            <span className="text-sm font-bold text-green-600 dark:text-green-400">
+                                                +{nextBestResult.candidate.improvementPct.toFixed(1)}%
+                                            </span>
                                         </span>
                                     </div>
                                     <div className="grid grid-cols-3 gap-1.5 text-[10px] text-muted-foreground">
-                                        <span>
+                                        <span title="Recommended starting transmittance-distance value, borrowed from the nearest existing filament by color distance (ΔE).">
                                             TD:{' '}
                                             <span className="font-semibold text-foreground">
                                                 {nextBestResult.candidate.td.toFixed(2)}
                                             </span>
                                         </span>
-                                        <span>
+                                        <span title="Percentage of image pixels whose blend-aware color error would improve with this filament added.">
                                             Captures:{' '}
                                             <span className="font-semibold text-foreground">
                                                 {(
@@ -876,7 +882,7 @@ export default function AutoPaintTab({
                                                 %
                                             </span>
                                         </span>
-                                        <span>
+                                        <span title="How far this color sits from existing filaments in perceptual color space (0–1). Higher means it fills a more distinct gap; lower means it overlaps with colors already covered.">
                                             Isolation:{' '}
                                             <span className="font-semibold text-foreground">
                                                 {nextBestResult.candidate.isolationScore.toFixed(2)}
