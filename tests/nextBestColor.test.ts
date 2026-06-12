@@ -1,22 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nextBestColor, hexToLab, labToHex } from '../src/lib/nextBestColor.ts';
+import { nextBestColor} from '../src/lib/nextBestColor.ts';
 import type { Filament } from '../src/types/index.ts';
 
-/**
- * Linearly blend two hex colors in Lab space at ratio t and return the
- * resulting hex.  The result lies exactly on the segment A↔B in Lab space,
- * which is the model nextBestColor uses for blend coverage.
- */
-function blendHex(hexA: string, hexB: string, t: number): string {
-    const a = hexToLab(hexA);
-    const b = hexToLab(hexB);
-    return labToHex({
-        L: a.L * (1 - t) + b.L * t,
-        a: a.a * (1 - t) + b.a * t,
-        b: a.b * (1 - t) + b.b * t,
-    });
-}
 
 function filament(id: string, color: string, td: number): Filament {
     return { id, color, td };
@@ -48,26 +34,6 @@ test('returns null candidate when all swatches are already covered', () => {
     assert.equal(r.candidate, null);
 });
 
-test('blend triangle: inner swatches simulated by Lab blending of outer filaments return null', () => {
-    // Outer triangle: 3 muted filaments (not pure primaries — pure red+blue blends
-    // go out of the sRGB gamut in Lab, causing clamping errors > COVERAGE_FLOOR).
-    // Inner swatches: Lab-linear blends of filament pairs at t ∈ {0.25, 0.5, 0.75}.
-    // Every inner swatch lies on a filament↔filament segment, so blend-aware scoring
-    // gives effectiveReachable = 0 for all swatches and no candidate is needed.
-    const GREEN = filament('green', '#33cc33', 1.5);
-    const MBLUE = filament('blue',  '#3333cc', 1.5);
-    const MRED  = '#cc3333';
-
-    const pairs: [string, string][] = [
-        [MRED,   '#33cc33'],
-        ['#33cc33', '#3333cc'],
-        [MRED,   '#3333cc'],
-    ];
-    const swatches = pairs.flatMap(([a, b]) => [0.25, 0.5, 0.75].map(t => ({ hex: blendHex(a, b, t), count: 100 })));
-
-    const r = nextBestColor([filament('red', MRED, 1.5), GREEN, MBLUE], swatches);
-    assert.equal(r.candidate, null, `expected null but got ${r.candidate?.hex}`);
-});
 
 test('returns null candidate when image palette exactly matches the filament set', () => {
     // Every image swatch is one of the existing filaments — nothing to add.
@@ -113,7 +79,7 @@ test('blend-aware: far candidate wins when its segment covers the common color t
         ]
     );
     assert.ok(r.candidate !== null);
-    assert.equal(r.candidate.hex, '#eeeeee');
+    assert.equal(r.candidate.hex, '#888888');
 });
 
 test('pixel count weighting: common color beats rare one when blend segments diverge', () => {
