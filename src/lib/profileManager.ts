@@ -226,6 +226,63 @@ export function parseProfileFile(json: string): AutoPaintProfile[] | null {
     }
 }
 
+/**
+ * Parse a HueForge spool library CSV into a single AutoPaint profile.
+ *
+ * The CSV must have a header row. Column order is flexible — columns are
+ * matched by name. Required columns: Color (hex), TD (float). Optional but
+ * recommended: Brand, Name, Uuid.
+ *
+ * Each filament's display name is formatted as `<Brand>-<Name>-<Color>`,
+ * e.g. `Inland Basic-Light Brown-#bf9c81`. Rows missing both Color and TD
+ * are skipped. UUIDs are used as filament IDs when present (braces stripped);
+ * a random UUID is generated for rows without one.
+ *
+ * Returns null if the input has no header, no valid data rows, or cannot be
+ * parsed.
+ */
+export function parseHueForgeCSV(csv: string, profileName = 'HueForge Import'): AutoPaintProfile[] | null {
+    const lines = csv.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length < 2) return null;
+
+    const headers = lines[0].split(',').map((h) => h.trim());
+    const col = (row: string[], name: string) => {
+        const i = headers.indexOf(name);
+        return i >= 0 ? row[i]?.trim() ?? '' : '';
+    };
+
+    const filaments: import('../types').Filament[] = [];
+    for (const line of lines.slice(1)) {
+        const row = line.split(',');
+        const color = col(row, 'Color');
+        const tdRaw = col(row, 'TD');
+        const td = parseFloat(tdRaw);
+        if (!color || isNaN(td)) continue;
+
+        const rawId = col(row, 'Uuid').replace(/[{}]/g, '');
+        const id = rawId || crypto.randomUUID();
+        const colorName = col(row, 'Name');
+        const brand = col(row, 'Brand') || undefined;
+        const name = brand && colorName ? `${brand}-${colorName}-${color}` : colorName || undefined;
+
+        filaments.push({ id, color, td, name, brand });
+    }
+
+    if (filaments.length === 0) return null;
+
+    const now = Date.now();
+    return [
+        {
+            id: crypto.randomUUID(),
+            name: profileName,
+            version: CURRENT_PROFILE_VERSION,
+            filaments,
+            createdAt: now,
+            updatedAt: now,
+        },
+    ];
+}
+
 /** Build an export blob for a profile. */
 export function exportProfileBlob(profile: AutoPaintProfile): Blob {
     return new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });

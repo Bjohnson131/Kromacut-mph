@@ -10,6 +10,7 @@ import {
     deleteProfile as deleteProfileFromList,
     importProfiles,
     parseProfileFile,
+    parseHueForgeCSV,
     exportProfileBlob,
     profileFileName,
     loadLastProfileId,
@@ -149,7 +150,12 @@ export function useProfileManager({ filaments, setFilaments }: UseProfileManager
             if (!file) return;
             const reader = new FileReader();
             reader.onload = () => {
-                const incoming = parseProfileFile(reader.result as string);
+                const content = reader.result as string;
+                const isCSV = file.name.toLowerCase().endsWith('.csv');
+                const profileName = file.name.replace(/\.csv$/i, '') || 'HueForge Import';
+                const incoming = isCSV
+                    ? parseHueForgeCSV(content, profileName)
+                    : parseProfileFile(content);
                 if (!incoming) {
                     console.error('Invalid profile file');
                     return;
