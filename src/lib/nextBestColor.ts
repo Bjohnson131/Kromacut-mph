@@ -251,13 +251,21 @@ export function nextBestColor(
 
     // -------------------------------------------------------------------------
     // Build candidate pool.
-    // For each p75-underserved swatch, include the swatch color itself plus
-    // extrapolated Lab positions derived from each filament at each blend ratio.
+    // For each p75-underserved swatch (by weighted contribution = error × count),
+    // include the swatch color itself plus extrapolated Lab positions derived from
+    // each filament at each blend ratio. Filtering on weighted contribution means
+    // a high-frequency moderate-error swatch isn't excluded just because rarer
+    // swatches have larger raw errors.
     // -------------------------------------------------------------------------
     const COVERAGE_THRESHOLD = 3.0; // ΔE — skip near-duplicates of existing filaments
 
+    // Weighted contribution: each swatch's share of the total baseline error.
+    const weightedContrib = effectiveReachable.map((e, i) => e * counts[i]);
+    const sortedContrib = [...weightedContrib].sort((a, b) => a - b);
+    const p75ContribThreshold = sortedContrib[Math.floor(sortedContrib.length * 0.75)];
+
+    // These thresholds are still on raw error, used only for scoring weights (not filtering).
     const sortedReachable = [...effectiveReachable].sort((a, b) => a - b);
-    const p75Threshold = sortedReachable[Math.floor(sortedReachable.length * 0.75)];
     const p90Threshold = sortedReachable[Math.floor(sortedReachable.length * 0.90)];
     const maxReachable  = sortedReachable[sortedReachable.length - 1];
 
@@ -280,7 +288,7 @@ export function nextBestColor(
     };
 
     for (let c = 0; c < swatchLabs.length; c++) {
-        if (effectiveReachable[c] < p75Threshold) continue;
+        if (weightedContrib[c] < p75ContribThreshold) continue;
 
         // The swatch color itself.
         addCandidate(imageSwatches[c].hex);
