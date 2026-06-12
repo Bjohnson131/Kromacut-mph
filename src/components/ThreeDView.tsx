@@ -11,6 +11,8 @@ import {
 } from '../lib/progress';
 import { Layers } from 'lucide-react';
 import ProgressOverlay from './ProgressOverlay';
+import type { WindowResult } from '../lib/multiHeadAnalysis';
+import type { MultiHeadRangeAssignment } from '../types';
 
 interface ThreeDViewProps {
     imageSrc?: string | null;
@@ -38,6 +40,14 @@ interface ThreeDViewProps {
     // When present (auto-paint mode), each layer band is split per pixel colour so
     // different pixels at the same height can show different filament colours.
     perColorLayerColors?: Map<string, string[]>;
+    // Multi-head nozzle assignment props — used to tag each sub-mesh with the physical
+    // nozzle that prints it so export3mf can set the correct extruder attribute.
+    colorLayerFilaments?: Map<string, number[]>;
+    nozzleAssignments?: number[][];
+    windowRunFilaments?: string[][];
+    multiHeadWindows?: WindowResult[];
+    nonWindowedRanges?: MultiHeadRangeAssignment[];
+    filamentIds?: string[];
     isOrtho?: boolean;
 }
 
@@ -53,6 +63,56 @@ function hexToRGB(hex: string): [number, number, number] {
 // Calculate perceived luminance (0-1 range)
 function getLuminance(r: number, g: number, b: number): number {
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+/** Map a filament index + layer index to a 1-based nozzle number using the DP result. */
+function resolveNozzleIndex(
+    filamentIdx: number,
+    layerIdx: number,
+    filamentIds: string[],
+    windows: WindowResult[],
+    windowRunFilaments: string[][],
+    nozzleAssignments: number[][],
+    debugMisses?: Map<number, Set<string>>,
+    nonWindowedRanges?: MultiHeadRangeAssignment[]
+): number {
+    if (filamentIdx < 0 || filamentIdx >= filamentIds.length) return 1;
+    const fid = filamentIds[filamentIdx];
+
+    // Fast path: layer is inside a real window — look up directly.
+    for (let w = 0; w < windows.length; w++) {
+        const win = windows[w];
+        if (layerIdx < win.windowStart || layerIdx > win.windowEnd) continue;
+        const runs = windowRunFilaments[w] ?? [];
+        const assgn = nozzleAssignments[w] ?? [];
+        for (let k = 0; k < assgn.length; k++) {
+            if (assgn[k] !== -1 && runs[assgn[k]] === fid) return k + 1;
+        }
+        break; // layer is in this window but filament not assigned — fall through
+    }
+
+    // Check non-windowed ranges (pre-window, gaps, post-window).
+    // nozzleFilaments[k] is the realized filament on head k+1 for this range.
+    if (nonWindowedRanges) {
+        for (const range of nonWindowedRanges) {
+            if (layerIdx < range.rangeStart || layerIdx > range.rangeEnd) continue;
+            const idx = range.nozzleFilaments.indexOf(fid);
+            if (idx >= 0) return idx + 1;
+            // Filament not in this range's head state — genuine miss.
+            if (debugMisses) {
+                if (!debugMisses.has(layerIdx)) debugMisses.set(layerIdx, new Set());
+                debugMisses.get(layerIdx)!.add(fid);
+            }
+            return 1;
+        }
+    }
+
+    // Layer not covered by any window or range — fall back.
+    if (debugMisses) {
+        if (!debugMisses.has(layerIdx)) debugMisses.set(layerIdx, new Set());
+        debugMisses.get(layerIdx)!.add(fid);
+    }
+    return 1;
 }
 
 // Nearest-color match with small cache to avoid exact equality issues
@@ -292,6 +352,12 @@ export default function ThreeDView({
     ditherLineWidth = 0.42,
     smoothMeshing = false,
     perColorLayerColors,
+    colorLayerFilaments,
+    nozzleAssignments,
+    windowRunFilaments,
+    multiHeadWindows,
+    nonWindowedRanges,
+    filamentIds,
     isOrtho = false,
 }: ThreeDViewProps) {
     const mountRef = useRef<HTMLDivElement | null>(null);
@@ -1071,11 +1137,17 @@ export default function ThreeDView({
                     // image-palette colour once, so layer bands can be split by the
                     // per-colour blended colour at that layer.
                     let pixelColorSeq: (string[] | null)[] | null = null;
+                    // pixelPaletteIdx stores the palette index for each pixel so the
+                    // group-building loop can resolve filament→nozzle assignments.
+                    let pixelPaletteIdx: Int16Array | null = null;
+                    let perColorPaletteHexes: string[] | null = null;
                     if (perColorLayerColors && perColorLayerColors.size > 0) {
                         const paletteHexes = [...perColorLayerColors.keys()];
+                        perColorPaletteHexes = paletteHexes;
                         const paletteRGB = paletteHexes.map(hexToRGB);
                         const paletteSeqs = paletteHexes.map((h) => perColorLayerColors.get(h)!);
                         pixelColorSeq = new Array(boxW * boxH).fill(null);
+                        pixelPaletteIdx = new Int16Array(boxW * boxH).fill(-1);
                         for (let y = 0; y < boxH; y++) {
                             for (let x = 0; x < boxW; x++) {
                                 const idx = ((minY + y) * fullW + (minX + x)) * 4;
@@ -1090,6 +1162,7 @@ export default function ThreeDView({
                                     if (d < bestD) { bestD = d; best = p; }
                                 }
                                 pixelColorSeq[(boxH - 1 - y) * boxW + x] = paletteSeqs[best];
+                                pixelPaletteIdx[(boxH - 1 - y) * boxW + x] = best;
                             }
                         }
                     }
@@ -1100,6 +1173,10 @@ export default function ThreeDView({
                         (_, layerIndex) => layerIndex
                     );
                     const builtLayerMeshes: THREE.Mesh[] = [];
+                    // Tracks layers outside all windows where resolveNozzleIndex falls back
+                    // to nozzle 1. key = layerIdx, value = set of filament IDs that couldn't
+                    // be resolved to a specific head.
+                    const nozzleResolveMisses = new Map<number, Set<string>>();
 
                     for (
                         let buildLayerIndex = 0;
@@ -1162,13 +1239,40 @@ export default function ThreeDView({
                         // splits the band into several colour groups; otherwise it is
                         // a single group with the band's blended colour.
                         const groups = new Map<string, Uint8Array>();
+                        // Parallel map: groupHex -> nozzle index (1-based). Populated
+                        // from the first pixel of each group using the DP result.
+                        const groupNozzle = new Map<string, number>();
+                        const canResolveNozzle =
+                            pixelPaletteIdx != null &&
+                            perColorPaletteHexes != null &&
+                            colorLayerFilaments != null &&
+                            multiHeadWindows?.length &&
+                            windowRunFilaments?.length &&
+                            nozzleAssignments?.length &&
+                            filamentIds?.length;
                         if (pixelColorSeq) {
                             for (let mi = 0; mi < activePixels.length; mi++) {
                                 if (!activePixels[mi]) continue;
                                 const seq = pixelColorSeq[mi];
                                 const hex = (seq && seq[i]) || colorHex;
                                 let mask = groups.get(hex);
-                                if (!mask) { mask = new Uint8Array(boxW * boxH); groups.set(hex, mask); }
+                                if (!mask) {
+                                    mask = new Uint8Array(boxW * boxH);
+                                    groups.set(hex, mask);
+                                    // Resolve nozzle from the first pixel of this group.
+                                    if (canResolveNozzle) {
+                                        const palIdx = pixelPaletteIdx![mi];
+                                        const palHex = palIdx >= 0 ? perColorPaletteHexes![palIdx] : null;
+                                        const filIdx = palHex != null
+                                            ? (colorLayerFilaments!.get(palHex)?.[i] ?? -1)
+                                            : -1;
+                                        groupNozzle.set(hex, resolveNozzleIndex(
+                                            filIdx, i, filamentIds!,
+                                            multiHeadWindows!, windowRunFilaments!, nozzleAssignments!,
+                                            nozzleResolveMisses, nonWindowedRanges
+                                        ));
+                                    }
+                                }
                                 mask[mi] = 1;
                             }
                         } else {
@@ -1207,6 +1311,11 @@ export default function ThreeDView({
                             // Store layer Z range for preview slider
                             mesh.userData.baseZ = baseZ;
                             mesh.userData.topZ = topZ;
+                            // Store nozzle index (1-based) for 3MF extruder assignment.
+                            const resolvedNozzle = groupNozzle.get(groupHex);
+                            if (resolvedNozzle !== undefined) {
+                                mesh.userData.nozzleIndex = resolvedNozzle;
+                            }
                             builtLayerMeshes.push(mesh);
                         }
 
@@ -1219,6 +1328,22 @@ export default function ThreeDView({
 
                     for (const mesh of builtLayerMeshes) {
                         modelGroup.add(mesh);
+                    }
+
+                    if (nozzleResolveMisses.size > 0 && multiHeadWindows?.length) {
+                        const windowRanges = (multiHeadWindows ?? [])
+                            .map(w => `[${w.windowStart}–${w.windowEnd}]`)
+                            .join(', ');
+                        console.group(
+                            `[ThreeDView] ⚠ ${nozzleResolveMisses.size} non-windowed layer(s) have unresolved nozzle assignments (falling back to head 1)`
+                        );
+                        console.log(`  Windows covered: ${windowRanges}`);
+                        const sortedLayers = [...nozzleResolveMisses.entries()]
+                            .sort(([a], [b]) => a - b);
+                        for (const [layerIdx, fids] of sortedLayers) {
+                            console.log(`  layer ${layerIdx}: unresolved filaments [${[...fids].join(', ')}]`);
+                        }
+                        console.groupEnd();
                     }
                 } else {
                     // === STANDARD MODE ===
@@ -1566,6 +1691,11 @@ export default function ThreeDView({
         ditherLineWidth,
         smoothMeshing,
         perColorLayerColors,
+        colorLayerFilaments,
+        nozzleAssignments,
+        windowRunFilaments,
+        multiHeadWindows,
+        filamentIds,
         cameraRef,
         controlsRef,
         materialRef,

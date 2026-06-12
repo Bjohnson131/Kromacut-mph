@@ -1,8 +1,10 @@
 import { Card } from '@/components/ui/card';
-import type { SwapEntry } from '../hooks/useSwapPlan';
+import type { SwapEntry, MultiHeadScheduleEvent } from '../hooks/useSwapPlan';
 
 interface PrintInstructionsProps {
     swapPlan: SwapEntry[];
+    multiHeadPlan?: MultiHeadScheduleEvent[] | null;
+    multiHeadMode?: boolean;
     layerHeight: number;
     slicerFirstLayerHeight: number;
     copied: boolean;
@@ -13,6 +15,8 @@ interface PrintInstructionsProps {
 
 export default function PrintInstructions({
     swapPlan,
+    multiHeadPlan,
+    multiHeadMode = false,
     layerHeight,
     slicerFirstLayerHeight,
     copied,
@@ -52,110 +56,87 @@ export default function PrintInstructions({
                 <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
                     <div className="font-semibold text-foreground mb-2">Recommended Settings</div>
                     <div className="space-y-1 text-muted-foreground text-xs">
-                        <div>
-                            • Wall loops: <span className="text-foreground font-medium">1</span>
-                        </div>
-                        <div>
-                            • Infill: <span className="text-foreground font-medium">100%</span>
-                        </div>
+                        <div>• Wall loops: <span className="text-foreground font-medium">1</span></div>
+                        <div>• Infill: <span className="text-foreground font-medium">100%</span></div>
                         <div>
                             • Layer height:{' '}
-                            <span className="text-foreground font-mono">
-                                {layerHeight.toFixed(3)} mm
-                            </span>
+                            <span className="text-foreground font-mono">{layerHeight.toFixed(3)} mm</span>
                         </div>
                         <div>
                             • First layer height:{' '}
-                            <span className="text-foreground font-mono">
-                                {slicerFirstLayerHeight.toFixed(3)} mm
-                            </span>
+                            <span className="text-foreground font-mono">{slicerFirstLayerHeight.toFixed(3)} mm</span>
                         </div>
                     </div>
                 </div>
 
-                {/* Start Color */}
-                <div>
-                    <div className="font-semibold text-foreground mb-3">Start with Color</div>
-                    {tooManyColors ? (
-                        <div className="text-muted-foreground text-sm p-3 rounded-lg bg-muted/30">
-                            —
-                        </div>
-                    ) : swapPlan.length && swapPlan[0].type === 'start' ? (
-                        (() => {
-                            const sw = swapPlan[0].swatch;
-                            return (
-                                <div className="flex items-center gap-3 p-4 rounded-lg bg-primary/5 border-2 border-primary/30 shadow-sm">
-                                    <span
-                                        className="block w-8 h-8 rounded-md border-2 border-border flex-shrink-0 shadow-md"
-                                        style={{ background: sw.hex }}
-                                        title={sw.hex}
-                                    />
-                                    <span className="font-mono text-sm font-semibold text-foreground">
-                                        {sw.hex}
-                                    </span>
-                                </div>
-                            );
-                        })()
-                    ) : (
-                        <div className="text-muted-foreground text-sm p-3 rounded-lg bg-muted/30">
-                            —
-                        </div>
-                    )}
-                </div>
-
-                {/* Color Swap Plan */}
-                <div>
-                    <div className="font-semibold text-foreground mb-2">Color Swap Plan</div>
-                    {tooManyColors ? (
-                        <div className="text-amber-600 text-sm p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
-                            Swap instructions are disabled for very large palettes ({colorCount}{' '}
-                            colors). Reduce the image to 256 colors or fewer in 2D mode first.
-                        </div>
-                    ) : swapPlan.length <= 1 ? (
-                        <div className="text-muted-foreground text-sm p-3 rounded-lg bg-accent/5 border border-border/50">
-                            Only one color configured — no swaps needed.
-                        </div>
-                    ) : (
-                        <ol className="space-y-2">
-                            {swapPlan.map((entry, idx) => {
-                                if (entry.type === 'start') return null;
-                                return (
-                                    <li
-                                        key={idx}
-                                        className="flex items-start gap-2 text-muted-foreground text-xs p-2 rounded bg-accent/5"
-                                    >
-                                        <span className="text-primary font-semibold flex-shrink-0">
-                                            {idx}.
-                                        </span>
-                                        <div className="flex-1 flex flex-col gap-1.5">
-                                            <div className="flex items-center gap-2">
-                                                <span>Swap to</span>
-                                                <span
-                                                    className="inline-block w-4 h-4 rounded border border-border flex-shrink-0"
-                                                    style={{ background: entry.swatch.hex }}
-                                                />
-                                                <span className="font-mono text-foreground">
-                                                    {entry.swatch.hex}
-                                                </span>
-                                            </div>
-                                            <div>
-                                                at layer{' '}
-                                                <span className="font-semibold text-foreground">
-                                                    {entry.layer}
-                                                </span>{' '}
-                                                (~
-                                                <span className="font-mono text-foreground">
-                                                    {entry.height.toFixed(3)} mm
-                                                </span>
-                                                )
-                                            </div>
+                {tooManyColors ? (
+                    <div className="text-amber-600 text-sm p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                        Swap instructions are disabled for very large palettes ({colorCount} colors).
+                        Reduce the image to 256 colors or fewer in 2D mode first.
+                    </div>
+                ) : multiHeadPlan ? (
+                    <HeadSchedule events={multiHeadPlan} />
+                ) : multiHeadMode ? (
+                    <div className="text-muted-foreground text-sm p-3 rounded-lg bg-accent/5 border border-border/50">
+                        Click <span className="font-semibold text-foreground">Build 3D Model</span> to generate the multi-head schedule.
+                    </div>
+                ) : (
+                    /* Single-head */
+                    <>
+                        <div>
+                            <div className="font-semibold text-foreground mb-3">Start with Color</div>
+                            {swapPlan.length && swapPlan[0].type === 'start' ? (
+                                (() => {
+                                    const sw = swapPlan[0].swatch;
+                                    return (
+                                        <div className="flex items-center gap-3 p-4 rounded-lg bg-primary/5 border-2 border-primary/30 shadow-sm">
+                                            <span
+                                                className="block w-8 h-8 rounded-md border-2 border-border flex-shrink-0 shadow-md"
+                                                style={{ background: sw.hex }}
+                                                title={sw.hex}
+                                            />
+                                            <span className="font-mono text-sm font-semibold text-foreground">
+                                                {sw.hex}
+                                            </span>
                                         </div>
-                                    </li>
-                                );
-                            })}
-                        </ol>
-                    )}
-                </div>
+                                    );
+                                })()
+                            ) : (
+                                <div className="text-muted-foreground text-sm p-3 rounded-lg bg-muted/30">—</div>
+                            )}
+                        </div>
+                        <div>
+                            <div className="font-semibold text-foreground mb-2">Color Swap Plan</div>
+                            {swapPlan.length <= 1 ? (
+                                <div className="text-muted-foreground text-sm p-3 rounded-lg bg-accent/5 border border-border/50">
+                                    Only one color configured — no swaps needed.
+                                </div>
+                            ) : (
+                                <ol className="space-y-2">
+                                    {swapPlan.map((entry, idx) => {
+                                        if (entry.type === 'start') return null;
+                                        return (
+                                            <li key={idx} className="flex items-start gap-2 text-muted-foreground text-xs p-2 rounded bg-accent/5">
+                                                <span className="text-primary font-semibold flex-shrink-0">{idx}.</span>
+                                                <div className="flex-1 flex flex-col gap-1.5">
+                                                    <div className="flex items-center gap-2">
+                                                        <span>Swap to</span>
+                                                        <span className="inline-block w-4 h-4 rounded border border-border flex-shrink-0" style={{ background: entry.swatch.hex }} />
+                                                        <span className="font-mono text-foreground">{entry.swatch.hex}</span>
+                                                    </div>
+                                                    <div>
+                                                        at layer <span className="font-semibold text-foreground">{entry.layer}</span>{' '}
+                                                        (~<span className="font-mono text-foreground">{entry.height.toFixed(3)} mm</span>)
+                                                    </div>
+                                                </div>
+                                            </li>
+                                        );
+                                    })}
+                                </ol>
+                            )}
+                        </div>
+                    </>
+                )}
 
                 <div className="text-xs text-muted-foreground p-3 rounded-lg bg-accent/5 border border-border/50">
                     <span>ℹ️</span>{' '}
@@ -165,5 +146,70 @@ export default function PrintInstructions({
                 </div>
             </div>
         </Card>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// HeadSchedule — multi-head load / swap schedule in layer order
+// ---------------------------------------------------------------------------
+
+function HeadSchedule({ events }: { events: MultiHeadScheduleEvent[] }) {
+    if (events.length === 0) {
+        return (
+            <div className="text-muted-foreground text-sm p-3 rounded-lg bg-accent/5 border border-border/50">
+                No head assignments computed yet.
+            </div>
+        );
+    }
+
+    return (
+        <div>
+            <div className="font-semibold text-foreground mb-3">Head Schedule</div>
+            <div className="space-y-3">
+                {events.filter(evt => evt.isPrePrint || evt.swapCount > 0).map((evt, evtIdx) => {
+                    return (
+                        <div
+                            key={evtIdx}
+                            className={`p-3 rounded-lg border ${
+                                evt.isPrePrint
+                                    ? 'bg-primary/5 border-primary/20'
+                                    : 'bg-accent/5 border-border/50'
+                            }`}
+                        >
+                            {/* Event header */}
+                            <div className="text-xs font-semibold text-foreground mb-2">
+                                {evt.isPrePrint
+                                    ? <>Before print <span className="font-normal text-muted-foreground"> — load all heads</span></>
+                                    : <>Layer {evt.startLayer}<span className="text-amber-600 dark:text-amber-400"> — swap {evt.swapCount} head{evt.swapCount !== 1 ? 's' : ''}</span></>
+                                }
+                            </div>
+
+                            {/* Nozzle rows — all heads shown; changed ones highlighted */}
+                            <div className="space-y-1">
+                                {evt.nozzles.map((n) => (
+                                    <div
+                                        key={n.nozzle}
+                                        className={`flex items-center gap-2 text-xs ${
+                                            n.changed
+                                                ? 'text-amber-600 dark:text-amber-400 font-semibold'
+                                                : 'text-muted-foreground'
+                                        }`}
+                                    >
+                                        <span className="w-14 flex-shrink-0 font-medium">
+                                            Head {n.nozzle}
+                                        </span>
+                                        <span
+                                            className="inline-block w-3.5 h-3.5 rounded border border-border flex-shrink-0"
+                                            style={{ background: n.filamentHex }}
+                                        />
+                                        <span className="font-mono">{n.filamentHex}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
     );
 }

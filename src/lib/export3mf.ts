@@ -239,11 +239,16 @@ export async function exportObjectTo3MFBlob(
         ) {
             hex = (mesh.material as THREE.MeshStandardMaterial).color.getHexString().toUpperCase();
         }
-        // Use 1-based index for color/extruder
+        // Use nozzle index from userData when present (multi-head: set by ThreeDView
+        // from the DP nozzle-assignment result).  Fall back to color-order index for
+        // single-head and spatial-variance paths.
+        const nozzleIdx = typeof mesh.userData?.nozzleIndex === 'number'
+            ? mesh.userData.nozzleIndex
+            : matIdx + 1;
         componentMeta.push({
             id: objectId,
             name: `Layer ${i + 1} (#${hex})`,
-            colorIdx: matIdx + 1,
+            colorIdx: nozzleIdx,
         });
 
         const layerName = `Layer ${i + 1} (#${hex})`;
