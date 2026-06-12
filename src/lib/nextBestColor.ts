@@ -103,19 +103,35 @@ export function hexToLab(hex: string): Lab {
 
 export { labToHex };
 
+// Beer-Lambert layer blend: matches autoPaint's blendColors (operates in sRGB [0-255]).
+function blendRgb(bg: RGB, fg: RGB, td: number, thickness: number): RGB {
+    if (td <= 0 || thickness <= 0) return bg;
+    const t = Math.pow(0.1, thickness / td);
+    return { r: fg.r + (bg.r - fg.r) * t, g: fg.g + (bg.g - fg.g) * t, b: fg.b + (bg.b - fg.b) * t };
+}
+
+const BLEND_CURVE_STEPS = 16;
+
 /**
- * CIE76 distance from Lab point P to the nearest point on segment A↔B.
- * In Beer-Lambert blending, any mix of filaments A and B lies on the straight
- * line between them in Lab space, so this gives the minimum ΔE achievable by
- * blending A and B at any ratio.
+ * Pre-compute the Lab values along a Beer-Lambert blend curve (bg→fg over 3×fgTd).
+ * Call once per filament pair, then use minCurveDE for each swatch — avoids repeating
+ * the expensive rgbToLab conversion M times for the same blend curve.
  */
-function distToSegment(P: Lab, A: Lab, B: Lab): number {
-    const ABL = B.L - A.L, ABa = B.a - A.a, ABb = B.b - A.b;
-    const APL = P.L - A.L, APa = P.a - A.a, APb = P.b - A.b;
-    const lenSq = ABL * ABL + ABa * ABa + ABb * ABb;
-    const t = lenSq > 0 ? Math.max(0, Math.min(1, (APL * ABL + APa * ABa + APb * ABb) / lenSq)) : 0;
-    const dL = APL - t * ABL, da = APa - t * ABa, db = APb - t * ABb;
-    return Math.sqrt(dL * dL + da * da + db * db);
+function buildBlendCurve(bgRgb: RGB, fgRgb: RGB, fgTd: number): Lab[] {
+    const maxT = 3 * Math.max(fgTd, 0.01);
+    const labs: Lab[] = [rgbToLab(bgRgb)];
+    for (let i = 1; i <= BLEND_CURVE_STEPS; i++) {
+        labs.push(rgbToLab(blendRgb(bgRgb, fgRgb, fgTd, (i / BLEND_CURVE_STEPS) * maxT)));
+    }
+    return labs;
+}
+
+function minCurveDE(sLab: Lab, curveLabs: Lab[]): number {
+    let best = Infinity;
+    for (const cLab of curveLabs) {
+        best = Math.min(best, deltaELab(sLab, cLab));
+    }
+    return best;
 }
 
 /**
@@ -184,25 +200,37 @@ export function nextBestColor(
 
     if (filaments.length === 0 || imageSwatches.length === 0) return empty;
 
-    // Pre-compute Lab values for filaments and swatches.
-    const filamentLabs: Lab[] = filaments.map((f) => rgbToLab(hexToRgb(f.color)));
+    // Pre-compute color values for filaments and swatches.
+    const filamentRgbs: RGB[] = filaments.map((f) => hexToRgb(f.color));
+    const filamentLabs: Lab[] = filamentRgbs.map((rgb) => rgbToLab(rgb));
+    const filamentTds: number[] = filaments.map((f) => f.td);
     const swatchLabs: Lab[] = imageSwatches.map((s) => rgbToLab(hexToRgb(s.hex)));
     const counts: number[] = imageSwatches.map((s) => s.count ?? 1);
 
     // -------------------------------------------------------------------------
     // Baseline: blend-aware reachable error for every swatch.
-    // Accounts for direct filament points and all existing filament↔filament
-    // blend lines (Beer-Lambert linear interpolation in Lab space).
+    // Uses Beer-Lambert blend curves (matching autoPaint's blendColors) rather
+    // than straight Lab segments, so the achievability estimate matches what
+    // the print model can actually produce at each filament's TD.
+    //
+    // Blend curves are pre-computed once per filament pair so the expensive
+    // rgbToLab conversion isn't repeated for every swatch.
     // -------------------------------------------------------------------------
+    const pairCurves: Lab[][] = [];
+    for (let fi = 0; fi < filamentRgbs.length; fi++) {
+        for (let fj = fi + 1; fj < filamentRgbs.length; fj++) {
+            pairCurves.push(buildBlendCurve(filamentRgbs[fi], filamentRgbs[fj], filamentTds[fj]));
+            pairCurves.push(buildBlendCurve(filamentRgbs[fj], filamentRgbs[fi], filamentTds[fi]));
+        }
+    }
+
     const currentReachable: number[] = swatchLabs.map((sLab) => {
         let best = Infinity;
         for (const fLab of filamentLabs) {
             best = Math.min(best, deltaELab(sLab, fLab));
         }
-        for (let fi = 0; fi < filamentLabs.length; fi++) {
-            for (let fj = fi + 1; fj < filamentLabs.length; fj++) {
-                best = Math.min(best, distToSegment(sLab, filamentLabs[fi], filamentLabs[fj]));
-            }
+        for (const curve of pairCurves) {
+            best = Math.min(best, minCurveDE(sLab, curve));
         }
         return best;
     });
@@ -270,13 +298,23 @@ export function nextBestColor(
     // -------------------------------------------------------------------------
     // Score every candidate.
     // -------------------------------------------------------------------------
-    interface CandidateScore { lab: Lab; hex: string; weightedGain: number; rawGain: number; nearestFilamentDE: number }
+    interface CandidateScore { lab: Lab; hex: string; weightedGain: number; rawGain: number; nearestFilamentDE: number; estimatedTd: number }
     const scores: CandidateScore[] = [];
 
     for (const { lab, hex } of pool) {
         let nearestFilamentDE = Infinity;
-        for (const fLab of filamentLabs) {
-            nearestFilamentDE = Math.min(nearestFilamentDE, deltaELab(lab, fLab));
+        let estimatedTd = filaments[0].td;
+        for (let fi = 0; fi < filamentLabs.length; fi++) {
+            const de = deltaELab(lab, filamentLabs[fi]);
+            if (de < nearestFilamentDE) { nearestFilamentDE = de; estimatedTd = filamentTds[fi]; }
+        }
+        const candidateRgb = hexToRgb(hex);
+
+        // Pre-compute candidate↔filament blend curves once, then check all swatches against them.
+        const candCurves: Lab[][] = [];
+        for (let fi = 0; fi < filamentRgbs.length; fi++) {
+            candCurves.push(buildBlendCurve(filamentRgbs[fi], candidateRgb, estimatedTd));
+            candCurves.push(buildBlendCurve(candidateRgb, filamentRgbs[fi], filamentTds[fi]));
         }
 
         let weightedGain = 0;
@@ -284,8 +322,8 @@ export function nextBestColor(
         for (let i = 0; i < swatchLabs.length; i++) {
             let newReachable = currentReachable[i];
             newReachable = Math.min(newReachable, deltaELab(swatchLabs[i], lab));
-            for (const fLab of filamentLabs) {
-                newReachable = Math.min(newReachable, distToSegment(swatchLabs[i], lab, fLab));
+            for (const curve of candCurves) {
+                newReachable = Math.min(newReachable, minCurveDE(swatchLabs[i], curve));
             }
             const improvement = effectiveReachable[i] - newReachable;
             if (improvement > 0) {
@@ -297,7 +335,7 @@ export function nextBestColor(
             }
         }
 
-        scores.push({ lab, hex, weightedGain, rawGain, nearestFilamentDE });
+        scores.push({ lab, hex, weightedGain, rawGain, nearestFilamentDE, estimatedTd });
     }
 
     if (scores.length === 0) return { candidate: null, baselineAvgDeltaE, totalPixels };
@@ -314,13 +352,19 @@ export function nextBestColor(
     // -------------------------------------------------------------------------
 
     // Pixel capture: swatches whose blend-aware reachable error improves with the winner.
+    const winnerRgb = hexToRgb(winner.hex);
+    const winnerCurves: Lab[][] = [];
+    for (let fi = 0; fi < filamentRgbs.length; fi++) {
+        winnerCurves.push(buildBlendCurve(filamentRgbs[fi], winnerRgb, winner.estimatedTd));
+        winnerCurves.push(buildBlendCurve(winnerRgb, filamentRgbs[fi], filamentTds[fi]));
+    }
     let pixelsCaptured = 0;
     for (let i = 0; i < swatchLabs.length; i++) {
         if (effectiveReachable[i] === 0) continue;
         let newReachable = effectiveReachable[i];
         newReachable = Math.min(newReachable, deltaELab(swatchLabs[i], winner.lab));
-        for (const fLab of filamentLabs) {
-            newReachable = Math.min(newReachable, distToSegment(swatchLabs[i], winner.lab, fLab));
+        for (const curve of winnerCurves) {
+            newReachable = Math.min(newReachable, minCurveDE(swatchLabs[i], curve));
         }
         if (newReachable < effectiveReachable[i]) pixelsCaptured += counts[i];
     }

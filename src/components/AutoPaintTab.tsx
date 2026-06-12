@@ -157,6 +157,10 @@ export default function AutoPaintTab({
 }: AutoPaintTabProps) {
     const [nextBestResult, setNextBestResult] = React.useState<NextBestColorResult | null>(null);
     const suggestionCountRef = React.useRef(0);
+
+    React.useEffect(() => {
+        setNextBestResult(null);
+    }, [filaments, imageSwatches]);
     const [localDitherLineWidth, setLocalDitherLineWidth] = React.useState(
         ditherLineWidth.toString()
     );
@@ -1021,6 +1025,7 @@ export default function AutoPaintTab({
                                                 td: nextBestResult.candidate!.td,
                                                 name: `Kromacut-Suggestion-${nn}`,
                                             });
+                                            setNextBestResult(null);
                                         }}
                                     >
                                         <Plus className="w-3 h-3 mr-1.5" />
