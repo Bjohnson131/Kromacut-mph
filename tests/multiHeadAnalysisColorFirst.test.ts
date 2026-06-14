@@ -216,13 +216,18 @@ test('analyzeMultiHeadWindowsColorFirst — LUT indices in pixelOptimalLUTIdx ar
 
 test('runMultiHeadLayerAnalysisColorFirst — returns empty for insufficient data', () => {
     const result = generateAutoLayers([BLACK, WHITE], gradient(10), LAYER_HEIGHT, FIRST_LAYER_HEIGHT);
+    const emptyShape = {
+        windows: [], colorAssignments: [], uniqueLayerCount: 0, patchedLayers: [],
+        colorLayerFilaments: new Map(), windowRunFilaments: [], nozzleAssignments: [],
+        preWindowFilaments: [], nonWindowedRanges: [],
+    };
     assert.deepEqual(
         runMultiHeadLayerAnalysisColorFirst([BLACK], result, gradient(10), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2),
-        { windows: [], colorAssignments: [], uniqueLayerCount: 0, patchedLayers: [], colorLayerFilaments: new Map() }
+        emptyShape
     );
     assert.deepEqual(
         runMultiHeadLayerAnalysisColorFirst([BLACK, WHITE], result, [], LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2),
-        { windows: [], colorAssignments: [], uniqueLayerCount: 0, patchedLayers: [], colorLayerFilaments: new Map() }
+        emptyShape
     );
 });
 

@@ -318,6 +318,7 @@ function App(): React.ReactElement | null {
                             ? (threeDState.patchedSliceData?.swatches
                                 ?? threeDState.autoPaintFilamentSwatches)?.map((s) => s.hex)
                             : undefined,
+                    extruderCount: threeDState.multiHeadMode ? threeDState.multiHeadCount : undefined,
                     onProgress,
                     onZipProgress,
                 }),

@@ -7,6 +7,14 @@ export interface Export3MFOptions {
     layerHeight?: number;
     firstLayerHeight?: number;
     layerFilamentColors?: string[]; // Optional per-layer filament colors (hex) for export
+    /**
+     * Number of physical nozzles on the target printer (e.g. 3 for a 3-head U1).
+     * When set, the 3MF declares exactly N nozzle_diameter entries and part extruder
+     * values are clamped to [1, N].  Orca must have a matching N-nozzle printer profile
+     * selected (e.g. Snapmaker U1) or it will crash on import.
+     * When omitted, falls back to AMS-style: single nozzle_diameter, K filament slots.
+     */
+    extruderCount?: number;
     onProgress?: (progress: number) => void;
     onZipProgress?: (progress: { percent: number; currentFile?: string | null }) => void;
 }
@@ -106,9 +114,27 @@ export async function exportObjectTo3MFBlob(
         return colorMap.get(hex)!;
     };
 
-    // Pre-calculate all materials so we can write the header correctly
+    // Pre-calculate all materials so we can write the header correctly.
+    // For multi-head mode also collect one representative color per nozzle so
+    // Orca's filament panel shows something meaningful (cosmetic only — basematerials
+    // drives actual rendering; each nozzle's true color changes at phase boundaries
+    // per the Kromacut filament-swap instructions).
+    const nozzleRepColor = new Map<number, string>(); // nozzle (1-based) -> RRGGBB
     for (let i = 0; i < meshes.length; i++) {
         getMaterialIndex(meshes[i].material, options?.layerFilamentColors?.[i]);
+        if (options?.extruderCount) {
+            const ni = typeof meshes[i].userData?.nozzleIndex === 'number'
+                ? meshes[i].userData.nozzleIndex : null;
+            if (ni !== null && !nozzleRepColor.has(ni)) {
+                const overrideHex = options.layerFilamentColors?.[i];
+                const mat = Array.isArray(meshes[i].material) ? meshes[i].material[0] : meshes[i].material;
+                let hex = normalizeHex(overrideHex) || 'FFFFFF';
+                if (!overrideHex && 'color' in mat && (mat as THREE.MeshStandardMaterial).color) {
+                    hex = (mat as THREE.MeshStandardMaterial).color.getHexString().toUpperCase();
+                }
+                nozzleRepColor.set(ni, hex);
+            }
+        }
     }
 
     // Prepare Project Settings (Minimal)
@@ -129,16 +155,31 @@ export async function exportObjectTo3MFBlob(
     // Helper to expand arrays to match color count
     const expand = (val: string, count: number) => Array(count).fill(val);
 
-    projectSettings.filament_colour = exportColors.map((c) => '#' + c);
-
-    projectSettings.filament_type = expand('PLA', exportColors.length);
-
-    projectSettings.filament_settings_id = expand(
-        'Generic PLA @Kromacut 0.4 nozzle',
-        exportColors.length
-    );
-
-    projectSettings.filament_vendor = expand('Generic', exportColors.length);
+    const N = options?.extruderCount ?? 0;
+    if (N >= 2) {
+        // Multi-head (true multi-nozzle, e.g. Snapmaker U1): exactly N slots.
+        // Orca requires nozzle_diameter.length == extruder count in the loaded printer
+        // profile — the user must select a matching N-nozzle profile before importing.
+        projectSettings.filament_colour = Array.from({ length: N }, (_, k) =>
+            '#' + (nozzleRepColor.get(k + 1) ?? 'FFFFFF')
+        );
+        projectSettings.filament_type = expand('PLA', N);
+        projectSettings.filament_settings_id = expand('Generic PLA @Kromacut 0.4 nozzle', N);
+        projectSettings.filament_vendor = expand('Generic', N);
+        projectSettings.nozzle_diameter = expand('0.4', N);
+        // Toolchanger/multi-head printers use relative extrusion (M83). Orca
+        // requires G92 E0 in layer_gcode to prevent floating-point drift, but our
+        // minimal project settings don't include it, so Orca falls back to an empty
+        // string instead of inheriting from the printer profile. Set it explicitly.
+        (projectSettings as Record<string, unknown>).layer_gcode =
+            ';BEFORE_LAYER_CHANGE\n;[layer_z]\nG92 E0\n';
+    } else {
+        // Single-head / AMS-style fallback: one nozzle_diameter, K colour slots.
+        projectSettings.filament_colour = exportColors.map((c) => '#' + c);
+        projectSettings.filament_type = expand('PLA', exportColors.length);
+        projectSettings.filament_settings_id = expand('Generic PLA @Kromacut 0.4 nozzle', exportColors.length);
+        projectSettings.filament_vendor = expand('Generic', exportColors.length);
+    }
 
     // Build object resources using a chunked writer to avoid OOM with massive arrays
     const xmlParts: string[] = [];
@@ -242,9 +283,12 @@ export async function exportObjectTo3MFBlob(
         // Use nozzle index from userData when present (multi-head: set by ThreeDView
         // from the DP nozzle-assignment result).  Fall back to color-order index for
         // single-head and spatial-variance paths.
-        const nozzleIdx = typeof mesh.userData?.nozzleIndex === 'number'
+        const rawNozzle = typeof mesh.userData?.nozzleIndex === 'number'
             ? mesh.userData.nozzleIndex
             : matIdx + 1;
+        // In multi-head mode clamp to [1, N] — a part referencing nozzle > N would
+        // cause an out-of-bounds vector access in OrcaSlicer.
+        const nozzleIdx = N >= 2 ? Math.max(1, Math.min(rawNozzle, N)) : rawNozzle;
         componentMeta.push({
             id: objectId,
             name: `Layer ${i + 1} (#${hex})`,

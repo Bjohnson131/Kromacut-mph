@@ -230,7 +230,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
     const isInstructionOverLimit = instructionColorCount > 256;
 
     // --- Swap Plan ---
-    const { swapPlan, copied, copyToClipboard } = useSwapPlan({
+    const { swapPlan, multiHeadPlan, copied, copyToClipboard } = useSwapPlan({
         colorOrder,
         colorSliceHeights,
         filtered,
@@ -240,6 +240,11 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         autoPaintResult,
         multiHeadWindows,
         patchedTransitionZones: persisted?.patchedTransitionZones,
+        nozzleAssignments: persisted?.nozzleAssignments,
+        windowRunFilaments: persisted?.windowRunFilaments,
+        preWindowFilaments: persisted?.preWindowFilaments,
+        nonWindowedRanges: persisted?.nonWindowedRanges,
+        filaments,
         disabled: isInstructionOverLimit,
     });
 
@@ -278,6 +283,10 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         const perColorLayerColors = activeResult && activeResult.patchedLayers.length > 0
             ? buildPerColorLayerColors(activeResult.patchedLayers, activeResult.colorLayerFilaments, filaments)
             : undefined;
+        const windowRunFilaments = activeResult?.windowRunFilaments;
+        const nozzleAssignments = activeResult?.nozzleAssignments;
+        const preWindowFilaments = activeResult?.preWindowFilaments;
+        const nonWindowedRanges = activeResult?.nonWindowedRanges;
         setMultiHeadWindows(newMultiHeadWindows);
 
         if (paintMode === 'autopaint' && autoPaintSliceData && autoPaintResult) {
@@ -311,6 +320,10 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 patchedTransitionZones,
                 patchedSliceData,
                 perColorLayerColors,
+                windowRunFilaments,
+                nozzleAssignments,
+                preWindowFilaments,
+                nonWindowedRanges,
             });
         } else {
             onChange({
@@ -336,6 +349,10 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 patchedTransitionZones,
                 patchedSliceData,
                 perColorLayerColors,
+                windowRunFilaments,
+                nozzleAssignments,
+                preWindowFilaments,
+                nonWindowedRanges,
             });
         }
     }, [
@@ -555,6 +572,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
             {/* Print Instructions */}
             <PrintInstructions
                 swapPlan={swapPlan}
+                multiHeadPlan={multiHeadPlan}
                 layerHeight={layerHeight}
                 slicerFirstLayerHeight={slicerFirstLayerHeight}
                 copied={copied}

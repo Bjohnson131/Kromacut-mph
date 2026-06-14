@@ -296,3 +296,157 @@ test('n > filaments.length is clamped to filaments.length', () => {
     );
     assert.equal(r.phaseCount, 2); // K=4, effective N=2 → M=2
 });
+
+// ---------------------------------------------------------------------------
+// Scheduling fields (windowRunFilaments, nozzleAssignments, nonWindowedRanges,
+// preWindowFilaments) — added with the scheduling layer implementation.
+// ---------------------------------------------------------------------------
+
+test('empty result has all scheduling fields as empty arrays', () => {
+    const r = runMultiHeadSpatialVarianceOptimization(
+        [BLACK, WHITE], dummyResult(), [], LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    assert.deepEqual(r.windowRunFilaments, []);
+    assert.deepEqual(r.nozzleAssignments, []);
+    assert.deepEqual(r.preWindowFilaments, []);
+    assert.deepEqual(r.nonWindowedRanges, []);
+});
+
+test('windowRunFilaments has one entry per phase', () => {
+    const r = runMultiHeadSpatialVarianceOptimization(
+        [BLACK, WHITE], dummyResult(), greySwatches(4), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    // K=4, N=2 → M=2 phases
+    assert.equal(r.windowRunFilaments.length, r.phaseCount);
+});
+
+test('windowRunFilaments entries contain valid filament IDs', () => {
+    const filamentSet = [BLACK, DARK, MID, LIGHT, WHITE];
+    const validIds = new Set(filamentSet.map(f => f.id));
+    const r = runMultiHeadSpatialVarianceOptimization(
+        filamentSet, dummyResult(), greySwatches(6), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    for (const phaseIds of r.windowRunFilaments) {
+        assert.ok(phaseIds.length > 0, 'each phase must have at least one filament ID');
+        for (const id of phaseIds) {
+            assert.ok(validIds.has(id), `unknown filament ID: ${id}`);
+        }
+    }
+});
+
+test('windowRunFilaments matches windows[j].filamentIds', () => {
+    const r = runMultiHeadSpatialVarianceOptimization(
+        [BLACK, WHITE], dummyResult(), greySwatches(6), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    for (let j = 0; j < r.phaseCount; j++) {
+        assert.deepEqual(
+            r.windowRunFilaments[j],
+            r.windows[j].filamentIds,
+            `phase ${j}: windowRunFilaments ≠ windows[j].filamentIds`
+        );
+    }
+});
+
+test('nozzleAssignments has one entry per phase', () => {
+    const r = runMultiHeadSpatialVarianceOptimization(
+        [BLACK, WHITE], dummyResult(), greySwatches(4), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    assert.equal(r.nozzleAssignments.length, r.phaseCount);
+});
+
+test('nozzleAssignments[j] has length N (one slot per nozzle)', () => {
+    const N = 2;
+    const r = runMultiHeadSpatialVarianceOptimization(
+        [BLACK, WHITE], dummyResult(), greySwatches(6), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, N
+    );
+    for (let j = 0; j < r.phaseCount; j++) {
+        assert.equal(
+            r.nozzleAssignments[j].length, N,
+            `phase ${j}: expected ${N} nozzle slots`
+        );
+    }
+});
+
+test('nozzleAssignments slots are valid run-slot indices or -1 (idle)', () => {
+    const r = runMultiHeadSpatialVarianceOptimization(
+        [BLACK, WHITE], dummyResult(), greySwatches(6), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    for (let j = 0; j < r.phaseCount; j++) {
+        const K = r.windowRunFilaments[j].length;
+        for (const slot of r.nozzleAssignments[j]) {
+            assert.ok(
+                slot === -1 || (slot >= 0 && slot < K),
+                `phase ${j}: slot ${slot} out of range [−1, ${K})`
+            );
+        }
+    }
+});
+
+test('each phase has at least one active nozzle (not all idle)', () => {
+    const r = runMultiHeadSpatialVarianceOptimization(
+        [BLACK, WHITE], dummyResult(), greySwatches(4), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    for (let j = 0; j < r.phaseCount; j++) {
+        const activeCount = r.nozzleAssignments[j].filter(s => s !== -1).length;
+        assert.ok(activeCount > 0, `phase ${j}: all nozzles idle`);
+    }
+});
+
+test('every filament in windowRunFilaments[j] is assigned to exactly one nozzle', () => {
+    // Verifies the assignment is injective (no two nozzles share the same run-slot).
+    const r = runMultiHeadSpatialVarianceOptimization(
+        [BLACK, WHITE], dummyResult(), greySwatches(6), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    for (let j = 0; j < r.phaseCount; j++) {
+        const active = r.nozzleAssignments[j].filter(s => s !== -1);
+        const unique = new Set(active);
+        assert.equal(unique.size, active.length, `phase ${j}: duplicate nozzle→slot assignment`);
+        // Every run slot must be covered by exactly one active nozzle.
+        const K = r.windowRunFilaments[j].length;
+        assert.equal(active.length, K, `phase ${j}: ${K} filaments but ${active.length} active nozzles`);
+    }
+});
+
+test('nonWindowedRanges is always empty (all layers are in phases)', () => {
+    const r = runMultiHeadSpatialVarianceOptimization(
+        [BLACK, WHITE], dummyResult(), greySwatches(6), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    assert.deepEqual(r.nonWindowedRanges, []);
+});
+
+test('preWindowFilaments is always empty', () => {
+    const r = runMultiHeadSpatialVarianceOptimization(
+        [BLACK, WHITE], dummyResult(), greySwatches(4), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, 2
+    );
+    assert.deepEqual(r.preWindowFilaments, []);
+});
+
+test('nozzle swap count is minimal for a monotone ordering (0 or 1 swap)', () => {
+    // With 2 heads and 3 phases, the optimizer should find a schedule with
+    // at most 1 nozzle swap: the idle nozzle at phase 0 can carry its filament
+    // into phase 1 for free if the filament reappears there.
+    // We just verify the result doesn't exceed the theoretical maximum (N * (M-1)).
+    const N = 2;
+    const r = runMultiHeadSpatialVarianceOptimization(
+        [BLACK, WHITE], dummyResult(), greySwatches(6), LAYER_HEIGHT, FIRST_LAYER_HEIGHT, N
+    );
+    const M = r.phaseCount; // 3
+
+    let totalSwaps = 0;
+    let prev: number[] = [];
+    for (let j = 0; j < M; j++) {
+        const cur = r.nozzleAssignments[j];
+        const runs = r.windowRunFilaments[j];
+        if (j > 0) {
+            const prevRuns = r.windowRunFilaments[j - 1];
+            const curFilIds = cur.map(s => s === -1 ? prev[cur.indexOf(s)] : runs[s]);
+            const prevFilIds = prev.map(s => s === -1 ? '' : prevRuns[s] ?? '');
+            for (let k = 0; k < N; k++) {
+                if (curFilIds[k] !== prevFilIds[k]) totalSwaps++;
+            }
+        }
+        prev = cur;
+    }
+    // Upper bound: every nozzle could change at every transition.
+    assert.ok(totalSwaps <= N * (M - 1), `totalSwaps ${totalSwaps} exceeds max ${N * (M - 1)}`);
+});

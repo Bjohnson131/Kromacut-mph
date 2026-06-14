@@ -20,6 +20,7 @@ import type { Filament } from '../types/index.ts';
 import { hexToRgb, getLuminance, deltaE, type RGB } from './autoPaint.ts';
 import type { PrinterLayer, WindowResult } from './multiHeadAnalysis.ts';
 import type { ColorFirstResult } from './multiHeadAnalysisColorFirst.ts';
+import { optimizeNozzleAssignments } from './multiHeadAnalysisColorFirst.ts';
 
 const FRONTLIT_TD_SCALE = 0.1;
 
@@ -121,6 +122,10 @@ export function runMultiHeadSpatialVarianceOptimization(
         uniqueLayerCount: 0,
         patchedLayers: [],
         colorLayerFilaments: new Map(),
+        windowRunFilaments: [],
+        nozzleAssignments: [],
+        preWindowFilaments: [],
+        nonWindowedRanges: [],
         spatialVarianceTotalHeight: 0,
         phaseOf: new Map(),
         phaseCount: 0,
@@ -294,6 +299,17 @@ export function runMultiHeadSpatialVarianceOptimization(
         };
     });
 
+    // ------------------------------------------------------------------
+    // 9. Schedule: nozzle assignments across phase transitions.
+    //    windowRunFilaments[j] = filament IDs active in phase j.
+    //    optimizeNozzleAssignments minimises head swaps across M-1 transitions.
+    // ------------------------------------------------------------------
+    const windowRunFilaments: string[][] = windows.map(w => w.filamentIds);
+    const nozzleAssignments = optimizeNozzleAssignments(windowRunFilaments, N);
+    // In SV mode every layer belongs to a phase — no non-windowed gaps.
+    const nonWindowedRanges: ColorFirstResult['nonWindowedRanges'] = [];
+    const preWindowFilaments: string[] = [];
+
     const varAfter = varianceProxy(uniqueColors, bands);
 
     // Reduction vs single-head baseline (the meaningful improvement).
@@ -330,6 +346,10 @@ export function runMultiHeadSpatialVarianceOptimization(
         uniqueLayerCount: M,
         patchedLayers,
         colorLayerFilaments,
+        windowRunFilaments,
+        nozzleAssignments,
+        preWindowFilaments,
+        nonWindowedRanges,
         spatialVarianceTotalHeight,
         phaseOf,
         phaseCount: M,
