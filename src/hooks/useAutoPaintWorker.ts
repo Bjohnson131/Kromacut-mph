@@ -28,6 +28,8 @@ export interface UseAutoPaintWorkerOptions {
     optimizerSeed?: number;
     regionWeightingMode: 'uniform' | 'center' | 'edge';
     imageDimensions?: { width: number; height: number } | null;
+    multiHeadMode?: boolean;
+    multiHeadCount?: number;
 }
 
 export interface UseAutoPaintWorkerResult {
@@ -60,6 +62,8 @@ export function useAutoPaintWorker(opts: UseAutoPaintWorkerOptions): UseAutoPain
         optimizerSeed,
         regionWeightingMode,
         imageDimensions,
+        multiHeadMode,
+        multiHeadCount,
     } = opts;
 
     const [autoPaintResult, setAutoPaintResult] = useState<AutoPaintResult | undefined>(undefined);
@@ -206,6 +210,8 @@ export function useAutoPaintWorker(opts: UseAutoPaintWorkerOptions): UseAutoPain
                     },
                     regionWeightingMode,
                     imageDimensions: imageDimensions ?? undefined,
+                    multiHeadMode,
+                    multiHeadCount,
                 };
 
                 worker.postMessage(request);
@@ -239,6 +245,8 @@ export function useAutoPaintWorker(opts: UseAutoPaintWorkerOptions): UseAutoPain
         optimizerSeed,
         regionWeightingMode,
         imageDimensions,
+        multiHeadMode,
+        multiHeadCount,
         getWorker,
         stableFilaments,
         stableImageSwatches,

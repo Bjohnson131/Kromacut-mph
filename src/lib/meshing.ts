@@ -31,6 +31,18 @@ interface MeshYieldOptions {
     yieldIntervalMs?: number;
     onYield?: () => Promise<void>;
     onProgress?: (progress: MeshProgress) => void;
+    /**
+     * Skip the downward-facing bottom cap. Used by the multi-head / per-colour-group
+     * meshing path when stacking sub-meshes on top of a lower layer so interior faces
+     * don't z-fight the layer beneath.
+     */
+    skipBottomCap?: boolean;
+    /**
+     * Skip the binary corner-contact repair pass. Used when a layer is split into
+     * multiple colour groups so adjacent groups aren't independently "repaired" into
+     * overlapping geometry.
+     */
+    skipRepair?: boolean;
 }
 
 interface GridMeshOptions extends MeshYieldOptions {
@@ -259,7 +271,10 @@ async function generateGridMesh(
     options: GridMeshOptions
 ): Promise<MeshData> {
     const startedAt = performance.now();
-    const meshingPixels = repairBinaryCornerContacts(activePixels, width, height);
+    const skipBottomCap = options.skipBottomCap ?? false;
+    const meshingPixels = options.skipRepair
+        ? activePixels
+        : repairBinaryCornerContacts(activePixels, width, height);
     const positions: number[] = [];
     const indices: number[] = [];
     let vertCount = 0;
@@ -501,7 +516,9 @@ async function generateGridMesh(
             for (let i = 0; i < boundary.length; i++) {
                 const next = (i + 1) % boundary.length;
                 indices.push(topCenter, topLoop[i], topLoop[next]);
-                indices.push(bottomCenter, bottomLoop[next], bottomLoop[i]);
+                if (!skipBottomCap) {
+                    indices.push(bottomCenter, bottomLoop[next], bottomLoop[i]);
+                }
             }
         } else {
             const facePoints = boundary.map(([vx, vy]) => new Vector2(vx, vy));
@@ -509,7 +526,9 @@ async function generateGridMesh(
 
             for (const [a, b, c] of faces) {
                 indices.push(topLoop[a], topLoop[b], topLoop[c]);
-                indices.push(bottomLoop[a], bottomLoop[c], bottomLoop[b]);
+                if (!skipBottomCap) {
+                    indices.push(bottomLoop[a], bottomLoop[c], bottomLoop[b]);
+                }
             }
         }
 

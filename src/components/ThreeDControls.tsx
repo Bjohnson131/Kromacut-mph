@@ -6,6 +6,10 @@ import { Button } from '@/components/ui/button';
 import { Check, RotateCcw, Loader2 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { autoPaintToSliceHeights } from '../lib/autoPaint';
+import { runMultiHeadLayerAnalysisColorFirst } from '../lib/multiHeadAnalysisColorFirst';
+import { runMultiHeadSpatialVarianceOptimization, type SpatialVarianceResult } from '../lib/multiHeadSpatialVariance';
+import { patchedLayersToPlan, patchedLayersToSliceData, buildPerColorLayerColors } from '../lib/patchedLayersToPlan';
+import type { WindowResult } from '../lib/multiHeadAnalysis';
 import {
     loadPrintSettingsFromStorage,
     savePrintSettingsToStorage,
@@ -127,6 +131,17 @@ export default function ThreeDControls({
         persisted?.regionWeightingMode ?? 'uniform'
     );
 
+    // --- Multi-head mode ---
+    const [multiHeadMode, setMultiHeadMode] = useState(persisted?.multiHeadMode ?? false);
+    const [multiHeadCount, setMultiHeadCount] = useState(persisted?.multiHeadCount ?? 4);
+    const [multiHeadSearchDepth, setMultiHeadSearchDepth] = useState<'fast' | 'balanced' | 'thorough'>(
+        persisted?.multiHeadSearchDepth ?? 'balanced'
+    );
+    const [multiHeadOptimizationMode, setMultiHeadOptimizationMode] = useState<'color-accuracy' | 'spatial-variance'>(
+        persisted?.multiHeadOptimizationMode ?? 'color-accuracy'
+    );
+    const [multiHeadWindows, setMultiHeadWindows] = useState<WindowResult[]>([]);
+
     useEffect(() => {
         if (optimizerAlgorithm === 'exhaustive' && filaments.length > 8) {
             setOptimizerAlgorithm('auto');
@@ -169,9 +184,13 @@ export default function ThreeDControls({
             optimizerSeed,
             regionWeightingMode,
             smoothMeshing,
+            multiHeadMode,
+            multiHeadCount,
+            multiHeadSearchDepth,
+            multiHeadOptimizationMode,
         });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [paintMode, filaments, enhancedColorMatch, allowRepeatedSwaps, heightDithering, ditherLineWidth, flatPaint, optimizerAlgorithm, optimizerSeed, regionWeightingMode, smoothMeshing]);
+    }, [paintMode, filaments, enhancedColorMatch, allowRepeatedSwaps, heightDithering, ditherLineWidth, flatPaint, optimizerAlgorithm, optimizerSeed, regionWeightingMode, smoothMeshing, multiHeadMode, multiHeadCount, multiHeadSearchDepth, multiHeadOptimizationMode]);
 
     useEffect(() => {
         savePrintSettingsToStorage({ layerHeight, slicerFirstLayerHeight, pixelSize, smoothMeshing });
@@ -223,7 +242,14 @@ export default function ThreeDControls({
         optimizerSeed,
         regionWeightingMode,
         imageDimensions,
+        multiHeadMode,
+        multiHeadCount,
     });
+
+    // Reset multi-head windows whenever a new autopaint result arrives
+    useEffect(() => {
+        setMultiHeadWindows([]);
+    }, [autoPaintResult]);
 
     const autoPaintSliceData = useMemo(() => {
         if (!autoPaintResult) return undefined;
@@ -289,7 +315,7 @@ export default function ThreeDControls({
     const isInstructionOverLimit = instructionColorCount > 64;
 
     // --- Swap Plan ---
-    const { swapPlan, copied, copyToClipboard } = useSwapPlan({
+    const { swapPlan, multiHeadPlan, copied, copyToClipboard } = useSwapPlan({
         colorOrder: instructionColorOrder,
         colorSliceHeights: instructionColorSliceHeights,
         filtered: instructionFiltered,
@@ -297,6 +323,13 @@ export default function ThreeDControls({
         slicerFirstLayerHeight: instructionSlicerFirstLayerHeight,
         paintMode: instructionPaintMode,
         autoPaintResult: instructionAutoPaintResult,
+        multiHeadWindows,
+        patchedTransitionZones: persisted?.patchedTransitionZones,
+        nozzleAssignments: persisted?.nozzleAssignments,
+        windowRunFilaments: persisted?.windowRunFilaments,
+        preWindowFilaments: persisted?.preWindowFilaments,
+        nonWindowedRanges: persisted?.nonWindowedRanges,
+        filaments,
         disabled: isInstructionOverLimit,
         flatPaint: instructionFlatPaint,
     });
@@ -304,6 +337,48 @@ export default function ThreeDControls({
     // --- Apply handler ---
     const handleApply = useCallback(() => {
         if (!onChange) return;
+
+        // Run the appropriate multi-head optimizer based on the selected mode.
+        const activeResult = (() => {
+            if (!multiHeadMode || paintMode !== 'autopaint' || !autoPaintResult) return null;
+            const swatches = filtered.map((s) => ({ hex: s.hex, count: s.count }));
+            if (multiHeadOptimizationMode === 'spatial-variance') {
+                return runMultiHeadSpatialVarianceOptimization(
+                    filaments, autoPaintResult, swatches,
+                    layerHeight, slicerFirstLayerHeight, multiHeadCount
+                );
+            }
+            return runMultiHeadLayerAnalysisColorFirst(
+                filaments, autoPaintResult, swatches,
+                layerHeight, slicerFirstLayerHeight, multiHeadCount
+            );
+        })();
+
+        const svResult = (multiHeadOptimizationMode === 'spatial-variance'
+            ? (activeResult as SpatialVarianceResult | null)
+            : null);
+        const spatialVarianceTotalHeight = svResult?.spatialVarianceTotalHeight;
+
+        const newMultiHeadWindows = activeResult?.windows ?? [];
+        const patchedTransitionZones = activeResult && activeResult.patchedLayers.length > 0
+            ? patchedLayersToPlan(activeResult.patchedLayers, filaments)
+            : undefined;
+        const patchedSliceData = activeResult && activeResult.patchedLayers.length > 0
+            ? patchedLayersToSliceData(activeResult.patchedLayers, filaments, slicerFirstLayerHeight)
+            : undefined;
+        const perColorLayerColors = activeResult && activeResult.patchedLayers.length > 0
+            ? buildPerColorLayerColors(activeResult.patchedLayers, activeResult.colorLayerFilaments, filaments)
+            : undefined;
+        // Per-colour filament-index-per-layer map. ThreeDView needs this (together with
+        // the window/nozzle data below) to resolve each sub-mesh's physical nozzle; if it
+        // isn't persisted, nozzle tagging silently no-ops and export3mf falls back to
+        // colour-order extruders and all-white filament colours.
+        const colorLayerFilaments = activeResult?.colorLayerFilaments;
+        const windowRunFilaments = activeResult?.windowRunFilaments;
+        const nozzleAssignments = activeResult?.nozzleAssignments;
+        const preWindowFilaments = activeResult?.preWindowFilaments;
+        const nonWindowedRanges = activeResult?.nonWindowedRanges;
+        setMultiHeadWindows(newMultiHeadWindows);
 
         if (paintMode === 'autopaint' && autoPaintSliceData && autoPaintResult) {
             onChange({
@@ -328,6 +403,20 @@ export default function ThreeDControls({
                 autoPaintFilamentSwatches: autoPaintSliceData.filamentSwatches,
                 calibrationLayerHeight,
                 smoothMeshing,
+                multiHeadMode,
+                multiHeadCount,
+                multiHeadSearchDepth,
+                multiHeadOptimizationMode,
+                spatialVarianceTotalHeight,
+                multiHeadWindows: newMultiHeadWindows,
+                patchedTransitionZones,
+                patchedSliceData,
+                perColorLayerColors,
+                colorLayerFilaments,
+                windowRunFilaments,
+                nozzleAssignments,
+                preWindowFilaments,
+                nonWindowedRanges,
             });
         } else {
             onChange({
@@ -345,6 +434,20 @@ export default function ThreeDControls({
                 regionWeightingMode,
                 calibrationLayerHeight,
                 smoothMeshing,
+                multiHeadMode,
+                multiHeadCount,
+                multiHeadSearchDepth,
+                multiHeadOptimizationMode,
+                spatialVarianceTotalHeight,
+                multiHeadWindows: newMultiHeadWindows,
+                patchedTransitionZones,
+                patchedSliceData,
+                perColorLayerColors,
+                colorLayerFilaments,
+                windowRunFilaments,
+                nozzleAssignments,
+                preWindowFilaments,
+                nonWindowedRanges,
             });
         }
     }, [
@@ -369,6 +472,12 @@ export default function ThreeDControls({
         smoothMeshing,
         autoPaintResult,
         autoPaintSliceData,
+        multiHeadMode,
+        multiHeadCount,
+        multiHeadSearchDepth,
+        multiHeadOptimizationMode,
+        filtered,
+        // spatialVarianceTotalHeight is derived inside handleApply; not a dep
     ]);
 
     return (
@@ -479,6 +588,14 @@ export default function ThreeDControls({
                     setOptimizerSeed={setOptimizerSeed}
                     regionWeightingMode={regionWeightingMode}
                     setRegionWeightingMode={setRegionWeightingMode}
+                    multiHeadMode={multiHeadMode}
+                    setMultiHeadMode={setMultiHeadMode}
+                    multiHeadCount={multiHeadCount}
+                    setMultiHeadCount={setMultiHeadCount}
+                    multiHeadSearchDepth={multiHeadSearchDepth}
+                    setMultiHeadSearchDepth={setMultiHeadSearchDepth}
+                    multiHeadOptimizationMode={multiHeadOptimizationMode}
+                    setMultiHeadOptimizationMode={setMultiHeadOptimizationMode}
                 />
 
                 {/* Manual Tab */}
@@ -516,11 +633,11 @@ export default function ThreeDControls({
                             orientation="vertical">
                             <SortableContent asChild>
                                 <div className="space-y-2">
-                                    {displayOrder.length > 64 ? (
+                                    {displayOrder.length > 256 ? (
                                         <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-md text-sm text-destructive-foreground">
                                             <p className="font-semibold mb-2">Too many colors ({displayOrder.length})</p>
                                             <p>
-                                                The image has more than 64 unique colors. Please reduce
+                                                The image has more than 256 unique colors. Please reduce
                                                 the image to fewer colors in 2D mode using the quantization
                                                 tools before switching to 3D mode.
                                             </p>
@@ -559,6 +676,7 @@ export default function ThreeDControls({
             {/* Print Instructions */}
             <PrintInstructions
                 swapPlan={swapPlan}
+                multiHeadPlan={multiHeadPlan}
                 layerHeight={instructionLayerHeight}
                 slicerFirstLayerHeight={instructionSlicerFirstLayerHeight}
                 copied={copied}

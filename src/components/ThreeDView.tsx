@@ -3,23 +3,16 @@ import type { PointerEvent } from 'react';
 import * as THREE from 'three';
 import * as SliderPrimitive from '@radix-ui/react-slider';
 import useThreeScene from '../hooks/useThreeScene';
-import {
-    generateGreedyMesh,
-    generateSmoothMesh,
-    type MeshData,
-    type MeshMetrics,
-    type MeshProgress,
-} from '../lib/meshing';
-import { LAYER_ACTIVATION_EPSILON } from '../lib/layerActivation';
-import { normalizeHexColor as normalizeHexColorValue } from '../lib/colorUtils';
-import { buildFlatPaintLayout, heightMapToFlatPaintLayerCounts } from '../lib/flatPaint';
+import { generateGreedyMesh, generateSmoothMesh } from '../lib/meshing';
 import {
     clampProgress,
+    layeredBuildLayerProgress,
     layeredBuildScanProgress,
-    progressInSpan,
 } from '../lib/progress';
 import { Layers } from 'lucide-react';
 import ProgressOverlay from './ProgressOverlay';
+import type { WindowResult } from '../lib/multiHeadAnalysis';
+import type { MultiHeadRangeAssignment } from '../types';
 
 interface ThreeDViewProps {
     imageSrc?: string | null;
@@ -42,9 +35,20 @@ interface ThreeDViewProps {
     enhancedColorMatch?: boolean; // Use color-distance mapping instead of luminance
     heightDithering?: boolean; // Floyd-Steinberg error diffusion on height map
     ditherLineWidth?: number; // Minimum dot size in mm for dithering
-    smoothMeshing?: boolean; // Smooth connected boundaries using welded grid topology
+    smoothMeshing?: boolean; // Use marching squares for smooth edges
+    // Multi-head per-pixel colour mixing: image-palette hex -> blended colour per layer.
+    // When present (auto-paint mode), each layer band is split per pixel colour so
+    // different pixels at the same height can show different filament colours.
+    perColorLayerColors?: Map<string, string[]>;
+    // Multi-head nozzle assignment props — used to tag each sub-mesh with the physical
+    // nozzle that prints it so export3mf can set the correct extruder attribute.
+    colorLayerFilaments?: Map<string, number[]>;
+    nozzleAssignments?: number[][];
+    windowRunFilaments?: string[][];
+    multiHeadWindows?: WindowResult[];
+    nonWindowedRanges?: MultiHeadRangeAssignment[];
+    filamentIds?: string[];
     isOrtho?: boolean;
-    flatPaint?: boolean; // Build a flat face-down slab (Flat Paint style, auto-paint only)
 }
 
 // Convert hex color to RGB tuple
@@ -59,6 +63,56 @@ function hexToRGB(hex: string): [number, number, number] {
 // Calculate perceived luminance (0-1 range)
 function getLuminance(r: number, g: number, b: number): number {
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+/** Map a filament index + layer index to a 1-based nozzle number using the DP result. */
+function resolveNozzleIndex(
+    filamentIdx: number,
+    layerIdx: number,
+    filamentIds: string[],
+    windows: WindowResult[],
+    windowRunFilaments: string[][],
+    nozzleAssignments: number[][],
+    debugMisses?: Map<number, Set<string>>,
+    nonWindowedRanges?: MultiHeadRangeAssignment[]
+): number {
+    if (filamentIdx < 0 || filamentIdx >= filamentIds.length) return 1;
+    const fid = filamentIds[filamentIdx];
+
+    // Fast path: layer is inside a real window — look up directly.
+    for (let w = 0; w < windows.length; w++) {
+        const win = windows[w];
+        if (layerIdx < win.windowStart || layerIdx > win.windowEnd) continue;
+        const runs = windowRunFilaments[w] ?? [];
+        const assgn = nozzleAssignments[w] ?? [];
+        for (let k = 0; k < assgn.length; k++) {
+            if (assgn[k] !== -1 && runs[assgn[k]] === fid) return k + 1;
+        }
+        break; // layer is in this window but filament not assigned — fall through
+    }
+
+    // Check non-windowed ranges (pre-window, gaps, post-window).
+    // nozzleFilaments[k] is the realized filament on head k+1 for this range.
+    if (nonWindowedRanges) {
+        for (const range of nonWindowedRanges) {
+            if (layerIdx < range.rangeStart || layerIdx > range.rangeEnd) continue;
+            const idx = range.nozzleFilaments.indexOf(fid);
+            if (idx >= 0) return idx + 1;
+            // Filament not in this range's head state — genuine miss.
+            if (debugMisses) {
+                if (!debugMisses.has(layerIdx)) debugMisses.set(layerIdx, new Set());
+                debugMisses.get(layerIdx)!.add(fid);
+            }
+            return 1;
+        }
+    }
+
+    // Layer not covered by any window or range — fall back.
+    if (debugMisses) {
+        if (!debugMisses.has(layerIdx)) debugMisses.set(layerIdx, new Set());
+        debugMisses.get(layerIdx)!.add(fid);
+    }
+    return 1;
 }
 
 // Nearest-color match with small cache to avoid exact equality issues
@@ -94,7 +148,6 @@ interface KromacutExportLayerData {
     height: number;
     pixelSize: number;
     topZ: number;
-    compactHeightfield?: boolean;
 }
 
 interface LayerPreviewSegment {
@@ -137,7 +190,10 @@ function sliderSpanPercentCss(startPercent: number, endPercent: number) {
 }
 
 function normalizeHexColor(hex: string | undefined) {
-    return normalizeHexColorValue(hex, '#3b82f6');
+    const fallback = '#3b82f6';
+    if (!hex) return fallback;
+    const value = hex.startsWith('#') ? hex : `#${hex}`;
+    return /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : fallback;
 }
 
 function layerNumberForTransition(
@@ -202,33 +258,6 @@ function createFlatShadedGeometry(
     return geom;
 }
 
-function remapMeshZRange(mesh: MeshData, baseZ: number, topZ: number, heightScale: number): MeshData {
-    const positions = new Float32Array(mesh.positions.length);
-    let minZ = Infinity;
-    let maxZ = -Infinity;
-
-    for (let i = 2; i < mesh.positions.length; i += 3) {
-        minZ = Math.min(minZ, mesh.positions[i]);
-        maxZ = Math.max(maxZ, mesh.positions[i]);
-    }
-
-    const sourceSpan = maxZ - minZ || 1;
-    const targetBase = baseZ * heightScale;
-    const targetSpan = (topZ - baseZ) * heightScale;
-
-    for (let i = 0; i < mesh.positions.length; i += 3) {
-        positions[i] = mesh.positions[i];
-        positions[i + 1] = mesh.positions[i + 1];
-        positions[i + 2] = targetBase + ((mesh.positions[i + 2] - minZ) / sourceSpan) * targetSpan;
-    }
-
-    return {
-        positions,
-        indices: mesh.indices,
-        metrics: mesh.metrics,
-    };
-}
-
 interface E2EBuildMetrics {
     status: 'building' | 'complete';
     startedAt?: number;
@@ -242,7 +271,6 @@ interface E2EBuildMetrics {
     visibleMeshCount?: number;
     vertexCount?: number;
     triangleCount?: number;
-    layerMetrics?: E2ELayerBuildMetrics[];
     dimensions?: {
         width: number;
         height: number;
@@ -256,19 +284,7 @@ interface E2EBuildMetrics {
         autoPaintEnabled: boolean;
         enhancedColorMatch: boolean;
         heightDithering: boolean;
-        flatPaint?: boolean;
     };
-}
-
-type BuildOverlayStep = ReturnType<typeof getBuildOverlayStep>;
-
-interface E2ELayerBuildMetrics {
-    layerIndex: number;
-    swatchIndex: number;
-    activePixelCount: number;
-    vertexCount: number;
-    triangleCount: number;
-    metrics?: MeshMetrics;
 }
 
 declare global {
@@ -290,12 +306,6 @@ function updateE2EBuild(metrics: E2EBuildMetrics) {
             next,
         ];
     }
-}
-
-function clearLastMeshRef() {
-    if (typeof window === 'undefined') return;
-    (window as unknown as { __KROMACUT_LAST_MESH?: THREE.Object3D }).__KROMACUT_LAST_MESH =
-        undefined;
 }
 
 function collectMeshStats(root: THREE.Object3D) {
@@ -341,14 +351,18 @@ export default function ThreeDView({
     heightDithering = false,
     ditherLineWidth = 0.42,
     smoothMeshing = false,
+    perColorLayerColors,
+    colorLayerFilaments,
+    nozzleAssignments,
+    windowRunFilaments,
+    multiHeadWindows,
+    nonWindowedRanges,
+    filamentIds,
     isOrtho = false,
-    flatPaint = false,
 }: ThreeDViewProps) {
     const mountRef = useRef<HTMLDivElement | null>(null);
     const [isBuilding, setIsBuilding] = useState(false);
-    const [activeBuildSmoothMeshing, setActiveBuildSmoothMeshing] = useState(smoothMeshing);
     const [buildProgress, setBuildProgress] = useState(0);
-    const [buildOverlayStep, setBuildOverlayStep] = useState<BuildOverlayStep | null>(null);
     const [modelDimensions, setModelDimensions] = useState<{
         width: number;
         height: number;
@@ -372,7 +386,6 @@ export default function ThreeDView({
 
     const progressRef = useRef(0);
     const progressLastUpdateRef = useRef(0);
-    const buildOverlayLastUpdateRef = useRef(0);
     const pushProgress = (value: number) => {
         const nextValue = clampProgress(value);
         progressRef.current = nextValue;
@@ -380,18 +393,6 @@ export default function ThreeDView({
         if (nextValue <= 0 || nextValue >= 1 || now - progressLastUpdateRef.current > 60) {
             progressLastUpdateRef.current = now;
             setBuildProgress(nextValue);
-        }
-    };
-    const pushBuildOverlayStep = (value: BuildOverlayStep) => {
-        const now = performance.now();
-        const stepProgress = clampProgress(value.stepProgress ?? 0);
-
-        if (stepProgress <= 0 || stepProgress >= 1 || now - buildOverlayLastUpdateRef.current > 60) {
-            buildOverlayLastUpdateRef.current = now;
-            setBuildOverlayStep({
-                ...value,
-                stepProgress,
-            });
         }
     };
 
@@ -441,9 +442,6 @@ export default function ThreeDView({
 
     const layerPreviewSegments = useMemo<LayerPreviewSegment[]>(() => {
         if (maxModelHeight <= 0 || colorOrder.length === 0) return [];
-        // Flat Paint: printed layers contain several filaments side by side, so a
-        // single global swap sequence does not exist — show a plain track.
-        if (flatPaint) return [];
 
         const segments: LayerPreviewSegment[] = [];
         let running = 0;
@@ -493,7 +491,6 @@ export default function ThreeDView({
         filamentSwatches,
         swatches,
         layerHeight,
-        flatPaint,
     ]);
 
     const updateHoveredSegment = (
@@ -519,83 +516,29 @@ export default function ThreeDView({
         setPreviewHeight(Math.max(low, high));
     };
 
-    // 2. Rebuild mesh geometry only when the parent sends an explicit build signal.
+    // 2. Rebuild mesh geometry whenever inputs change (debounced, progressive, adaptive resolution)
     const buildTokenRef = useRef(0);
     const debounceTimerRef = useRef<number | null>(null);
     const lastParamsKeyRef = useRef<string | null>(null);
     const lastRebuildRef = useRef<number>(rebuildSignal);
-    const lastImageSrcRef = useRef<string | null | undefined>(imageSrc);
-
-    useEffect(() => {
-        return () => {
-            if (debounceTimerRef.current !== null) {
-                window.clearTimeout(debounceTimerRef.current);
-                debounceTimerRef.current = null;
-            }
-        };
-    }, []);
 
     useEffect(() => {
         const modelGroup = modelGroupRef.current;
-        if (!modelGroup) return;
+        if (!modelGroup || !imageSrc) return;
 
-        const imageChanged = imageSrc !== lastImageSrcRef.current;
-        lastImageSrcRef.current = imageSrc;
-
-        if (!imageSrc) {
-            buildTokenRef.current++;
-            if (debounceTimerRef.current !== null) {
-                window.clearTimeout(debounceTimerRef.current);
-                debounceTimerRef.current = null;
-            }
-            modelGroup.clear();
-            clearLastMeshRef();
-            setIsBuilding(false);
-            setModelDimensions(null);
-            setMaxModelHeight(0);
-            setPreviewMinHeight(0);
-            setPreviewHeight(null);
-            requestRender();
-            return;
-        }
-
-        if (imageChanged) {
-            buildTokenRef.current++;
+        // If parent requested a rebuild via the rebuildSignal, clear the last params key
+        // to force the effect to proceed even if params otherwise match.
+        if (rebuildSignal !== lastRebuildRef.current) {
             lastParamsKeyRef.current = null;
-            if (debounceTimerRef.current !== null) {
-                window.clearTimeout(debounceTimerRef.current);
-                debounceTimerRef.current = null;
-            }
-            modelGroup.clear();
-            clearLastMeshRef();
-            setIsBuilding(false);
-            setModelDimensions(null);
-            setMaxModelHeight(0);
-            setPreviewMinHeight(0);
-            setPreviewHeight(null);
-            requestRender();
+            lastRebuildRef.current = rebuildSignal;
         }
-
-        const rebuildRequested = rebuildSignal !== lastRebuildRef.current;
-        if (!rebuildRequested) return;
-
-        lastParamsKeyRef.current = null;
-        lastRebuildRef.current = rebuildSignal;
 
         // Don't build if there are no layers configured
         if (!colorOrder || colorOrder.length === 0 || !swatches || swatches.length === 0) {
-            buildTokenRef.current++;
-            if (debounceTimerRef.current !== null) {
-                window.clearTimeout(debounceTimerRef.current);
-                debounceTimerRef.current = null;
-            }
             modelGroup.clear();
-            clearLastMeshRef();
             setIsBuilding(false);
             return;
         }
-
-        const buildSmoothMeshing = smoothMeshing && !flatPaint;
 
         // Stable key of inputs to avoid duplicate builds when references unchanged
         const paramsKey = JSON.stringify({
@@ -606,8 +549,6 @@ export default function ThreeDView({
             colorSliceHeights,
             colorOrder,
             swatches: swatches.map((s) => s.hex),
-            // Filament colors shape Flat Paint geometry (zone merging + export groups)
-            filamentSwatches: filamentSwatches?.map((s) => s.hex),
             pixelSize,
             heightScale,
             stepped,
@@ -619,22 +560,23 @@ export default function ThreeDView({
             heightDithering,
             ditherLineWidth,
             smoothMeshing,
-            flatPaint,
+            // Signature for the per-pixel colour map (keys + first colour array)
+            // so a new multi-head result forces a rebuild.
+            perColorLayerColors: perColorLayerColors
+                ? `${perColorLayerColors.size}:${[...perColorLayerColors.values()][0]?.join('') ?? ''}`
+                : null,
         });
         if (paramsKey === lastParamsKeyRef.current) return; // nothing changed logically
         lastParamsKeyRef.current = paramsKey;
 
         // Debounce rapid changes (e.g., dragging slider)
-        if (debounceTimerRef.current !== null) window.clearTimeout(debounceTimerRef.current);
-        const token = ++buildTokenRef.current;
-        setActiveBuildSmoothMeshing(buildSmoothMeshing);
+        if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = window.setTimeout(() => {
-            debounceTimerRef.current = null;
+            const token = ++buildTokenRef.current;
             const buildStartedAt = performance.now();
             // mark that a build is in progress for the overlay
             setIsBuilding(true);
             pushProgress(0);
-            setBuildOverlayStep(null);
             updateE2EBuild({
                 status: 'building',
                 startedAt: buildStartedAt,
@@ -642,11 +584,10 @@ export default function ThreeDView({
                     pixelSize,
                     layerHeight,
                     slicerFirstLayerHeight,
-                    smoothMeshing: buildSmoothMeshing,
+                    smoothMeshing,
                     autoPaintEnabled,
                     enhancedColorMatch,
                     heightDithering,
-                    flatPaint,
                 },
             });
 
@@ -691,47 +632,9 @@ export default function ThreeDView({
 
                 // Clear current model
                 modelGroup.clear();
-                clearLastMeshRef();
 
                 const YIELD_MS = 12;
                 let lastYield = performance.now();
-                const meshBuildMetrics: E2ELayerBuildMetrics[] = [];
-                const buildStepCount = Math.max(1, colorOrder.length + 1);
-                const pushScanDetail = (label: string, progress: number) => {
-                    pushBuildOverlayStep({
-                        stepLabel: label,
-                        stepIndex: 1,
-                        stepCount: buildStepCount,
-                        stepProgress: progress,
-                    });
-                };
-                const pushLayerDetail = (
-                    buildLayerIndex: number,
-                    label: string,
-                    progress: number
-                ) => {
-                    const stepProgress = clampProgress(progress);
-                    pushBuildOverlayStep({
-                        stepLabel: `Layer ${buildLayerIndex + 1} of ${colorOrder.length}: ${label}`,
-                        stepIndex: Math.min(buildStepCount, buildLayerIndex + 2),
-                        stepCount: buildStepCount,
-                        stepProgress,
-                    });
-                    pushProgress(
-                        progressInSpan(
-                            (buildLayerIndex + 1) / buildStepCount,
-                            1 / buildStepCount,
-                            stepProgress
-                        )
-                    );
-                };
-                const meshProgressReporter = (buildLayerIndex: number) => (progress: MeshProgress) => {
-                    pushLayerDetail(
-                        buildLayerIndex,
-                        progress.label,
-                        progressInSpan(0.35, 0.55, progress.progress)
-                    );
-                };
 
                 if (autoPaintEnabled && autoPaintTotalHeight && autoPaintTotalHeight > 0) {
                     // === AUTO-PAINT MODE ===
@@ -992,10 +895,6 @@ export default function ThreeDView({
                                 pixelHeightMap[mapIdx] = targetHeight;
                                 colorHeightCache.set(cacheKey, targetHeight);
                             }
-                            pushScanDetail(
-                                'Mapping image colors to printable heights',
-                                (py - minY + 1) / boxH
-                            );
                             pushProgress(
                                 layeredBuildScanProgress(py - minY, boxH, colorOrder.length)
                             );
@@ -1228,167 +1127,103 @@ export default function ThreeDView({
 
                                 pixelHeightMap[mapIdx] = pixelHeight;
                             }
-                            pushScanDetail(
-                                'Mapping image luminance to printable heights',
-                                (py - minY + 1) / boxH
-                            );
                             pushProgress(
                                 layeredBuildScanProgress(py - minY, boxH, colorOrder.length)
                             );
                         }
                     }
 
-                    if (flatPaint) {
-                        // === FLAT_PAINT: uniform face-down slab ===
-                        // Reverse each pixel column so the visible blend layer
-                        // touches the plate (mirrored in X so the artwork reads
-                        // correctly once the finished print is flipped over),
-                        // backfill behind the columns with the foundation
-                        // filament, and add a transparent carrier first layer.
-                        const orientedCounts = new Uint16Array(boxW * boxH);
-                        {
-                            const rawCounts = heightMapToFlatPaintLayerCounts(
-                                pixelHeightMap,
-                                cumulativeHeights,
-                                layerHeight
-                            );
-                            for (let y = 0; y < boxH; y++) {
-                                const srcRow = y * boxW;
-                                const dstRow = (boxH - 1 - y) * boxW;
-                                for (let x = 0; x < boxW; x++) {
-                                    orientedCounts[dstRow + (boxW - 1 - x)] =
-                                        rawCounts[srcRow + x];
+                    // Multi-head per-pixel colour: classify each pixel to its nearest
+                    // image-palette colour once, so layer bands can be split by the
+                    // per-colour blended colour at that layer.
+                    let pixelColorSeq: (string[] | null)[] | null = null;
+                    // pixelPaletteIdx stores the palette index for each pixel so the
+                    // group-building loop can resolve filament→nozzle assignments.
+                    let pixelPaletteIdx: Int16Array | null = null;
+                    let perColorPaletteHexes: string[] | null = null;
+                    if (perColorLayerColors && perColorLayerColors.size > 0) {
+                        const paletteHexes = [...perColorLayerColors.keys()];
+                        perColorPaletteHexes = paletteHexes;
+                        const paletteRGB = paletteHexes.map(hexToRGB);
+                        const paletteSeqs = paletteHexes.map((h) => perColorLayerColors.get(h)!);
+                        pixelColorSeq = new Array(boxW * boxH).fill(null);
+                        pixelPaletteIdx = new Int16Array(boxW * boxH).fill(-1);
+                        for (let y = 0; y < boxH; y++) {
+                            for (let x = 0; x < boxW; x++) {
+                                const idx = ((minY + y) * fullW + (minX + x)) * 4;
+                                if (data[idx + 3] === 0) continue;
+                                let best = 0;
+                                let bestD = Infinity;
+                                for (let p = 0; p < paletteRGB.length; p++) {
+                                    const dr = data[idx] - paletteRGB[p][0];
+                                    const dg = data[idx + 1] - paletteRGB[p][1];
+                                    const db = data[idx + 2] - paletteRGB[p][2];
+                                    const d = dr * dr + dg * dg + db * db;
+                                    if (d < bestD) { bestD = d; best = p; }
                                 }
+                                pixelColorSeq[(boxH - 1 - y) * boxW + x] = paletteSeqs[best];
+                                pixelPaletteIdx[(boxH - 1 - y) * boxW + x] = best;
                             }
                         }
+                    }
 
-                        const layout = buildFlatPaintLayout({
-                            layerCounts: orientedCounts,
-                            width: boxW,
-                            height: boxH,
-                            layerCount: colorOrder.length,
-                            layerHeight,
-                            carrierThickness: Math.max(slicerFirstLayerHeight, layerHeight),
-                            layerVirtualHexes: colorOrder.map(
-                                (swatchIdx) => swatches[swatchIdx]?.hex ?? '#888888'
-                            ),
-                            layerFilamentHexes: colorOrder.map(
-                                (swatchIdx) =>
-                                    (filamentSwatches?.[swatchIdx] ?? swatches[swatchIdx])?.hex ??
-                                    '#888888'
-                            ),
-                        });
+                    // Build each layer once; smooth meshing does not run overhang repair passes.
+                    const layerBuildOrder = Array.from(
+                        { length: colorOrder.length },
+                        (_, layerIndex) => layerIndex
+                    );
+                    const builtLayerMeshes: THREE.Mesh[] = [];
+                    // Tracks layers outside all windows where resolveNozzleIndex falls back
+                    // to nozzle 1. key = layerIdx, value = set of filament IDs that couldn't
+                    // be resolved to a specific head.
+                    const nozzleResolveMisses = new Map<number, Set<string>>();
 
-                        const partCount = Math.max(1, layout.parts.length);
-                        const scanSpanEnd = 1 / (colorOrder.length + 1);
-                        const pushPartDetail = (
-                            partIndex: number,
-                            label: string,
-                            progress: number
-                        ) => {
-                            const stepProgress = clampProgress(progress);
-                            pushBuildOverlayStep({
-                                stepLabel: `Flat Paint part ${partIndex + 1} of ${partCount}: ${label}`,
-                                stepIndex: Math.min(partCount + 1, partIndex + 2),
-                                stepCount: partCount + 1,
-                                stepProgress,
-                            });
+                    for (
+                        let buildLayerIndex = 0;
+                        buildLayerIndex < layerBuildOrder.length;
+                        buildLayerIndex++
+                    ) {
+                        const i = layerBuildOrder[buildLayerIndex];
+                        if (token !== buildTokenRef.current) return;
+
+                        const swatchIdx = colorOrder[i];
+                        if (!swatches[swatchIdx]) continue;
+                        const colorHex = swatches[swatchIdx].hex;
+                        const thickness =
+                            i === 0
+                                ? Math.max(
+                                      colorSliceHeights[swatchIdx] || 0,
+                                      slicerFirstLayerHeight
+                                  )
+                                : colorSliceHeights[swatchIdx] || 0;
+                        if (thickness <= 0.0001) continue;
+
+                        const topZ = i === 0 ? cumulativeHeights[0] : cumulativeHeights[i];
+                        const baseZ = i === 0 ? 0 : cumulativeHeights[i - 1];
+
+                        // Identify active pixels for this layer using precomputed height map
+                        const activePixels = new Uint8Array(boxW * boxH);
+                        let activeCount = 0;
+
+                        for (let y = 0; y < boxH; y++) {
+                            for (let x = 0; x < boxW; x++) {
+                                const mapIdx = y * boxW + x;
+                                const pixelHeight = pixelHeightMap[mapIdx];
+
+                                if (pixelHeight > 0 && pixelHeight >= topZ - 0.001) {
+                                    activePixels[(boxH - 1 - y) * boxW + x] = 1;
+                                    activeCount++;
+                                }
+                            }
+
                             pushProgress(
-                                progressInSpan(
-                                    scanSpanEnd,
-                                    1 - scanSpanEnd,
-                                    (partIndex + stepProgress) / partCount
+                                layeredBuildLayerProgress(
+                                    buildLayerIndex,
+                                    y,
+                                    boxH,
+                                    colorOrder.length
                                 )
                             );
-                        };
-
-                        const flatMeshCache = new WeakMap<Uint8Array, Promise<MeshData>>();
-                        const partIdxForProgress = (part: (typeof layout.parts)[number]) =>
-                            layout.parts.indexOf(part);
-                        const getFlatMaskMesh = (part: (typeof layout.parts)[number]) => {
-                            const cached = flatMeshCache.get(part.mask);
-                            if (cached) return cached;
-
-                            const promise = generateGreedyMesh(
-                                part.mask,
-                                boxW,
-                                boxH,
-                                1,
-                                0,
-                                pixelSize,
-                                1,
-                                {
-                                    yieldIntervalMs: 8,
-                                    onProgress: (progress: MeshProgress) => {
-                                        pushPartDetail(
-                                            partIdxForProgress(part),
-                                            progress.label,
-                                            progressInSpan(0, 0.9, progress.progress)
-                                        );
-                                    },
-                                }
-                            );
-                            flatMeshCache.set(part.mask, promise);
-                            return promise;
-                        };
-
-                        for (let partIdx = 0; partIdx < layout.parts.length; partIdx++) {
-                            const part = layout.parts[partIdx];
-                            if (token !== buildTokenRef.current) return;
-                            if (part.activeCount === 0) continue;
-
-                            // Flat Paint always uses the greedy mesher: smoothed
-                            // boundaries would open gaps between side-by-side
-                            // color regions inside the slab.
-                            const generatedMesh = remapMeshZRange(
-                                await getFlatMaskMesh(part),
-                                part.baseZ,
-                                part.topZ,
-                                heightScale
-                            );
-                            meshBuildMetrics.push({
-                                layerIndex: partIdx,
-                                swatchIndex: part.classIndex,
-                                activePixelCount: part.activeCount,
-                                vertexCount: generatedMesh.positions.length / 3,
-                                triangleCount: generatedMesh.indices.length / 3,
-                                metrics: generatedMesh.metrics,
-                            });
-
-                            const geom = createFlatShadedGeometry(
-                                generatedMesh.positions,
-                                generatedMesh.indices,
-                                {
-                                    activePixels: part.mask,
-                                    width: boxW,
-                                    height: boxH,
-                                    pixelSize,
-                                    topZ: part.topZ * heightScale,
-                                    compactHeightfield: true,
-                                }
-                            );
-                            const isCarrier = part.kind === 'carrier';
-                            const mat = new THREE.MeshStandardMaterial({
-                                color: part.previewHex,
-                                side: THREE.FrontSide,
-                                metalness: 0,
-                                roughness: isCarrier ? 0.3 : 0.7,
-                                flatShading: true,
-                                transparent: isCarrier,
-                                opacity: isCarrier ? 0.3 : 1,
-                            });
-
-                            const mesh = new THREE.Mesh(geom, mat);
-                            // Store slab Z range for the preview slider
-                            mesh.userData.baseZ = part.baseZ;
-                            mesh.userData.topZ = part.topZ;
-                            // Export metadata: one 3MF object per physical filament
-                            mesh.userData.kromacutExportGroup = part.exportGroup;
-                            mesh.userData.kromacutFilamentHex = part.filamentHex;
-                            mesh.userData.kromacutMaterialKey = part.exportGroup;
-                            mesh.userData.kromacutPartName = part.partName;
-                            modelGroup.add(mesh);
-                            pushPartDetail(partIdx, 'Part mesh complete', 1);
 
                             if (performance.now() - lastYield > YIELD_MS) {
                                 await new Promise((r) => requestAnimationFrame(r));
@@ -1396,103 +1231,76 @@ export default function ThreeDView({
                                 lastYield = performance.now();
                             }
                         }
-                    } else {
-                        // Build each layer once; smooth meshing does not run overhang repair passes.
-                        const layerBuildOrder = Array.from(
-                            { length: colorOrder.length },
-                            (_, layerIndex) => layerIndex
-                        );
-                        const builtLayerMeshes: Array<THREE.Mesh | undefined> = new Array(
-                            colorOrder.length
-                        );
 
-                        for (
-                            let buildLayerIndex = 0;
-                            buildLayerIndex < layerBuildOrder.length;
-                            buildLayerIndex++
-                        ) {
-                            const i = layerBuildOrder[buildLayerIndex];
-                            if (token !== buildTokenRef.current) return;
+                        if (activeCount === 0) continue;
 
-                            const swatchIdx = colorOrder[i];
-                            if (!swatches[swatchIdx]) continue;
-                            const colorHex = swatches[swatchIdx].hex;
-                            const thickness =
-                                i === 0
-                                    ? Math.max(
-                                          colorSliceHeights[swatchIdx] || 0,
-                                          slicerFirstLayerHeight
-                                      )
-                                    : colorSliceHeights[swatchIdx] || 0;
-                            if (thickness <= 0.0001) continue;
-
-                            const topZ = i === 0 ? cumulativeHeights[0] : cumulativeHeights[i];
-                            const baseZ = i === 0 ? 0 : cumulativeHeights[i - 1];
-
-                            // Identify active pixels for this layer using precomputed height map
-                            const activePixels = new Uint8Array(boxW * boxH);
-                            let activeCount = 0;
-
-                            for (let y = 0; y < boxH; y++) {
-                                for (let x = 0; x < boxW; x++) {
-                                    const mapIdx = y * boxW + x;
-                                    const pixelHeight = pixelHeightMap[mapIdx];
-
-                                    if (
-                                        pixelHeight > 0 &&
-                                        pixelHeight >= topZ - LAYER_ACTIVATION_EPSILON
-                                    ) {
-                                        activePixels[(boxH - 1 - y) * boxW + x] = 1;
-                                        activeCount++;
+                        // Partition this layer's active pixels by the colour each
+                        // pixel shows at layer i. In multi-head per-pixel mode that
+                        // splits the band into several colour groups; otherwise it is
+                        // a single group with the band's blended colour.
+                        const groups = new Map<string, Uint8Array>();
+                        // Parallel map: groupHex -> nozzle index (1-based). Populated
+                        // from the first pixel of each group using the DP result.
+                        const groupNozzle = new Map<string, number>();
+                        const canResolveNozzle =
+                            pixelPaletteIdx != null &&
+                            perColorPaletteHexes != null &&
+                            colorLayerFilaments != null &&
+                            multiHeadWindows?.length &&
+                            windowRunFilaments?.length &&
+                            nozzleAssignments?.length &&
+                            filamentIds?.length;
+                        if (pixelColorSeq) {
+                            for (let mi = 0; mi < activePixels.length; mi++) {
+                                if (!activePixels[mi]) continue;
+                                const seq = pixelColorSeq[mi];
+                                const hex = (seq && seq[i]) || colorHex;
+                                let mask = groups.get(hex);
+                                if (!mask) {
+                                    mask = new Uint8Array(boxW * boxH);
+                                    groups.set(hex, mask);
+                                    // Resolve nozzle from the first pixel of this group.
+                                    if (canResolveNozzle) {
+                                        const palIdx = pixelPaletteIdx![mi];
+                                        const palHex = palIdx >= 0 ? perColorPaletteHexes![palIdx] : null;
+                                        const filIdx = palHex != null
+                                            ? (colorLayerFilaments!.get(palHex)?.[i] ?? -1)
+                                            : -1;
+                                        groupNozzle.set(hex, resolveNozzleIndex(
+                                            filIdx, i, filamentIds!,
+                                            multiHeadWindows!, windowRunFilaments!, nozzleAssignments!,
+                                            nozzleResolveMisses, nonWindowedRanges
+                                        ));
                                     }
                                 }
-
-                                pushLayerDetail(
-                                    buildLayerIndex,
-                                    'Selecting active pixels',
-                                    progressInSpan(0, 0.35, (y + 1) / boxH)
-                                );
-
-                                if (performance.now() - lastYield > YIELD_MS) {
-                                    await new Promise((r) => requestAnimationFrame(r));
-                                    if (token !== buildTokenRef.current) return;
-                                    lastYield = performance.now();
-                                }
+                                mask[mi] = 1;
                             }
+                        } else {
+                            groups.set(colorHex, activePixels);
+                        }
 
-                            if (activeCount === 0) continue;
-
-                            // Generate mesh for this layer
+                        for (const [groupHex, groupMask] of groups) {
                             const generatedMesh = await (
-                                buildSmoothMeshing ? generateSmoothMesh : generateGreedyMesh
-                            )(activePixels, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
+                                smoothMeshing ? generateSmoothMesh : generateGreedyMesh
+                            )(groupMask, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
                                 yieldIntervalMs: 8,
-                                onProgress: meshProgressReporter(buildLayerIndex),
-                            });
-                            meshBuildMetrics.push({
-                                layerIndex: i,
-                                swatchIndex: swatchIdx,
-                                activePixelCount: activeCount,
-                                vertexCount: generatedMesh.positions.length / 3,
-                                triangleCount: generatedMesh.indices.length / 3,
-                                metrics: generatedMesh.metrics,
+                                skipBottomCap: i > 0,
+                                skipRepair: groups.size > 1,
                             });
 
                             const geom = createFlatShadedGeometry(
                                 generatedMesh.positions,
                                 generatedMesh.indices,
                                 {
-                                    activePixels,
+                                    activePixels: groupMask,
                                     width: boxW,
                                     height: boxH,
                                     pixelSize,
                                     topZ: (baseZ + thickness) * heightScale,
-                                    compactHeightfield: !buildSmoothMeshing,
                                 }
                             );
-                            pushLayerDetail(buildLayerIndex, 'Preparing preview geometry', 0.96);
                             const mat = new THREE.MeshStandardMaterial({
-                                color: colorHex,
+                                color: groupHex,
                                 side: THREE.FrontSide,
                                 metalness: 0,
                                 roughness: 0.7,
@@ -1503,21 +1311,39 @@ export default function ThreeDView({
                             // Store layer Z range for preview slider
                             mesh.userData.baseZ = baseZ;
                             mesh.userData.topZ = topZ;
-                            builtLayerMeshes[i] = mesh;
-                            pushLayerDetail(buildLayerIndex, 'Layer mesh complete', 1);
-
-                            if (performance.now() - lastYield > YIELD_MS) {
-                                await new Promise((r) => requestAnimationFrame(r));
-                                if (token !== buildTokenRef.current) return;
-                                lastYield = performance.now();
+                            // Store nozzle index (1-based) for 3MF extruder assignment.
+                            const resolvedNozzle = groupNozzle.get(groupHex);
+                            if (resolvedNozzle !== undefined) {
+                                mesh.userData.nozzleIndex = resolvedNozzle;
                             }
+                            builtLayerMeshes.push(mesh);
                         }
 
-                        for (const mesh of builtLayerMeshes) {
-                            if (mesh) {
-                                modelGroup.add(mesh);
-                            }
+                        if (performance.now() - lastYield > YIELD_MS) {
+                            await new Promise((r) => requestAnimationFrame(r));
+                            if (token !== buildTokenRef.current) return;
+                            lastYield = performance.now();
                         }
+                    }
+
+                    for (const mesh of builtLayerMeshes) {
+                        modelGroup.add(mesh);
+                    }
+
+                    if (nozzleResolveMisses.size > 0 && multiHeadWindows?.length) {
+                        const windowRanges = (multiHeadWindows ?? [])
+                            .map(w => `[${w.windowStart}–${w.windowEnd}]`)
+                            .join(', ');
+                        console.group(
+                            `[ThreeDView] ⚠ ${nozzleResolveMisses.size} non-windowed layer(s) have unresolved nozzle assignments (falling back to head 1)`
+                        );
+                        console.log(`  Windows covered: ${windowRanges}`);
+                        const sortedLayers = [...nozzleResolveMisses.entries()]
+                            .sort(([a], [b]) => a - b);
+                        for (const [layerIdx, fids] of sortedLayers) {
+                            console.log(`  layer ${layerIdx}: unresolved filaments [${[...fids].join(', ')}]`);
+                        }
+                        console.groupEnd();
                     }
                 } else {
                     // === STANDARD MODE ===
@@ -1566,7 +1392,6 @@ export default function ThreeDView({
                             pixelLayerPos[flippedRowOffset + x] = layerPos;
                         }
 
-                        pushScanDetail('Reading image color layers', (y + 1) / boxH);
                         pushProgress(layeredBuildScanProgress(y, boxH, colorOrder.length));
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
@@ -1621,10 +1446,13 @@ export default function ThreeDView({
                                     activeCount++;
                                 }
                             }
-                            pushLayerDetail(
-                                buildLayerIndex,
-                                'Selecting active pixels',
-                                progressInSpan(0, 0.35, (y + 1) / boxH)
+                            pushProgress(
+                                layeredBuildLayerProgress(
+                                    buildLayerIndex,
+                                    y,
+                                    boxH,
+                                    colorOrder.length
+                                )
                             );
                             if (performance.now() - lastYield > YIELD_MS) {
                                 await new Promise((r) => requestAnimationFrame(r));
@@ -1637,18 +1465,10 @@ export default function ThreeDView({
 
                         // Generate Optimized Greedy Mesh
                         const generatedMesh = await (
-                            buildSmoothMeshing ? generateSmoothMesh : generateGreedyMesh
+                            smoothMeshing ? generateSmoothMesh : generateGreedyMesh
                         )(activePixels, boxW, boxH, thickness, baseZ, pixelSize, heightScale, {
                             yieldIntervalMs: 8,
-                            onProgress: meshProgressReporter(buildLayerIndex),
-                        });
-                        meshBuildMetrics.push({
-                            layerIndex: i,
-                            swatchIndex: swatchIdx,
-                            activePixelCount: activeCount,
-                            vertexCount: generatedMesh.positions.length / 3,
-                            triangleCount: generatedMesh.indices.length / 3,
-                            metrics: generatedMesh.metrics,
+                            skipBottomCap: i > 0,
                         });
 
                         const geom = createFlatShadedGeometry(
@@ -1660,10 +1480,8 @@ export default function ThreeDView({
                                 height: boxH,
                                 pixelSize,
                                 topZ: (baseZ + thickness) * heightScale,
-                                compactHeightfield: !buildSmoothMeshing,
                             }
                         );
-                        pushLayerDetail(buildLayerIndex, 'Preparing preview geometry', 0.96);
                         const mat = new THREE.MeshStandardMaterial({
                             color: colorHex,
                             side: THREE.FrontSide,
@@ -1679,7 +1497,6 @@ export default function ThreeDView({
                         mesh.userData.baseZ = baseZ;
                         mesh.userData.topZ = topZ;
                         builtLayerMeshes[i] = mesh;
-                        pushLayerDetail(buildLayerIndex, 'Layer mesh complete', 1);
 
                         if (performance.now() - lastYield > YIELD_MS) {
                             await new Promise((r) => requestAnimationFrame(r));
@@ -1731,17 +1548,15 @@ export default function ThreeDView({
                     cropWidth: finalW,
                     cropHeight: finalH,
                     ...collectMeshStats(modelGroup),
-                    layerMetrics: meshBuildMetrics,
                     dimensions: nextModelDimensions,
                     settings: {
                         pixelSize,
                         layerHeight,
                         slicerFirstLayerHeight,
-                        smoothMeshing: buildSmoothMeshing,
+                        smoothMeshing,
                         autoPaintEnabled,
                         enhancedColorMatch,
                         heightDithering,
-                        flatPaint,
                     },
                 });
 
@@ -1851,6 +1666,10 @@ export default function ThreeDView({
                 }
             })();
         }, 120);
+
+        return () => {
+            if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
+        };
     }, [
         imageSrc,
         baseSliceHeight,
@@ -1859,7 +1678,6 @@ export default function ThreeDView({
         colorSliceHeights,
         colorOrder,
         swatches,
-        filamentSwatches,
         pixelSize,
         heightScale,
         stepped,
@@ -1872,7 +1690,12 @@ export default function ThreeDView({
         heightDithering,
         ditherLineWidth,
         smoothMeshing,
-        flatPaint,
+        perColorLayerColors,
+        colorLayerFilaments,
+        nozzleAssignments,
+        windowRunFilaments,
+        multiHeadWindows,
+        filamentIds,
         cameraRef,
         controlsRef,
         materialRef,
@@ -1880,8 +1703,11 @@ export default function ThreeDView({
         requestRender,
     ]);
 
-    const currentBuildOverlayStep =
-        buildOverlayStep ?? getBuildOverlayStep(buildProgress, colorOrder.length, autoPaintEnabled);
+    const buildOverlayStep = getBuildOverlayStep(
+        buildProgress,
+        colorOrder.length,
+        autoPaintEnabled
+    );
     const previewHeightLabel =
         previewHeight !== null && previewMinHeight > 0.0001
             ? `${previewMinHeight.toFixed(2)} - ${previewHeight.toFixed(2)} mm`
@@ -1898,11 +1724,11 @@ export default function ThreeDView({
         <div className="w-full h-full relative" ref={mountRef}>
             {isBuilding && (
                 <ProgressOverlay
-                    title={activeBuildSmoothMeshing ? 'Generating smooth mesh' : 'Generating mesh'}
-                    stepLabel={currentBuildOverlayStep.stepLabel}
-                    stepIndex={currentBuildOverlayStep.stepIndex}
-                    stepCount={currentBuildOverlayStep.stepCount}
-                    stepProgress={currentBuildOverlayStep.stepProgress}
+                    title={smoothMeshing ? 'Generating smooth mesh' : 'Generating mesh'}
+                    stepLabel={buildOverlayStep.stepLabel}
+                    stepIndex={buildOverlayStep.stepIndex}
+                    stepCount={buildOverlayStep.stepCount}
+                    stepProgress={buildOverlayStep.stepProgress}
                     progress={buildProgress}
                 />
             )}

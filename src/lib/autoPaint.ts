@@ -22,9 +22,9 @@ import {
     type OptimizerOptions,
     type OptimizerResult,
     type ScoringContext,
-} from './optimizer';
-import { generateCenterWeightedMapSimple, generateEdgeWeightedMapSimple } from './regionWeighting';
-import { computeProfileConfidence } from './calibration';
+} from './optimizer.ts';
+import { generateCenterWeightedMapSimple, generateEdgeWeightedMapSimple } from './regionWeighting.ts';
+import { computeProfileConfidence } from './calibration.ts';
 
 export { LAYER_ACTIVATION_EPSILON } from './layerActivation';
 
