@@ -341,7 +341,12 @@ export default function ThreeDControls({
         // Run the appropriate multi-head optimizer based on the selected mode.
         const activeResult = (() => {
             if (!multiHeadMode || paintMode !== 'autopaint' || !autoPaintResult) return null;
-            const swatches = filtered.map((s) => ({ hex: s.hex, count: s.count }));
+            // `filtered` carries SwatchEntry objects at runtime (with pixel-frequency
+            // `count`), even though the prop is typed as the narrower Swatch.
+            const swatches = filtered.map((s) => ({
+                hex: s.hex,
+                count: (s as { count?: number }).count,
+            }));
             if (multiHeadOptimizationMode === 'spatial-variance') {
                 return runMultiHeadSpatialVarianceOptimization(
                     filaments, autoPaintResult, swatches,

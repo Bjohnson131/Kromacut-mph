@@ -1695,6 +1695,7 @@ export default function ThreeDView({
         nozzleAssignments,
         windowRunFilaments,
         multiHeadWindows,
+        nonWindowedRanges,
         filamentIds,
         cameraRef,
         controlsRef,

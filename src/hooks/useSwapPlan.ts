@@ -48,7 +48,6 @@ export function useSwapPlan({
     patchedTransitionZones,
     nozzleAssignments,
     windowRunFilaments,
-    preWindowFilaments,
     nonWindowedRanges,
     filaments,
     disabled = false,

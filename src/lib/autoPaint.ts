@@ -26,7 +26,7 @@ import {
 import { generateCenterWeightedMapSimple, generateEdgeWeightedMapSimple } from './regionWeighting.ts';
 import { computeProfileConfidence } from './calibration.ts';
 
-export { LAYER_ACTIVATION_EPSILON } from './layerActivation';
+export { LAYER_ACTIVATION_EPSILON } from './layerActivation.ts';
 
 /** RGB color representation (0-255 range) */
 export interface RGB {
