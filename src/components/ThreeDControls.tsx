@@ -283,6 +283,11 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
         const perColorLayerColors = activeResult && activeResult.patchedLayers.length > 0
             ? buildPerColorLayerColors(activeResult.patchedLayers, activeResult.colorLayerFilaments, filaments)
             : undefined;
+        // Per-colour filament-index-per-layer map. ThreeDView needs this (together with
+        // the window/nozzle data below) to resolve each sub-mesh's physical nozzle; if it
+        // isn't persisted, nozzle tagging silently no-ops and export3mf falls back to
+        // colour-order extruders and all-white filament colours.
+        const colorLayerFilaments = activeResult?.colorLayerFilaments;
         const windowRunFilaments = activeResult?.windowRunFilaments;
         const nozzleAssignments = activeResult?.nozzleAssignments;
         const preWindowFilaments = activeResult?.preWindowFilaments;
@@ -320,6 +325,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 patchedTransitionZones,
                 patchedSliceData,
                 perColorLayerColors,
+                colorLayerFilaments,
                 windowRunFilaments,
                 nozzleAssignments,
                 preWindowFilaments,
@@ -349,6 +355,7 @@ export default function ThreeDControls({ swatches, imageDimensions, onChange, on
                 patchedTransitionZones,
                 patchedSliceData,
                 perColorLayerColors,
+                colorLayerFilaments,
                 windowRunFilaments,
                 nozzleAssignments,
                 preWindowFilaments,

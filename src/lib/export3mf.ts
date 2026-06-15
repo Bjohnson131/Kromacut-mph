@@ -15,6 +15,15 @@ export interface Export3MFOptions {
      * When omitted, falls back to AMS-style: single nozzle_diameter, K filament slots.
      */
     extruderCount?: number;
+    /**
+     * Printer layers (1-based) where the print must pause so the operator can swap the
+     * filament loaded on the heads — i.e. the multi-head "Head Schedule" swap checkpoints.
+     * Each becomes a PausePrint marker in Metadata/custom_gcode_per_layer.xml at the
+     * layer's print_z, so OrcaSlicer inserts a pause (machine_pause_gcode / M600) at the
+     * start of that layer. Without these, Orca treats every head as one fixed filament for
+     * the whole print and silently drops the mid-print swaps.
+     */
+    swapLayers?: { layer: number; color?: string }[];
     onProgress?: (progress: number) => void;
     onZipProgress?: (progress: { percent: number; currentFile?: string | null }) => void;
 }
@@ -61,6 +70,7 @@ export async function exportObjectTo3MFBlob(
  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
  <Default Extension="png" ContentType="image/png"/>
  <Default Extension="config" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+ <Default Extension="xml" ContentType="application/xml"/>
 </Types>`;
     zip.file('[Content_Types].xml', contentTypes);
 
@@ -167,11 +177,109 @@ export async function exportObjectTo3MFBlob(
         projectSettings.filament_settings_id = expand('Generic PLA @Kromacut 0.4 nozzle', N);
         projectSettings.filament_vendor = expand('Generic', N);
         projectSettings.nozzle_diameter = expand('0.4', N);
-        // Toolchanger/multi-head printers use relative extrusion (M83). Orca
-        // requires G92 E0 in layer_gcode to prevent floating-point drift, but our
-        // minimal project settings don't include it, so Orca falls back to an empty
-        // string instead of inheriting from the printer profile. Set it explicitly.
-        (projectSettings as Record<string, unknown>).layer_gcode =
+        // Declare N filaments' diameter. OrcaSlicer derives the *filament count* from
+        // filament_diameter.length (PresetBundle::validate_presets / project load), NOT
+        // from filament_colour. Our filament presets ("Generic PLA @Kromacut…") don't
+        // resolve to a system preset, so any per-filament array we omit defaults to a
+        // single element. If filament_diameter is length 1 while filament_colour/
+        // filament_map are length N, Orca builds one filament slot but multi-extruder
+        // slicing indexes per-filament vector<double>s by filament id 1..N-1 → an
+        // out-of-bounds std::vector::operator[] assertion that aborts the slice. Emitting
+        // it at length N makes Orca build N slots and expand the other arrays to match.
+        (projectSettings as Record<string, unknown>).filament_diameter = expand('1.75', N);
+        // Declare every per-*extruder* setting at length N for the same reason.
+        //
+        // Our printer preset ("Kromacut 0.4 nozzle") also doesn't resolve to a system
+        // preset, so Orca builds a self-defined N-extruder printer from these project
+        // settings. nozzle_diameter (length N) makes Orca treat it as an N-extruder
+        // printer, but every other per-extruder array we omit stays at its length-1
+        // default — and both project load (Tab::switch_excluder → extruder_type[k]) and
+        // slicing index those by extruder id 1..N-1, hitting a std::vector::operator[]
+        // out-of-bounds abort. We emit the full per-extruder key set
+        // (PrintConfigDef::m_extruder_option_keys + nozzle_volume_type) at length N.
+        // Values are generic 0.4 mm direct-drive defaults — the print itself is governed
+        // by the user's selected printer profile; these only need to be present and the
+        // right length. Serialization matches Orca's profile JSON: enums as labels, bools
+        // as "1"/"0", points as "0x0".
+        const perExtruderDefaults: Record<string, string> = {
+            // floats / percents
+            min_layer_height: '0.08',
+            max_layer_height: '0.3',
+            extruder_printable_height: projectSettings.printable_height ?? '300',
+            nozzle_volume: '0',
+            retraction_length: '0.8',
+            z_hop: '0.4',
+            travel_slope: '3',
+            retract_lift_above: '0',
+            retract_lift_below: '0',
+            retraction_speed: '30',
+            deretraction_speed: '30',
+            retract_before_wipe: '0%',
+            retract_restart_extra: '0',
+            retraction_minimum_travel: '1',
+            wipe_distance: '1',
+            retract_length_toolchange: '2',
+            retract_restart_extra_toolchange: '0',
+            retraction_distances_when_cut: '18',
+            // enums (label form). extruder_type[k] / nozzle_volume_type[k] are what the
+            // GUI's switch_excluder() indexes at load time, so these are essential.
+            extruder_type: 'Direct Drive',
+            default_nozzle_volume_type: 'Standard',
+            nozzle_volume_type: 'Standard',
+            z_hop_types: 'Auto Lift',
+            retract_lift_enforce: 'All Surfaces',
+            nozzle_type: 'undefine',
+            // ints
+            nozzle_flush_dataset: '0',
+            // bools
+            wipe: '1',
+            retract_when_changing_layer: '1',
+            long_retractions_when_cut: '0',
+            // points / strings
+            extruder_offset: '0x0',
+            extruder_colour: '#FCE94F',
+            default_filament_profile: '',
+        };
+        for (const [key, value] of Object.entries(perExtruderDefaults)) {
+            (projectSettings as Record<string, unknown>)[key] = expand(value, N);
+        }
+        // Flush matrix between filaments, indexed per nozzle as
+        // flush_matrix[old_filament * filamentCount + new_filament] in GCode::set_extruder
+        // at every tool change. Orca expects (nozzleCount × filamentCount²) entries; if
+        // unset it defaults too small and the first tool change reads out of bounds. A
+        // toolchanger never cross-purges between heads, so zeros are correct here.
+        (projectSettings as Record<string, unknown>).flush_volumes_matrix = expand('0', N * N * N);
+        (projectSettings as Record<string, unknown>).flush_multiplier = expand('1', N);
+        // The self-defined printer has no pause G-code, so PausePrint markers (below)
+        // would expand to nothing. Provide one so the head-swap pauses actually emit.
+        (projectSettings as Record<string, unknown>).machine_pause_gcode = 'M600';
+        // Pin each logical filament to its matching physical nozzle/tool.
+        //
+        // On a toolchanger like the Snapmaker U1, a part's "extruder" value is a
+        // *logical* filament index. The physical tool that actually prints it is
+        // filament_map[extruder] (see OrcaSlicer get_extruder_index). With the
+        // default filament_map_mode ("Auto For Flush") Orca *recomputes* that map on
+        // slice to minimise flushing, which scrambles Kromacut's nozzle assignments —
+        // the imported part extruders no longer match the heads we chose.
+        //
+        // We assign extruder k to physical nozzle k, so the map must be the identity
+        // [1..N], and the mode must be "Manual" so Orca keeps it instead of
+        // re-deriving it (Print.cpp only honours a supplied map when mode >= fmmManual).
+        (projectSettings as Record<string, unknown>).filament_map = Array.from(
+            { length: N },
+            (_, k) => (k + 1).toString()
+        );
+        (projectSettings as Record<string, unknown>).filament_map_mode = 'Manual';
+        // Toolchanger/multi-head printers use relative extrusion (M83). Orca requires a
+        // "G92 E0" extruder-position reset at each layer to avoid floating-point drift,
+        // and rejects the slice otherwise ("Relative extruder addressing requires
+        // resetting the extruder position at each layer ... Add 'G92 E0' to layer_gcode").
+        //
+        // The validator (Print.cpp validate()) only inspects before_layer_change_gcode
+        // and layer_change_gcode — "layer_gcode" is a PrusaSlicer key name that doesn't
+        // exist in Orca at all, so the value we used to write here was silently dropped
+        // and never satisfied the check. Write the real Orca key instead.
+        (projectSettings as Record<string, unknown>).before_layer_change_gcode =
             ';BEFORE_LAYER_CHANGE\n;[layer_z]\nG92 E0\n';
     } else {
         // Single-head / AMS-style fallback: one nozzle_diameter, K colour slots.
@@ -179,6 +287,13 @@ export async function exportObjectTo3MFBlob(
         projectSettings.filament_type = expand('PLA', exportColors.length);
         projectSettings.filament_settings_id = expand('Generic PLA @Kromacut 0.4 nozzle', exportColors.length);
         projectSettings.filament_vendor = expand('Generic', exportColors.length);
+        // Keep filament_diameter length in step with the colour slots so Orca's
+        // filament-count derivation (filament_diameter.length) matches; see the
+        // multi-head branch above for why a short array crashes the slicer.
+        (projectSettings as Record<string, unknown>).filament_diameter = expand(
+            '1.75',
+            exportColors.length
+        );
     }
 
     // Build object resources using a chunked writer to avoid OOM with massive arrays
@@ -787,6 +902,36 @@ export async function exportObjectTo3MFBlob(
         'project_settings.config',
         JSON.stringify(projectSettings, null, 4)
     );
+
+    // Manual head-swap pauses (multi-head Head Schedule). Each swap layer becomes a
+    // PausePrint (type=1) entry at the layer's print_z; OrcaSlicer inserts a pause
+    // (machine_pause_gcode, e.g. M600) at the start of that layer. print_z matches the
+    // slicer's layer Z: firstLayerHeight for layer 1, then +layerHeight per layer. The
+    // gcode attribute is informational — Orca re-derives the real pause gcode from the
+    // type at slice time.
+    const swapLayers = (options?.swapLayers ?? []).filter((s) => s.layer >= 2);
+    if (swapLayers.length > 0) {
+        const lhVal = Number(projectSettings.layer_height) || 0.2;
+        const flVal = Number(projectSettings.initial_layer_print_height) || lhVal;
+        const layerLines = swapLayers
+            .map((s) => {
+                const topZ = Number((flVal + (s.layer - 1) * lhVal).toFixed(5));
+                const hex = normalizeHex(s.color);
+                const color = hex ? '#' + hex : '#888888';
+                return `<layer top_z="${topZ}" type="1" extruder="1" color="${color}" extra="Swap heads (layer ${s.layer})" gcode="M600"/>`;
+            })
+            .join('\n');
+        const customGcodeXml = `<?xml version="1.0" encoding="utf-8"?>
+<custom_gcodes_per_layer>
+<plate>
+<plate_info id="1"/>
+${layerLines}
+<mode value="MultiExtruder"/>
+</plate>
+</custom_gcodes_per_layer>
+`;
+        zip.folder('Metadata')?.file('custom_gcode_per_layer.xml', customGcodeXml);
+    }
 
     reportProgress(exportZipProgress(0));
 

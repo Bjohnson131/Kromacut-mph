@@ -21,6 +21,7 @@ import PreviewActions from './components/PreviewActions';
 import { useDropzone } from './hooks/useDropzone';
 import { exportObjectToStlBlob } from './lib/exportStl';
 import { exportObjectTo3MFBlob } from './lib/export3mf';
+import { buildMultiHeadSchedule } from './lib/multiHeadSchedule';
 import { useAppHandlers, type ExportProgressStep } from './hooks/useAppHandlers';
 import { useProcessingState } from './hooks/useProcessingState';
 import { useBuildWarning } from './hooks/useBuildWarning';
@@ -319,6 +320,21 @@ function App(): React.ReactElement | null {
                                 ?? threeDState.autoPaintFilamentSwatches)?.map((s) => s.hex)
                             : undefined,
                     extruderCount: threeDState.multiHeadMode ? threeDState.multiHeadCount : undefined,
+                    // Head Schedule swap checkpoints → pause markers at those layers.
+                    swapLayers: threeDState.multiHeadMode
+                        ? buildMultiHeadSchedule({
+                              multiHeadWindows: threeDState.multiHeadWindows,
+                              nozzleAssignments: threeDState.nozzleAssignments,
+                              windowRunFilaments: threeDState.windowRunFilaments,
+                              nonWindowedRanges: threeDState.nonWindowedRanges,
+                              filaments: threeDState.filaments,
+                          })
+                              ?.filter((e) => e.startLayer > 0 && e.swapCount > 0)
+                              .map((e) => ({
+                                  layer: e.startLayer,
+                                  color: e.nozzles.find((n) => n.changed)?.filamentHex,
+                              }))
+                        : undefined,
                     onProgress,
                     onZipProgress,
                 }),
@@ -556,6 +572,16 @@ function App(): React.ReactElement | null {
                                                 ? threeDState.perColorLayerColors
                                                 : undefined
                                         }
+                                        // Multi-head nozzle-assignment data: ThreeDView uses these to tag
+                                        // each sub-mesh with its physical nozzle so export3mf can emit the
+                                        // correct per-part extruder and per-nozzle filament colours. Without
+                                        // them nozzle tagging no-ops (white object, colour-order extruders).
+                                        multiHeadWindows={threeDState.multiHeadWindows}
+                                        colorLayerFilaments={threeDState.colorLayerFilaments}
+                                        windowRunFilaments={threeDState.windowRunFilaments}
+                                        nozzleAssignments={threeDState.nozzleAssignments}
+                                        nonWindowedRanges={threeDState.nonWindowedRanges}
+                                        filamentIds={threeDState.filaments?.map((f) => f.id)}
                                         autoPaintEnabled={threeDState.paintMode === 'autopaint'}
                                         autoPaintTotalHeight={
                                             (threeDState.multiHeadMode &&
