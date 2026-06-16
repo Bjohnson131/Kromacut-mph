@@ -3,11 +3,18 @@ import type { PointerEvent } from 'react';
 import * as THREE from 'three';
 import * as SliderPrimitive from '@radix-ui/react-slider';
 import useThreeScene from '../hooks/useThreeScene';
-import { generateGreedyMesh, generateSmoothMesh } from '../lib/meshing';
+import {
+    generateGreedyMesh,
+    generateSmoothMesh,
+    type MeshData,
+    type MeshProgress,
+} from '../lib/meshing';
+import { buildFlatPaintLayout, heightMapToFlatPaintLayerCounts } from '../lib/flatPaint';
 import {
     clampProgress,
     layeredBuildLayerProgress,
     layeredBuildScanProgress,
+    progressInSpan,
 } from '../lib/progress';
 import { Layers } from 'lucide-react';
 import ProgressOverlay from './ProgressOverlay';
@@ -49,6 +56,8 @@ interface ThreeDViewProps {
     nonWindowedRanges?: MultiHeadRangeAssignment[];
     filamentIds?: string[];
     isOrtho?: boolean;
+    /** Build a flat face-down slab (Flat Paint style, auto-paint only). */
+    flatPaint?: boolean;
 }
 
 // Convert hex color to RGB tuple
@@ -258,6 +267,31 @@ function createFlatShadedGeometry(
     return geom;
 }
 
+// Linearly remap a mesh's Z range (built in [minZ,maxZ]) into [baseZ,topZ]*heightScale.
+// Used by the Flat Paint slab build to stack per-filament parts. (Ported from develop.)
+function remapMeshZRange(mesh: MeshData, baseZ: number, topZ: number, heightScale: number): MeshData {
+    const positions = new Float32Array(mesh.positions.length);
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+
+    for (let i = 2; i < mesh.positions.length; i += 3) {
+        minZ = Math.min(minZ, mesh.positions[i]);
+        maxZ = Math.max(maxZ, mesh.positions[i]);
+    }
+
+    const sourceSpan = maxZ - minZ || 1;
+    const targetBase = baseZ * heightScale;
+    const targetSpan = (topZ - baseZ) * heightScale;
+
+    for (let i = 0; i < mesh.positions.length; i += 3) {
+        positions[i] = mesh.positions[i];
+        positions[i + 1] = mesh.positions[i + 1];
+        positions[i + 2] = targetBase + ((mesh.positions[i + 2] - minZ) / sourceSpan) * targetSpan;
+    }
+
+    return { positions, indices: mesh.indices, metrics: mesh.metrics };
+}
+
 interface E2EBuildMetrics {
     status: 'building' | 'complete';
     startedAt?: number;
@@ -359,6 +393,7 @@ export default function ThreeDView({
     nonWindowedRanges,
     filamentIds,
     isOrtho = false,
+    flatPaint = false,
 }: ThreeDViewProps) {
     const mountRef = useRef<HTMLDivElement | null>(null);
     const [isBuilding, setIsBuilding] = useState(false);
@@ -1133,6 +1168,137 @@ export default function ThreeDView({
                         }
                     }
 
+                    if (flatPaint) {
+                        // === FLAT_PAINT: uniform face-down slab (ported from develop) ===
+                        // Reverse each pixel column so the visible blend layer touches the
+                        // plate (mirrored in X so the artwork reads correctly once flipped),
+                        // backfill behind the columns with the foundation filament, and add a
+                        // transparent carrier first layer.
+                        const orientedCounts = new Uint16Array(boxW * boxH);
+                        {
+                            const rawCounts = heightMapToFlatPaintLayerCounts(
+                                pixelHeightMap,
+                                cumulativeHeights,
+                                layerHeight
+                            );
+                            for (let y = 0; y < boxH; y++) {
+                                const srcRow = y * boxW;
+                                const dstRow = (boxH - 1 - y) * boxW;
+                                for (let x = 0; x < boxW; x++) {
+                                    orientedCounts[dstRow + (boxW - 1 - x)] = rawCounts[srcRow + x];
+                                }
+                            }
+                        }
+
+                        const layout = buildFlatPaintLayout({
+                            layerCounts: orientedCounts,
+                            width: boxW,
+                            height: boxH,
+                            layerCount: colorOrder.length,
+                            layerHeight,
+                            carrierThickness: Math.max(slicerFirstLayerHeight, layerHeight),
+                            layerVirtualHexes: colorOrder.map(
+                                (swatchIdx) => swatches[swatchIdx]?.hex ?? '#888888'
+                            ),
+                            layerFilamentHexes: colorOrder.map(
+                                (swatchIdx) =>
+                                    (filamentSwatches?.[swatchIdx] ?? swatches[swatchIdx])?.hex ??
+                                    '#888888'
+                            ),
+                        });
+
+                        const partCount = Math.max(1, layout.parts.length);
+                        const scanSpanEnd = 1 / (colorOrder.length + 1);
+                        const pushPartProgress = (partIndex: number, progress: number) => {
+                            pushProgress(
+                                progressInSpan(
+                                    scanSpanEnd,
+                                    1 - scanSpanEnd,
+                                    (partIndex + clampProgress(progress)) / partCount
+                                )
+                            );
+                        };
+
+                        const flatMeshCache = new WeakMap<Uint8Array, Promise<MeshData>>();
+                        const getFlatMaskMesh = (part: (typeof layout.parts)[number]) => {
+                            const cached = flatMeshCache.get(part.mask);
+                            if (cached) return cached;
+                            // Flat Paint always uses the greedy mesher: smoothing would open
+                            // gaps between side-by-side colour regions inside the slab.
+                            const promise = generateGreedyMesh(
+                                part.mask,
+                                boxW,
+                                boxH,
+                                1,
+                                0,
+                                pixelSize,
+                                1,
+                                {
+                                    yieldIntervalMs: 8,
+                                    onProgress: (progress: MeshProgress) =>
+                                        pushPartProgress(
+                                            layout.parts.indexOf(part),
+                                            progressInSpan(0, 0.9, progress.progress)
+                                        ),
+                                }
+                            );
+                            flatMeshCache.set(part.mask, promise);
+                            return promise;
+                        };
+
+                        for (let partIdx = 0; partIdx < layout.parts.length; partIdx++) {
+                            const part = layout.parts[partIdx];
+                            if (token !== buildTokenRef.current) return;
+                            if (part.activeCount === 0) continue;
+
+                            const generatedMesh = remapMeshZRange(
+                                await getFlatMaskMesh(part),
+                                part.baseZ,
+                                part.topZ,
+                                heightScale
+                            );
+
+                            const geom = createFlatShadedGeometry(
+                                generatedMesh.positions,
+                                generatedMesh.indices,
+                                {
+                                    activePixels: part.mask,
+                                    width: boxW,
+                                    height: boxH,
+                                    pixelSize,
+                                    topZ: part.topZ * heightScale,
+                                }
+                            );
+                            const isCarrier = part.kind === 'carrier';
+                            const mat = new THREE.MeshStandardMaterial({
+                                color: part.previewHex,
+                                side: THREE.FrontSide,
+                                metalness: 0,
+                                roughness: isCarrier ? 0.3 : 0.7,
+                                flatShading: true,
+                                transparent: isCarrier,
+                                opacity: isCarrier ? 0.3 : 1,
+                            });
+
+                            const mesh = new THREE.Mesh(geom, mat);
+                            // Slab Z range for the preview slider.
+                            mesh.userData.baseZ = part.baseZ;
+                            mesh.userData.topZ = part.topZ;
+                            // Export metadata: one 3MF object per physical filament.
+                            mesh.userData.kromacutExportGroup = part.exportGroup;
+                            mesh.userData.kromacutFilamentHex = part.filamentHex;
+                            mesh.userData.kromacutMaterialKey = part.exportGroup;
+                            mesh.userData.kromacutPartName = part.partName;
+                            modelGroup.add(mesh);
+                            pushPartProgress(partIdx, 1);
+
+                            if (performance.now() - lastYield > YIELD_MS) {
+                                await new Promise((r) => requestAnimationFrame(r));
+                                if (token !== buildTokenRef.current) return;
+                                lastYield = performance.now();
+                            }
+                        }
+                    } else {
                     // Multi-head per-pixel colour: classify each pixel to its nearest
                     // image-palette colour once, so layer bands can be split by the
                     // per-colour blended colour at that layer.
@@ -1344,6 +1510,7 @@ export default function ThreeDView({
                             console.log(`  layer ${layerIdx}: unresolved filaments [${[...fids].join(', ')}]`);
                         }
                         console.groupEnd();
+                    }
                     }
                 } else {
                     // === STANDARD MODE ===
@@ -1678,6 +1845,8 @@ export default function ThreeDView({
         colorSliceHeights,
         colorOrder,
         swatches,
+        filamentSwatches,
+        flatPaint,
         pixelSize,
         heightScale,
         stepped,

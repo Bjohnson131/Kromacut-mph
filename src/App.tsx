@@ -733,6 +733,7 @@ function App(): React.ReactElement | null {
                                             ditherLineWidth={builtModelState.ditherLineWidth}
                                             smoothMeshing={builtModelState.smoothMeshing}
                                             isOrtho={isOrtho}
+                                            flatPaint={builtFlatPaint}
                                         />
                                         {exportingSTL && (
                                             <ProgressOverlay
