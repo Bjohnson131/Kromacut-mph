@@ -38,6 +38,7 @@ const DOC_NAV_GROUPS = [
             'reducing-colors',
             'dedithering-cleanup',
             '3d-mode',
+            'multi-head-printing',
             'generating-exporting-output',
         ],
     },

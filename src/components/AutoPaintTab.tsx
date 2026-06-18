@@ -801,26 +801,17 @@ export default function AutoPaintTab({
                                         <Label htmlFor="multi-head-count" className="text-xs text-muted-foreground whitespace-nowrap">
                                             Head count
                                         </Label>
-                                        <Select
-                                            value={String(multiHeadCount)}
-                                            onValueChange={(v) => setMultiHeadCount(Number(v))}
-                                        >
-                                            <SelectTrigger id="multi-head-count" className="h-7 text-xs flex-1">
-                                                <SelectValue />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {[2, 3, 4, 5].map((n) => (
-                                                    <SelectItem
-                                                        key={n}
-                                                        value={String(n)}
-                                                        className="text-xs"
-                                                        disabled={n > filaments.length}
-                                                    >
-                                                        {n} heads ({Math.pow(n, n).toLocaleString()} combinations)
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
+                                        <NumberInput
+                                            id="multi-head-count"
+                                            className="h-7 text-xs flex-1"
+                                            value={multiHeadCount}
+                                            min={2}
+                                            step={1}
+                                            onChange={(e) => {
+                                                const v = parseInt(e.target.value, 10);
+                                                if (v >= 2) setMultiHeadCount(v);
+                                            }}
+                                        />
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <Label htmlFor="multi-head-search-depth" className="text-xs text-muted-foreground whitespace-nowrap">

@@ -60,7 +60,7 @@ export interface ThreeDControlsStateShape {
     regionWeightingMode?: 'uniform' | 'center' | 'edge';
     // Multi-head mode (per-pixel layer order optimization)
     multiHeadMode?: boolean;
-    multiHeadCount?: number; // 2–5 heads
+    multiHeadCount?: number; // any integer ≥ 2
     multiHeadSearchDepth?: 'fast' | 'balanced' | 'thorough';
     multiHeadOptimizationMode?: 'color-accuracy' | 'spatial-variance';
     /**
