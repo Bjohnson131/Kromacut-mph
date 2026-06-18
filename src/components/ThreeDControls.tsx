@@ -7,7 +7,6 @@ import { Check, RotateCcw, Loader2 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { autoPaintToSliceHeights } from '../lib/autoPaint';
 import { runMultiHeadLayerAnalysisColorFirst } from '../lib/multiHeadAnalysisColorFirst';
-import { runMultiHeadSpatialVarianceOptimization, type SpatialVarianceResult } from '../lib/multiHeadSpatialVariance';
 import { patchedLayersToPlan, patchedLayersToSliceData, buildPerColorLayerColors } from '../lib/patchedLayersToPlan';
 import type { WindowResult } from '../lib/multiHeadAnalysis';
 import {
@@ -137,9 +136,6 @@ export default function ThreeDControls({
     const [multiHeadSearchDepth, setMultiHeadSearchDepth] = useState<'fast' | 'balanced' | 'thorough'>(
         persisted?.multiHeadSearchDepth ?? 'balanced'
     );
-    const [multiHeadOptimizationMode, setMultiHeadOptimizationMode] = useState<'color-accuracy' | 'spatial-variance'>(
-        persisted?.multiHeadOptimizationMode ?? 'color-accuracy'
-    );
     const [multiHeadWindows, setMultiHeadWindows] = useState<WindowResult[]>([]);
 
     useEffect(() => {
@@ -187,10 +183,9 @@ export default function ThreeDControls({
             multiHeadMode,
             multiHeadCount,
             multiHeadSearchDepth,
-            multiHeadOptimizationMode,
         });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [paintMode, filaments, enhancedColorMatch, allowRepeatedSwaps, heightDithering, ditherLineWidth, flatPaint, optimizerAlgorithm, optimizerSeed, regionWeightingMode, smoothMeshing, multiHeadMode, multiHeadCount, multiHeadSearchDepth, multiHeadOptimizationMode]);
+    }, [paintMode, filaments, enhancedColorMatch, allowRepeatedSwaps, heightDithering, ditherLineWidth, flatPaint, optimizerAlgorithm, optimizerSeed, regionWeightingMode, smoothMeshing, multiHeadMode, multiHeadCount, multiHeadSearchDepth]);
 
     useEffect(() => {
         savePrintSettingsToStorage({ layerHeight, slicerFirstLayerHeight, pixelSize, smoothMeshing });
@@ -347,22 +342,11 @@ export default function ThreeDControls({
                 hex: s.hex,
                 count: (s as { count?: number }).count,
             }));
-            if (multiHeadOptimizationMode === 'spatial-variance') {
-                return runMultiHeadSpatialVarianceOptimization(
-                    filaments, autoPaintResult, swatches,
-                    layerHeight, slicerFirstLayerHeight, multiHeadCount
-                );
-            }
             return runMultiHeadLayerAnalysisColorFirst(
                 filaments, autoPaintResult, swatches,
                 layerHeight, slicerFirstLayerHeight, multiHeadCount
             );
         })();
-
-        const svResult = (multiHeadOptimizationMode === 'spatial-variance'
-            ? (activeResult as SpatialVarianceResult | null)
-            : null);
-        const spatialVarianceTotalHeight = svResult?.spatialVarianceTotalHeight;
 
         const newMultiHeadWindows = activeResult?.windows ?? [];
         const patchedTransitionZones = activeResult && activeResult.patchedLayers.length > 0
@@ -411,8 +395,6 @@ export default function ThreeDControls({
                 multiHeadMode,
                 multiHeadCount,
                 multiHeadSearchDepth,
-                multiHeadOptimizationMode,
-                spatialVarianceTotalHeight,
                 multiHeadWindows: newMultiHeadWindows,
                 patchedTransitionZones,
                 patchedSliceData,
@@ -442,8 +424,6 @@ export default function ThreeDControls({
                 multiHeadMode,
                 multiHeadCount,
                 multiHeadSearchDepth,
-                multiHeadOptimizationMode,
-                spatialVarianceTotalHeight,
                 multiHeadWindows: newMultiHeadWindows,
                 patchedTransitionZones,
                 patchedSliceData,
@@ -480,9 +460,7 @@ export default function ThreeDControls({
         multiHeadMode,
         multiHeadCount,
         multiHeadSearchDepth,
-        multiHeadOptimizationMode,
         filtered,
-        // spatialVarianceTotalHeight is derived inside handleApply; not a dep
     ]);
 
     return (
@@ -599,8 +577,6 @@ export default function ThreeDControls({
                     setMultiHeadCount={setMultiHeadCount}
                     multiHeadSearchDepth={multiHeadSearchDepth}
                     setMultiHeadSearchDepth={setMultiHeadSearchDepth}
-                    multiHeadOptimizationMode={multiHeadOptimizationMode}
-                    setMultiHeadOptimizationMode={setMultiHeadOptimizationMode}
                 />
 
                 {/* Manual Tab */}

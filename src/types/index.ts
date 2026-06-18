@@ -62,13 +62,6 @@ export interface ThreeDControlsStateShape {
     multiHeadMode?: boolean;
     multiHeadCount?: number; // any integer ≥ 2
     multiHeadSearchDepth?: 'fast' | 'balanced' | 'thorough';
-    multiHeadOptimizationMode?: 'color-accuracy' | 'spatial-variance';
-    /**
-     * Total height override for spatial-variance mode (M * layerHeight).
-     * When set, ThreeDView uses this instead of autoPaintResult.totalHeight so
-     * the luminance → height mapping quantises to exactly M discrete levels.
-     */
-    spatialVarianceTotalHeight?: number;
     multiHeadWindows?: WindowResult[];
     /** Reordered transition zones derived from the multi-head patched layer stack. */
     patchedTransitionZones?: TransitionZone[];

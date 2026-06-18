@@ -717,14 +717,7 @@ function App(): React.ReactElement | null {
                                             nonWindowedRanges={builtModelState.nonWindowedRanges}
                                             filamentIds={builtModelState.filaments?.map((f) => f.id)}
                                             autoPaintEnabled={builtModelAutoPaint}
-                                            autoPaintTotalHeight={
-                                                builtModelState.multiHeadMode &&
-                                                builtModelState.multiHeadOptimizationMode ===
-                                                    'spatial-variance' &&
-                                                builtModelState.spatialVarianceTotalHeight
-                                                    ? builtModelState.spatialVarianceTotalHeight
-                                                    : builtModelState.autoPaintResult?.totalHeight
-                                            }
+                                            autoPaintTotalHeight={builtModelState.autoPaintResult?.totalHeight}
                                             autoPaintFilamentOrder={
                                                 builtModelState.autoPaintResult?.filamentOrder
                                             }
