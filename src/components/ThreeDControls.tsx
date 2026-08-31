@@ -238,6 +238,9 @@ export default function ThreeDControls({
     const [multiHeadSearchDepth, setMultiHeadSearchDepth] = useState<'fast' | 'balanced' | 'thorough'>(
         persisted?.multiHeadSearchDepth ?? 'balanced'
     );
+    const [multiHeadColorMode, setMultiHeadColorMode] = useState<'luminance' | 'color'>(
+        persisted?.multiHeadColorMode ?? 'luminance'
+    );
 
     const handleEnhancedColorMatchChange = useCallback((v: boolean) => {
         setEnhancedColorMatch(v);
@@ -541,6 +544,7 @@ export default function ThreeDControls({
                 firstLayerHeight: slicerFirstLayerHeight,
                 n: multiHeadCount,
                 searchDepth: multiHeadSearchDepth,
+                colorMode: multiHeadColorMode,
             });
         }
 
@@ -614,6 +618,7 @@ export default function ThreeDControls({
                 multiHeadMode,
                 multiHeadCount,
                 multiHeadSearchDepth,
+                multiHeadColorMode,
                 multiHeadWindows: newMultiHeadWindows,
                 patchedTransitionZones,
                 patchedSliceData,
@@ -646,6 +651,7 @@ export default function ThreeDControls({
             multiHeadMode,
             multiHeadCount,
             multiHeadSearchDepth,
+            multiHeadColorMode,
             multiHeadWindows: newMultiHeadWindows,
             patchedTransitionZones,
             patchedSliceData,
@@ -691,6 +697,7 @@ export default function ThreeDControls({
         multiHeadMode,
         multiHeadCount,
         multiHeadSearchDepth,
+        multiHeadColorMode,
         runMultiHead,
     ]);
 
@@ -879,6 +886,8 @@ export default function ThreeDControls({
                     setMultiHeadCount={setMultiHeadCount}
                     multiHeadSearchDepth={multiHeadSearchDepth}
                     setMultiHeadSearchDepth={setMultiHeadSearchDepth}
+                    multiHeadColorMode={multiHeadColorMode}
+                    setMultiHeadColorMode={setMultiHeadColorMode}
                 />
 
                 {/* Manual Tab */}
