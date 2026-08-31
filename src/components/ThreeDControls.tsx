@@ -6,7 +6,11 @@ import { Sortable, SortableContent, SortableOverlay } from '@/components/ui/sort
 import { Button } from '@/components/ui/button';
 import { Check, RotateCcw, Loader2 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { patchedLayersToPlan, patchedLayersToSliceData, buildPerColorLayerColors } from '../lib/patchedLayersToPlan';
+import {
+    patchedLayersToPlan,
+    patchedLayersToSliceData,
+    buildPerColorLayerColors,
+} from '../lib/patchedLayersToPlan';
 import {
     autoPaintResultMatchesSliceGrid,
     autoPaintToSliceHeights,
@@ -235,12 +239,18 @@ export default function ThreeDControls({
     // --- Multi-head mode ---
     const [multiHeadMode, setMultiHeadMode] = useState(persisted?.multiHeadMode ?? false);
     const [multiHeadCount, setMultiHeadCount] = useState(persisted?.multiHeadCount ?? 4);
-    const [multiHeadSearchDepth, setMultiHeadSearchDepth] = useState<'fast' | 'balanced' | 'thorough'>(
-        persisted?.multiHeadSearchDepth ?? 'balanced'
-    );
+    const [multiHeadSearchDepth, setMultiHeadSearchDepth] = useState<
+        'fast' | 'balanced' | 'thorough'
+    >(persisted?.multiHeadSearchDepth ?? 'balanced');
     const [multiHeadColorMode, setMultiHeadColorMode] = useState<'luminance' | 'color'>(
         persisted?.multiHeadColorMode ?? 'luminance'
     );
+    // Set after a build when Multi-head mode was on but the analysis could not
+    // produce a usable plan (worker error, or no window beat the base stack).
+    // In that case the build falls back to a normal single-head model and this
+    // explains why — a multi-head 3MF with guessed head assignments is never
+    // emitted.
+    const [multiHeadNotice, setMultiHeadNotice] = useState<string | undefined>(undefined);
 
     const handleEnhancedColorMatchChange = useCallback((v: boolean) => {
         setEnhancedColorMatch(v);
@@ -270,8 +280,23 @@ export default function ThreeDControls({
         setSmoothMeshingStrength(strength);
     }, []);
 
+    // Flat Paint and Multi-head mode are mutually exclusive: the Flat Paint
+    // geometry path ignores multi-head nozzle assignments, so a schedule built
+    // for the stepped stack would misassign heads on export. Enabling either
+    // turns the other off.
     const handleFlatPaintChange = useCallback((enabled: boolean) => {
         setFlatPaint(enabled);
+        if (enabled) {
+            setMultiHeadMode(false);
+        }
+    }, []);
+
+    const handleMultiHeadModeChange = useCallback((enabled: boolean) => {
+        setMultiHeadMode(enabled);
+        setMultiHeadNotice(undefined);
+        if (enabled) {
+            setFlatPaint(false);
+        }
     }, []);
 
     // Sync non-build settings to parent so persisted stays current across mode switches
@@ -415,10 +440,7 @@ export default function ThreeDControls({
     const autoPaintProgressPercent = Math.round(Math.max(0, Math.min(1, autoPaintProgress)) * 100);
 
     // --- Multi-head analysis (runs in Web Worker to avoid blocking the UI) ---
-    const {
-        isComputing: isMultiHeadComputing,
-        run: runMultiHead,
-    } = useMultiHeadWorker();
+    const { isComputing: isMultiHeadComputing, run: runMultiHead } = useMultiHeadWorker();
 
     const autoPaintSliceData = useMemo(() => {
         if (!autoPaintResult) return undefined;
@@ -526,10 +548,15 @@ export default function ThreeDControls({
     const handleApply = useCallback(async () => {
         if (!onChange) return;
 
-        // Run the multi-head optimizer first when that mode is on; its output
-        // feeds both the auto-paint and manual onChange payloads below.
+        setMultiHeadNotice(undefined);
+
+        // Multi-head runs only when its mode is on, Flat Paint is off (the two
+        // are mutually exclusive), and there is an auto-paint result to reorder.
+        const multiHeadRequested =
+            multiHeadMode && !flatPaint && paintMode === 'autopaint' && !!autoPaintResult;
+
         let activeResult = null;
-        if (multiHeadMode && paintMode === 'autopaint' && autoPaintResult) {
+        if (multiHeadRequested && autoPaintResult) {
             // `filtered` carries SwatchEntry objects at runtime (with pixel-frequency
             // `count`), even though the prop is typed as the narrower Swatch.
             const swatches = filtered.map((s) => ({
@@ -548,25 +575,55 @@ export default function ThreeDControls({
             });
         }
 
-        const newMultiHeadWindows = activeResult?.windows ?? [];
-        const patchedTransitionZones = activeResult && activeResult.patchedLayers.length > 0
-            ? patchedLayersToPlan(activeResult.patchedLayers, filaments)
+        // A multi-head build is only valid when the analysis produced a real
+        // plan: at least one selected window, a patched layer stack, and nozzle
+        // assignments. Otherwise fall back to a normal single-head build and tell
+        // the user — never emit a multi-head 3MF with guessed head assignments.
+        const multiHeadUsable =
+            multiHeadRequested &&
+            !!activeResult &&
+            activeResult.patchedLayers.length > 0 &&
+            activeResult.windows.length > 0 &&
+            (activeResult.nozzleAssignments?.length ?? 0) > 0;
+
+        if (multiHeadRequested && !multiHeadUsable) {
+            setMultiHeadNotice(
+                activeResult
+                    ? `Multi-head analysis found no head layout that beats the normal stack at ${multiHeadCount} heads — built a normal single-head model instead.`
+                    : "Multi-head analysis didn't finish — built a normal single-head model instead. Try fewer heads or a different search depth."
+            );
+        }
+
+        const multiHeadEffective = multiHeadUsable;
+        const usableResult = multiHeadUsable ? activeResult : null;
+
+        const newMultiHeadWindows = usableResult?.windows ?? [];
+        const patchedTransitionZones = usableResult
+            ? patchedLayersToPlan(usableResult.patchedLayers, filaments)
             : undefined;
-        const patchedSliceData = activeResult && activeResult.patchedLayers.length > 0
-            ? patchedLayersToSliceData(activeResult.patchedLayers, filaments, slicerFirstLayerHeight)
+        const patchedSliceData = usableResult
+            ? patchedLayersToSliceData(
+                  usableResult.patchedLayers,
+                  filaments,
+                  slicerFirstLayerHeight
+              )
             : undefined;
-        const perColorLayerColors = activeResult && activeResult.patchedLayers.length > 0
-            ? buildPerColorLayerColors(activeResult.patchedLayers, activeResult.colorLayerFilaments, filaments)
+        const perColorLayerColors = usableResult
+            ? buildPerColorLayerColors(
+                  usableResult.patchedLayers,
+                  usableResult.colorLayerFilaments,
+                  filaments
+              )
             : undefined;
         // Per-colour filament-index-per-layer map. ThreeDView needs this (together with
         // the window/nozzle data below) to resolve each sub-mesh's physical nozzle; if it
         // isn't persisted, nozzle tagging silently no-ops and export3mf falls back to
         // colour-order extruders and all-white filament colours.
-        const colorLayerFilaments = activeResult?.colorLayerFilaments;
-        const windowRunFilaments = activeResult?.windowRunFilaments;
-        const nozzleAssignments = activeResult?.nozzleAssignments;
-        const preWindowFilaments = activeResult?.preWindowFilaments;
-        const nonWindowedRanges = activeResult?.nonWindowedRanges;
+        const colorLayerFilaments = usableResult?.colorLayerFilaments;
+        const windowRunFilaments = usableResult?.windowRunFilaments;
+        const nozzleAssignments = usableResult?.nozzleAssignments;
+        const preWindowFilaments = usableResult?.preWindowFilaments;
+        const nonWindowedRanges = usableResult?.nonWindowedRanges;
 
         if (paintMode === 'autopaint') {
             // Auto-paint is a hard mode boundary. A missing or rejected result
@@ -615,7 +672,7 @@ export default function ThreeDControls({
                 }),
                 calibrationLayerHeight,
                 smoothMeshingStrength,
-                multiHeadMode,
+                multiHeadMode: multiHeadEffective,
                 multiHeadCount,
                 multiHeadSearchDepth,
                 multiHeadColorMode,
@@ -648,7 +705,7 @@ export default function ThreeDControls({
             regionWeightingMode,
             calibrationLayerHeight,
             smoothMeshingStrength,
-            multiHeadMode,
+            multiHeadMode: multiHeadEffective,
             multiHeadCount,
             multiHeadSearchDepth,
             multiHeadColorMode,
@@ -727,10 +784,12 @@ export default function ThreeDControls({
                 <Button
                     onClick={handleApply}
                     data-testid="build-3d-model"
-                    disabled={isAutoPaintComputing || isMultiHeadComputing || autoPaintBuildUnavailable}
+                    disabled={
+                        isAutoPaintComputing || isMultiHeadComputing || autoPaintBuildUnavailable
+                    }
                     className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold transition-all duration-200 shadow-md hover:shadow-lg active:scale-95 gap-1.5 disabled:opacity-60"
                 >
-                    {(isAutoPaintComputing || isMultiHeadComputing) ? (
+                    {isAutoPaintComputing || isMultiHeadComputing ? (
                         <>
                             <Loader2 className="w-4 h-4 animate-spin" />
                             <span>
@@ -881,13 +940,14 @@ export default function ThreeDControls({
                     regionWeightingMode={regionWeightingMode}
                     setRegionWeightingMode={setRegionWeightingMode}
                     multiHeadMode={multiHeadMode}
-                    setMultiHeadMode={setMultiHeadMode}
+                    setMultiHeadMode={handleMultiHeadModeChange}
                     multiHeadCount={multiHeadCount}
                     setMultiHeadCount={setMultiHeadCount}
                     multiHeadSearchDepth={multiHeadSearchDepth}
                     setMultiHeadSearchDepth={setMultiHeadSearchDepth}
                     multiHeadColorMode={multiHeadColorMode}
                     setMultiHeadColorMode={setMultiHeadColorMode}
+                    multiHeadNotice={multiHeadNotice}
                 />
 
                 {/* Manual Tab */}
